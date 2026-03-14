@@ -1,1 +1,223 @@
-# Legacy Lens: 程式碼考古與規則文件生成器\n\n## 一句話介紹\n\n**把看不懂的舊系統程式碼（Delphi/Go/SQL）變成「可接手的規格書＋風險清單」。**\n\n---\n\n## 目標使用者與價值\n\n### 目標使用者\n\n- **ERP 維護／轉型團隊**：需要理解並維護複雜的遺留系統\n- **新人接手 legacy 系統**：快速理解系統架構與業務邏輯\n- **需要對齊「舊流程 ↔ 新 API」的人**：進行系統現代化時的對標工具\n\n### 解決的痛點\n\n| 痛點 | Legacy Lens 的解決方案 |\n|------|----------------------|\n| 沒文件、規格靠人腦 | 自動生成 FLOW.md、DATA_DEPENDENCY.md、RISKS.md |\n| 變更一個欄位牽一堆流程 | 欄位依賴圖清晰展示讀/寫/計算關係 |\n| 新人接手學習曲線爆炸 | 結構化的流程說明 + 風險清單 |\n| 轉型時無法確認「行為一致」 | 差異對齊功能對照舊新邏輯 |\n\n---\n\n## 核心產出（MVP）\n\n### 1. 流程說明（FLOW.md）\n\n每個功能入口清晰說明：\n- **做了什麼**：功能的核心邏輯\n- **先後順序**：執行步驟的流程\n- **例外處理**：邊界情況與錯誤處理\n\n**範例結構：**\n```markdown\n### 函數: ProcessOrder\n\n**簽名:** func ProcessOrder(orderID string) error\n\n**執行步驟:**\n1. 驗證訂單存在\n2. 檢查庫存\n3. 更新訂單狀態\n4. 發送通知\n\n**例外處理:**\n- 訂單不存在 → 返回 404\n- 庫存不足 → 返回 400 並記錄日誌\n```\n\n### 2. 欄位依賴圖（DATA_DEPENDENCY.md）\n\n欄位在哪裡被讀/寫/計算，分類清晰：\n\n**範例結構：**\n```markdown\n## 表: Orders\n\n### Orders.Status\n\n**讀取 (READ):**\n- api/handlers.go:142 - 查詢條件\n- service/order.go:33 - 狀態檢查\n\n**寫入 (WRITE):**\n- service/order.go:88 - 訂單確認時更新\n- service/order.go:156 - 訂單取消時更新\n\n**計算 (CALCULATE):**\n- service/order.go:200 - 由 PaymentStatus 計算\n```\n\n### 3. 風險提示（RISKS.md）\n\n危險點：魔法值、狀態切換、資料一致性問題\n\n**每一段結論都附「出處」：**\n```markdown\n## 🔴 Critical 風險\n\n### 1. UPDATE 語句缺少 WHERE 條件\n\n**位置:** service/payment.go:142\n\n**代碼片段:**\n```sql\nUPDATE Orders SET Status = 'PAID'\n```\n\n**風險:** 將所有訂單標記為已支付，導致資料不一致\n\n**建議:** 立即添加 WHERE 條件限制範圍\n```\n\n---\n\n## 功能範圍\n\n### MVP（第一版）\n\n#### 1. 專案匯入\n- ✅ 支援資料夾上傳\n- ✅ 支援 Git clone\n- ✅ 選擇語言：Go / SQL / Delphi（先做 Go+SQL）\n\n#### 2. 程式碼結構化索引\n- ✅ Function/Procedure 清單\n- ✅ 呼叫關係（Call Graph）\n- ✅ 資料表與欄位引用（SQL & ORM）\n- ✅ 前端 API endpoint（如果有）\n- ✅ 狀態機線索（State / Flag / Mark）\n\n#### 3. 一鍵產生「接手文件」\n- ✅ FLOW.md：流程說明\n- ✅ DATA_DEPENDENCY.md：欄位依賴\n- ✅ RISKS.md：風險提示\n\n### V1（第二階段）\n\n#### 4. 差異對齊（Migration 專用）\n- 對照舊 Delphi 的某段流程 vs 新 Go API 的 handler\n- 產生一致性檢查清單\n\n#### 5. 規則抽取（Rule Extraction）\n- 把散落在 code 裡的判斷抽成規則\n- if/else 驗證\n- magic value（例如 MARK='Y'、LEVEL='00'）\n- 格式限制（日期 yyyyMMdd、數值小數位）\n- 輸出：RULES.yaml\n\n---\n\n## 系統架構\n\n### 技術選型\n\n| 層級 | 技術 | 說明 |\n|------|------|------|\n| **後端** | Go + Gin | 高效的 API 服務 |\n| **前端** | Vue 3 + TypeScript | 優雅的使用者界面 |\n| **資料庫** | MySQL/TiDB | 可靠的資料存儲 |\n| **分析核心** | Go 正則表達式 + AST | 靜態程式碼分析 |\n| **儲存** | S3 | 文件與分析結果存儲 |\n\n### Pipeline 流程\n\n```\n掃描 Repo\n    ↓\n找出檔案、語言、模組\n    ↓\nParser（Go/SQL）\n    ├─ 抓 function、SQL、欄位名稱\n    └─ 建立 symbol index\n    ↓\nGraph 建立\n    ├─ call graph（A 呼叫 B）\n    └─ table/field graph（讀/寫）\n    ↓\nRisk Rules（純規則引擎）\n    ├─ 魔法值\n    ├─ 多處寫入同欄位\n    ├─ SQL 沒 where\n    └─ 日期/金額格式轉換\n    ↓\nDocument Generator\n    ├─ FLOW.md\n    ├─ DATA_DEPENDENCY.md\n    ├─ RISKS.md\n    └─ RULES.yaml\n    ↓\n(可選) LLM refine\n    └─ 生硬條列 → 可讀流程說明\n```\n\n---\n\n## 亮點設計（面試殺招）\n\n### 亮點 1：每一段結論都附「出處」\n\n**為什麼重要？** 讓工具的結論「可信」，不是 AI 胡扯。\n\n**範例：**\n```markdown\n風險：ApplyDate 使用字串 yyyyMMdd，但某處轉換缺少補零\n\n出處：\n- api/doc.go:142 - 日期格式定義\n- service/date.go:33 - 轉換邏輯缺少補零\n```\n\n### 亮點 2：欄位依賴用「讀/寫/計算」分類\n\n**為什麼重要？** 這超像你平常做 ERP 的邏輯，外面很吃這套。\n\n**範例：**\n```yaml\nEBUDG_NO:\n  READ:\n    - 查詢條件\n    - Join\n  WRITE:\n    - Insert/Update\n  CALCULATE:\n    - 由哪幾個欄位算出\n```\n\n### 亮點 3：Migration 對齊清單（非常職場）\n\n**為什麼重要？** 直接把你從「工程師」拉到「技術負責人視角」。\n\n**範例表格：**\n| 舊流程步驟 | 新 API 是否涵蓋 | 缺漏規則 | 風險等級 |\n|----------|---------------|--------|--------|\n| 驗證訂單 | ✅ | - | Low |\n| 檢查庫存 | ⚠️ 邏輯不同 | 缺少預留機制 | High |\n| 計算稅金 | ❌ | 需要新增 | Critical |\n\n---\n\n## 專案結構\n\n```\nlegacy-lens/\n├── server/\n│   ├── analyzer/\n│   │   ├── parser.go              # Go/SQL 程式碼解析器\n│   │   ├── risk_detector.go       # 風險檢測引擎\n│   │   ├── document_generator.go  # 文件生成器\n│   │   └── analyzer.go            # 分析協調器\n│   ├── services/\n│   │   └── project_service.go     # 專案服務層\n│   ├── routers.ts                 # API 路由\n│   └── db.ts                      # 資料庫查詢\n├── client/\n│   ├── src/\n│   │   ├── pages/\n│   │   │   ├── ProjectList.vue    # 專案列表\n│   │   │   ├── ImportProject.vue  # 匯入專案\n│   │   │   ├── AnalysisResult.vue # 分析結果\n│   │   │   └── Dashboard.vue      # 儀表板\n│   │   ├── components/\n│   │   │   ├── DependencyGraph.vue\n│   │   │   ├── RiskList.vue\n│   │   │   └── DocumentViewer.vue\n│   │   └── App.vue\n├── drizzle/\n│   └── schema.ts                  # 資料庫 schema\n└── README.md\n```\n\n---\n\n## 快速開始\n\n### 1. 環境設置\n\n```bash\ncd legacy-lens\npnpm install\npnpm db:push  # 初始化資料庫\n```\n\n### 2. 開發模式\n\n```bash\npnpm dev\n```\n\n### 3. 構建生產版本\n\n```bash\npnpm build\npnpm start\n```\n\n---\n\n## API 端點\n\n### 專案管理\n\n- `POST /api/projects/import` - 匯入專案\n- `GET /api/projects` - 列出所有專案\n- `GET /api/projects/:id` - 獲取專案詳情\n- `POST /api/projects/:id/analyze` - 分析專案\n\n### 分析結果\n\n- `GET /api/projects/:id/analysis` - 獲取分析結果\n- `GET /api/projects/:id/documents/flow` - 下載 FLOW.md\n- `GET /api/projects/:id/documents/dependencies` - 下載 DATA_DEPENDENCY.md\n- `GET /api/projects/:id/documents/risks` - 下載 RISKS.md\n- `GET /api/projects/:id/documents/rules` - 下載 RULES.yaml\n\n---\n\n## 開發進度\n\n- [x] 資料庫 schema 設計\n- [x] Go 程式碼解析器\n- [x] SQL 程式碼解析器\n- [x] 風險檢測引擎\n- [x] 文件生成器\n- [ ] API 端點實作\n- [ ] 前端界面開發\n- [ ] 整合測試\n- [ ] V1 功能（差異對齊、規則抽取）\n\n---\n\n## 貢獻指南\n\nLegacy Lens 歡迎貢獻！請遵循以下步驟：\n\n1. Fork 專案\n2. 建立功能分支 (`git checkout -b feature/amazing-feature`)\n3. 提交變更 (`git commit -m 'Add amazing feature'`)\n4. 推送到分支 (`git push origin feature/amazing-feature`)\n5. 開啟 Pull Request\n\n---\n\n## 許可證\n\nMIT License - 詳見 LICENSE 檔案\n\n---\n\n## 聯繫方式\n\n如有問題或建議，歡迎提交 Issue 或 Discussion。\n"
+# Legacy Lens：程式碼考古與規則文件生成器
+
+**把看不懂的舊系統程式碼（Delphi/Go/SQL）變成「可接手的規格書＋風險清單」**
+
+## 🎯 核心價值
+
+Legacy Lens 是一個智能程式碼分析平台，專為 ERP 維護團隊、系統轉型項目和新人接手設計。它通過靜態分析和規則引擎，自動生成：
+
+- **FLOW.md** - 清晰的流程說明（入口 → 步驟 → 例外）
+- **DATA_DEPENDENCY.md** - 欄位依賴圖（讀/寫/計算關係）
+- **RISKS.md** - 風險提示（魔法值、多處寫入、缺少條件等）
+- **RULES.yaml** - 規則定義（驗證規則、格式限制）
+
+每一個結論都附帶**出處**（檔案名稱 + 行號），確保可信度。
+
+## 🚀 解決的痛點
+
+| 痛點 | 解決方案 |
+|------|---------|
+| 沒有文件，規格靠人腦 | 自動生成結構化文件 |
+| 變更一個欄位牽一堆流程 | 欄位依賴圖清晰展示影響範圍 |
+| 新人接手學習曲線爆炸 | 完整的流程說明與風險提示 |
+| 轉型時無法確認「行為一致」 | 差異對齊清單（V1 功能） |
+
+## 📋 功能範圍
+
+### MVP（第一版）
+
+**1. 專案匯入**
+- 支援資料夾上傳（ZIP）
+- 支援 Git clone
+- 選擇語言：Go、SQL、Delphi（目前實作 Go + SQL）
+
+**2. 程式碼結構化索引**
+- Function/Procedure 清單
+- 呼叫關係（Call Graph）
+- 資料表與欄位引用
+- 前端 API endpoint
+- 狀態機線索（State / Flag / Mark）
+
+**3. 一鍵產生「接手文件」**
+- FLOW.md：流程說明
+- DATA_DEPENDENCY.md：欄位依賴
+- RISKS.md：風險提示
+- RULES.yaml：規則定義
+
+### V1 功能（後續）
+
+- 差異對齊分析（舊 Delphi vs 新 Go API）
+- 一致性檢查清單
+- 欄位依賴圖視覺化
+
+## 🏗️ 架構
+
+```
+Legacy Lens
+├── client/                    # React + TypeScript 前端
+│   ├── src/
+│   │   ├── pages/
+│   │   │   ├── Home.tsx              # 專案列表
+│   │   │   ├── ImportProject.tsx     # 匯入流程
+│   │   │   └── AnalysisResult.tsx    # 分析結果
+│   │   └── components/               # UI 元件
+│   └── ...
+├── server/                    # Node.js + Express + tRPC 後端
+│   ├── routers.ts             # tRPC API 端點
+│   ├── db.ts                  # 資料庫查詢幫手
+│   ├── analyzer/              # TypeScript 分析引擎
+│   │   ├── parser.ts          # Go/SQL 程式碼解析
+│   │   ├── riskDetector.ts    # 風險檢測引擎
+│   │   ├── documentGenerator.ts # 文件生成
+│   │   └── analyzer.ts        # 分析協調器
+│   └── _core/                 # 框架層（OAuth、tRPC、LLM 等）
+├── drizzle/                   # 資料庫 schema
+│   └── schema.ts              # 表定義
+└── ...
+```
+
+## 🗄️ 資料庫設計
+
+**核心表格：**
+
+| 表名 | 用途 |
+|------|------|
+| `projects` | 專案管理（名稱、語言、狀態、進度） |
+| `files` | 原始檔案（路徑、內容、語言） |
+| `symbols` | 符號索引（函數、方法、查詢、表） |
+| `dependencies` | 呼叫關係（A 呼叫 B） |
+| `fields` | 欄位定義（表、欄位名、類型） |
+| `fieldDependencies` | 欄位依賴（讀/寫/計算） |
+| `risks` | 風險項目（類型、嚴重程度、位置） |
+| `rules` | 規則定義（驗證規則、格式限制） |
+| `analysisResults` | 分析結果（FLOW、DEPENDENCY、RISKS） |
+
+## 🔧 安裝與運行
+
+### 1. 安裝依賴
+
+```bash
+cd legacy-lens
+pnpm install
+pnpm db:push  # 初始化資料庫
+```
+
+### 2. 開發模式
+
+```bash
+pnpm dev
+```
+
+訪問 `http://localhost:3000`
+
+### 3. 生產構建
+
+```bash
+pnpm build
+pnpm start
+```
+
+## 📡 API 端點
+
+### 專案管理
+
+- `POST /api/trpc/projects.create` - 建立新專案
+- `GET /api/trpc/projects.list` - 獲取專案列表
+- `GET /api/trpc/projects.getById` - 獲取專案詳情
+- `DELETE /api/trpc/projects.delete` - 刪除專案
+
+### 分析功能
+
+- `POST /api/trpc/analysis.trigger` - 觸發分析
+- `GET /api/trpc/analysis.getResult` - 獲取分析結果
+- `GET /api/trpc/analysis.getRisks` - 獲取風險清單
+- `GET /api/trpc/analysis.getSymbols` - 獲取符號清單
+- `GET /api/trpc/analysis.downloadReport` - 下載報告
+
+## 🎨 前端設計
+
+採用**優雅且完美**的設計風格：
+
+- **色彩系統**：藍色主題 + 灰色中性色
+- **排版**：清晰的層級結構，充足的空白
+- **互動**：平滑的過渡動畫，即時的反饋
+- **響應式**：完美支援桌面和平板
+
+## 🧪 測試
+
+```bash
+# 執行單元測試
+pnpm test
+
+# 執行整合測試
+pnpm test:integration
+```
+
+## 📚 核心技術棧
+
+| 層級 | 技術 |
+|------|------|
+| 前端 | React 19 + TypeScript + Tailwind CSS 4 |
+| 後端 | Node.js + Express + tRPC 11 |
+| 資料庫 | MySQL + Drizzle ORM |
+| 分析引擎 | TypeScript（正則表達式 + AST 分析） |
+| 認證 | Manus OAuth |
+
+## 🎓 亮點設計
+
+### 1. 每一段結論都附「出處」
+
+風險提示不是 AI 胡扯，而是有據可查：
+
+```markdown
+風險：ApplyDate 使用字串 yyyyMMdd，但某處轉換缺少補零
+出處：api/doc.go:142、service/date.go:33
+```
+
+### 2. 欄位依賴用「讀/寫/計算」分類
+
+清晰展示欄位的生命週期：
+
+```markdown
+EBUDG_NO：
+  READ：查詢條件、Join
+  WRITE：Insert/Update
+  CALC：由 EBUDG_TYPE + EBUDG_YEAR 計算
+```
+
+### 3. Migration 對齊清單（V1）
+
+直接從「工程師視角」升級到「技術負責人視角」：
+
+| 舊流程步驟 | 新 API 是否涵蓋 | 缺漏規則 | 風險等級 |
+|-----------|----------------|--------|--------|
+| 驗證 ERP 編號 | ✅ | 無 | 低 |
+| 計算預算額度 | ⚠️ | 缺少補零邏輯 | 高 |
+| 寫入審核日期 | ✅ | 無 | 低 |
+
+## 🚦 開發進度
+
+- [x] 資料庫 schema 設計
+- [x] 前端 UI 框架
+- [x] API 路由設計
+- [ ] TypeScript 分析引擎實作
+- [ ] 匯入 → 分析 → 保存流程
+- [ ] 文件生成與下載
+- [ ] 前端 UI 接線
+- [ ] 端到端測試
+
+## 🤝 貢獻指南
+
+1. Fork 專案
+2. 建立特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 開啟 Pull Request
+
+## 📄 授權
+
+MIT License - 詳見 LICENSE 檔案
+
+## 📞 反饋
+
+有任何建議或問題？歡迎提交 Issue 或 Discussion！

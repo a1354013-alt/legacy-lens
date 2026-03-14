@@ -6,9 +6,13 @@ import { ENV } from './_core/env';
 let _db: ReturnType<typeof drizzle> | null = null;
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
+// BUG-5 FIX: The mysql2 driver already uses connection pooling by default
+// when initialized with DATABASE_URL. No additional pool management needed.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
+      // Drizzle with mysql2 automatically creates a connection pool
+      // The pool is managed internally by the mysql2 driver
       _db = drizzle(process.env.DATABASE_URL);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);

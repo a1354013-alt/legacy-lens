@@ -12,14 +12,17 @@ import {
   AlertCircle,
   CheckCircle,
   AlertOctagon,
+  Loader2,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { toast } from "sonner";
 
 export default function AnalysisResult() {
   const [, setLocation] = useLocation();
   const [isRoute, params] = useRoute("/projects/:id/analysis");
   const projectId = params?.id ? parseInt(params.id) : null;
   const [activeTab, setActiveTab] = useState("overview");
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const { data: project } = trpc.projects.getById.useQuery(projectId || 0, {
     enabled: !!projectId,
@@ -36,6 +39,54 @@ export default function AnalysisResult() {
   const { data: symbols } = trpc.analysis.getSymbols.useQuery(projectId || 0, {
     enabled: !!projectId,
   });
+
+  const { data: reportData } = trpc.analysis.downloadReport.useQuery(projectId || 0, {
+    enabled: !!projectId,
+  });
+
+  const handleDownloadReport = async () => {
+    if (!projectId || !reportData) return;
+
+    setIsDownloading(true);
+    try {
+      const result = reportData;
+
+      if (!result) {
+        toast.error("報告不可用，請先完成分析");
+        return;
+      }
+
+      // 建立 ZIP 檔案並下載
+      const files = {
+        "FLOW.md": result.flowMarkdown || "",
+        "DATA_DEPENDENCY.md": result.dataDependencyMarkdown || "",
+        "RISKS.md": result.risksMarkdown || "",
+        "RULES.yaml": result.rulesYaml || "",
+      };
+
+      // 簡單的下載實現：將檔案內容合併為一個文本檔案
+      const reportContent = Object.entries(files)
+        .map(([name, content]) => `\n\n=== ${name} ===\n\n${content}`)
+        .join("\n");
+
+      const blob = new Blob([reportContent], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${project?.name || "project"}-analysis-report.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success("報告下載成功！");
+    } catch (error) {
+      console.error("Download error:", error);
+      toast.error("下載報告失敗");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   if (!projectId || !project) {
     return (
@@ -66,9 +117,22 @@ export default function AnalysisResult() {
               <p className="text-sm text-slate-600">分析結果</p>
             </div>
           </div>
-          <Button className="bg-blue-600 hover:bg-blue-700 text-white">
-            <Download className="w-4 h-4 mr-2" />
-            下載報告
+          <Button
+            onClick={handleDownloadReport}
+            disabled={isDownloading || !reportData}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            {isDownloading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                下載中...
+              </>
+            ) : (
+              <>
+                <Download className="w-4 h-4 mr-2" />
+                下載報告
+              </>
+            )}
           </Button>
         </div>
       </header>
@@ -186,7 +250,9 @@ export default function AnalysisResult() {
                       <h4 className="font-medium text-slate-900">{risk.title}</h4>
                       <p className="text-sm text-slate-600 mt-1">{risk.description}</p>
                       <div className="flex gap-4 mt-2 text-xs text-slate-600">
-                        <span>{risk.sourceFile}:{risk.lineNumber}</span>
+                        <span>
+                          {risk.sourceFile}:{risk.lineNumber}
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -265,93 +331,101 @@ export default function AnalysisResult() {
                       </div>
                     ))
                   ) : (
-                    <p className="text-slate-600">未檢測到符號</p>
-                  )}
-                  {symbols && symbols.length > 20 && (
-                    <p className="text-sm text-slate-600 text-center py-4">
-                      及其他 {symbols.length - 20} 個符號
-                    </p>
+                    <p className="text-slate-600 text-center py-8">尚未檢測到符號</p>
                   )}
                 </div>
+                {symbols && symbols.length > 20 && (
+                  <p className="text-sm text-slate-600 mt-4">
+                    及其他 {symbols.length - 20} 個符號
+                  </p>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
 
           <TabsContent value="documents" className="space-y-6">
-            <div className="grid md:grid-cols-2 gap-6">
-              <Card className="border-slate-200 hover:shadow-lg transition-shadow cursor-pointer">
+            <div className="grid md:grid-cols-2 gap-4">
+              <Card className="border-slate-200 cursor-pointer hover:border-blue-400 transition-colors">
                 <CardHeader>
-                  <div className="flex items-center gap-2 mb-2">
-                    <FileText className="w-5 h-5 text-blue-600" />
-                    <CardTitle>FLOW.md</CardTitle>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <FileText className="w-5 h-5" />
+                        FLOW.md
+                      </CardTitle>
+                      <CardDescription>流程說明</CardDescription>
+                    </div>
                   </div>
-                  <CardDescription>流程說明</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-slate-600 mb-4">
-                    詳細的流程說明，包括每個功能入口的執行步驟和例外處理。
+                  <p className="text-sm text-slate-600">
+                    {analysisResult?.flowMarkdown
+                      ? `${analysisResult.flowMarkdown.split("\n").length} 行`
+                      : "尚未生成"}
                   </p>
-                  <Button variant="outline" size="sm" className="w-full">
-                    <Download className="w-4 h-4 mr-2" />
-                    下載
-                  </Button>
                 </CardContent>
               </Card>
 
-              <Card className="border-slate-200 hover:shadow-lg transition-shadow cursor-pointer">
+              <Card className="border-slate-200 cursor-pointer hover:border-blue-400 transition-colors">
                 <CardHeader>
-                  <div className="flex items-center gap-2 mb-2">
-                    <FileText className="w-5 h-5 text-green-600" />
-                    <CardTitle>DATA_DEPENDENCY.md</CardTitle>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <FileText className="w-5 h-5" />
+                        DATA_DEPENDENCY.md
+                      </CardTitle>
+                      <CardDescription>欄位依賴分析</CardDescription>
+                    </div>
                   </div>
-                  <CardDescription>欄位依賴分析</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-slate-600 mb-4">
-                    清晰展示每個欄位的讀/寫/計算關係。
+                  <p className="text-sm text-slate-600">
+                    {analysisResult?.dataDependencyMarkdown
+                      ? `${analysisResult.dataDependencyMarkdown.split("\n").length} 行`
+                      : "尚未生成"}
                   </p>
-                  <Button variant="outline" size="sm" className="w-full">
-                    <Download className="w-4 h-4 mr-2" />
-                    下載
-                  </Button>
                 </CardContent>
               </Card>
 
-              <Card className="border-slate-200 hover:shadow-lg transition-shadow cursor-pointer">
+              <Card className="border-slate-200 cursor-pointer hover:border-blue-400 transition-colors">
                 <CardHeader>
-                  <div className="flex items-center gap-2 mb-2">
-                    <AlertTriangle className="w-5 h-5 text-red-600" />
-                    <CardTitle>RISKS.md</CardTitle>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5" />
+                        RISKS.md
+                      </CardTitle>
+                      <CardDescription>風險提示</CardDescription>
+                    </div>
                   </div>
-                  <CardDescription>風險提示</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-slate-600 mb-4">
-                    檢測到的風險項目及建議。
+                  <p className="text-sm text-slate-600">
+                    {analysisResult?.risksMarkdown
+                      ? `${analysisResult.risksMarkdown.split("\n").length} 行`
+                      : "尚未生成"}
                   </p>
-                  <Button variant="outline" size="sm" className="w-full">
-                    <Download className="w-4 h-4 mr-2" />
-                    下載
-                  </Button>
                 </CardContent>
               </Card>
 
-              <Card className="border-slate-200 hover:shadow-lg transition-shadow cursor-pointer">
+              <Card className="border-slate-200 cursor-pointer hover:border-blue-400 transition-colors">
                 <CardHeader>
-                  <div className="flex items-center gap-2 mb-2">
-                    <FileText className="w-5 h-5 text-purple-600" />
-                    <CardTitle>RULES.yaml</CardTitle>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <FileText className="w-5 h-5" />
+                        RULES.yaml
+                      </CardTitle>
+                      <CardDescription>規則定義</CardDescription>
+                    </div>
                   </div>
-                  <CardDescription>規則定義</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-slate-600 mb-4">
-                    從程式碼中抽取的規則定義。
+                  <p className="text-sm text-slate-600">
+                    {analysisResult?.rulesYaml
+                      ? `${analysisResult.rulesYaml.split("\n").length} 行`
+                      : "尚未生成"}
                   </p>
-                  <Button variant="outline" size="sm" className="w-full">
-                    <Download className="w-4 h-4 mr-2" />
-                    下載
-                  </Button>
                 </CardContent>
               </Card>
             </div>

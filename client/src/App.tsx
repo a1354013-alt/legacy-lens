@@ -7,6 +7,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import ImportProject from "./pages/ImportProject";
 import AnalysisResult from "./pages/AnalysisResult";
+import AlignmentCheck from "./pages/AlignmentCheck";
 
 function Router() {
   return (
@@ -14,6 +15,7 @@ function Router() {
       <Route path={"/"} component={Home} />
       <Route path={"/import"} component={ImportProject} />
       <Route path={"/projects/:id/analysis"} component={AnalysisResult} />
+      <Route path={"/alignment-check"} component={AlignmentCheck} />
       <Route path={"/404"} component={NotFound} />
       <Route component={NotFound} />
     </Switch>
