@@ -25,31 +25,28 @@ export function getSessionCookieOptions(
   req: Request
 ): Pick<CookieOptions, "domain" | "httpOnly" | "path" | "sameSite" | "secure"> {
   const isSecure = isSecureRequest(req);
-  const isLocalhost = req.hostname && LOCAL_HOSTS.has(req.hostname);
   
-  // BUG-2 FIX: Strict environment detection
-  // Development: localhost + HTTP only
-  // Production: HTTPS (regardless of hostname)
-  const isDevelopment = isLocalhost && !isSecure;
+  // P0 FIX: Core rule - NEVER allow sameSite:none + secure:false
+  // Only use sameSite:none when isSecure=true (HTTPS)
+  // Otherwise always use sameSite:lax
+  // This prevents browsers from rejecting the cookie
   
-  // CRITICAL: Never use sameSite: "none" without secure: true
-  // This will cause browsers to reject the cookie
-  if (!isDevelopment && !isSecure) {
+  if (!isSecure) {
     console.warn(
-      "[Cookie] WARNING: Non-HTTPS request detected in non-localhost environment. " +
-      "Cookie may be rejected by browser. Ensure x-forwarded-proto header is set correctly."
+      "[Cookie] Non-HTTPS request detected. Using sameSite=lax for compatibility. " +
+      "For production, ensure x-forwarded-proto header is set correctly or use HTTPS."
     );
   }
   
   return {
     httpOnly: true,
     path: "/",
-    // Development (localhost + HTTP): use lax for compatibility
-    // Production (HTTPS): use none for cross-site requests
-    sameSite: isDevelopment ? "lax" : "none",
+    // P0 FIX: Core rule - sameSite depends ONLY on isSecure
+    // isSecure=true (HTTPS): sameSite=none (allows cross-site)
+    // isSecure=false (HTTP): sameSite=lax (never none)
+    sameSite: isSecure ? "none" : "lax",
     // CRITICAL: Only set secure if actually HTTPS
-    // Development: secure=false (HTTP)
-    // Production: secure=true (HTTPS)
+    // Browsers will reject sameSite:none + secure:false
     secure: isSecure,
   };
 }

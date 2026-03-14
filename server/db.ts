@@ -5,17 +5,42 @@ import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
+/**
+ * P1 FIX: Validate DATABASE_URL at startup
+ * - Fails fast in production if DATABASE_URL is missing
+ * - Provides clear error messages for debugging
+ */
+export async function validateDbConfig() {
+  const dbUrl = process.env.DATABASE_URL;
+  
+  if (!dbUrl) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "[Database] DATABASE_URL is required in production environment. " +
+        "Set DATABASE_URL environment variable before starting the server."
+      );
+    }
+    console.warn("[Database] DATABASE_URL not set, database features will be unavailable");
+    return false;
+  }
+  
+  return true;
+}
+
 // Lazily create the drizzle instance so local tooling can run without a DB.
-// BUG-5 FIX: The mysql2 driver already uses connection pooling by default
-// when initialized with DATABASE_URL. No additional pool management needed.
+// P1 FIX: Validate DATABASE_URL and provide clear error messages
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
       // Drizzle with mysql2 automatically creates a connection pool
       // The pool is managed internally by the mysql2 driver
       _db = drizzle(process.env.DATABASE_URL);
+      console.log("[Database] Connection initialized successfully");
     } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
+      console.error("[Database] Failed to connect:", error);
+      if (process.env.NODE_ENV === "production") {
+        throw error;  // Fail fast in production
+      }
       _db = null;
     }
   }

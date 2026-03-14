@@ -139,13 +139,17 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       if (!isSupportedFile(filePath)) continue;
 
       try {
-        const content = await file.async("string");
-        const fileSize = content.length;
+        // P1 FIX: Use Buffer to get accurate byte size, not string.length
+        // string.length counts UTF-16 code units, not bytes
+        // This prevents size limit bypass with multi-byte characters
+        const buffer = await file.async("nodebuffer");
+        const fileSize = buffer.length;  // Accurate byte size
+        const content = buffer.toString("utf8");  // Convert to string for processing
 
         // BUG-5 FIX: 檢查單個檔案大小
         if (fileSize > MAX_SINGLE_FILE_SIZE) {
           console.warn(
-            `[ZIP] File ${filePath} exceeds size limit (${fileSize} > ${MAX_SINGLE_FILE_SIZE}), skipping`
+            `[ZIP] File ${filePath} exceeds size limit (${fileSize} bytes > ${MAX_SINGLE_FILE_SIZE}), skipping`
           );
           continue;
         }
@@ -154,12 +158,12 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
         // Note: JSZip doesn't expose compressed size directly, so we skip this check
         // The file size check above is sufficient for most Zip bomb scenarios
 
-        totalExtractedSize += fileSize;
+        totalExtractedSize += fileSize;  // Now using accurate byte size
 
-        // BUG-5 FIX: 檢查總解壓大小
+        // BUG-5 FIX: 檢查總解壓大小（使用準確的 byte 計算）
         if (totalExtractedSize > MAX_TOTAL_EXTRACTED_SIZE) {
           throw new Error(
-            `解壓後的總大小超過限制 (${totalExtractedSize} > ${MAX_TOTAL_EXTRACTED_SIZE})`
+            `解壓後的總大小超過限制 (${totalExtractedSize} bytes > ${MAX_TOTAL_EXTRACTED_SIZE})`
           );
         }
 

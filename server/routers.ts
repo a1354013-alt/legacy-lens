@@ -281,20 +281,21 @@ export const appRouter = router({
           // 提取 ZIP 中的檔案
           const extractedFiles = await extractFilesFromZip(input.zipContent);
 
-          // BUG-6 FIX: Wrap file operations in transaction to ensure atomicity
+          // P0-A FIX: Wrap file operations in transaction and pass tx to both functions
           // If saveExtractedFiles fails, old files are preserved (not deleted)
           // This prevents data loss if upload fails midway
           const fileIds = await db.transaction(async (tx) => {
             // First, save new files to the transaction
             // If this succeeds, then delete old files
-            const newFileIds = await saveExtractedFiles(input.projectId, extractedFiles);
+            const newFileIds = await saveExtractedFiles(input.projectId, extractedFiles, tx);
             
             // Only delete old files after new files are successfully saved
             // This way, if saveExtractedFiles fails, old files remain intact
-            await deleteProjectFiles(input.projectId);
+            await deleteProjectFiles(input.projectId, tx);
             
             return newFileIds;
           });
+
 
           // 更新進度
           await db
@@ -401,7 +402,7 @@ export const appRouter = router({
           }
 
           // 轉換檔案格式以供分析器使用
-          const filesToAnalyze = projectFiles.map((f) => ({
+          const filesToAnalyze = projectFiles.map((f: any) => ({
             path: f.filePath,
             content: f.content || "",
             language: f.fileType?.replace(".", "") || "unknown",
@@ -447,7 +448,7 @@ export const appRouter = router({
                 .replace(/^\.\//g, "");
               
               // Find matching file record with normalized path comparison
-              const fileRecord = projectFiles.find((f) => {
+              const fileRecord = projectFiles.find((f: any) => {
                 const normalizedDbPath = f.filePath
                   .replace(/\\/g, "/")
                   .replace(/^\.\//g, "");
