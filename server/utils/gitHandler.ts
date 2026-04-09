@@ -1,172 +1,32 @@
-import { simpleGit, SimpleGit } from "simple-git";
-import { promises as fs } from "fs";
-import path from "path";
-import { extractFilesFromZip, SUPPORTED_EXTENSIONS } from "./zipHandler";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { simpleGit } from "simple-git";
+import { AppError } from "../appError";
+import { SUPPORTED_EXTENSIONS } from "./zipHandler";
 
-/**
- * 驗證 Git URL 的有效性
- */
-export function isValidGitUrl(url: string): boolean {
-  try {
-    // 支援 HTTPS 和 SSH 格式
-    const httpsPattern = /^https:\/\/github\.com\/[\w-]+\/[\w-]+\.git$/;
-    const gitlabPattern = /^https:\/\/gitlab\.com\/[\w-]+\/[\w-]+\.git$/;
-    const sshPattern = /^git@(github\.com|gitlab\.com):[\w-]+\/[\w-]+\.git$/;
+const IGNORED_DIRECTORIES = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  "node_modules",
+  "dist",
+  "build",
+  "target",
+  ".next",
+  ".idea",
+  ".vscode",
+]);
 
-    return httpsPattern.test(url) || gitlabPattern.test(url) || sshPattern.test(url);
-  } catch {
-    return false;
-  }
+function normalizePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
-/**
- * 從 Git URL 提取倉庫名稱
- */
-export function extractRepoName(gitUrl: string): string {
-  try {
-    const match = gitUrl.match(/\/([^/]+)\.git$/);
-    return match ? match[1] : "unknown-repo";
-  } catch {
-    return "unknown-repo";
-  }
-}
-
-/**
- * 從 Git 倉庫克隆並提取程式碼檔案
- */
-export async function cloneAndExtractFiles(
-  gitUrl: string,
-  tempDir: string
-): Promise<Array<{
-  path: string;
-  fileName: string;
-  content: string;
-  language: string;
-  size: number;
-}>> {
-  let git: SimpleGit | null = null;
-  const repoName = extractRepoName(gitUrl);
-  const repoPath = path.join(tempDir, repoName);
-
-  try {
-    // 建立臨時目錄
-    await fs.mkdir(tempDir, { recursive: true });
-
-    // 克隆倉庫
-    git = simpleGit();
-    console.log(`Cloning repository from ${gitUrl}...`);
-    await git.clone(gitUrl, repoPath, ["--depth", "1"]); // 只克隆最新提交以加快速度
-
-    // 遞歸掃描目錄中的程式碼檔案
-    const extractedFiles = await scanDirectoryForCodeFiles(repoPath);
-
-    if (extractedFiles.length === 0) {
-      throw new Error("Git 倉庫中沒有找到支援的程式碼檔案");
-    }
-
-    return extractedFiles;
-  } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Git 克隆失敗: ${error.message}`);
-    }
-    throw new Error("Git 克隆失敗");
-  }
-}
-
-/**
- * 遞歸掃描目錄中的程式碼檔案
- */
-async function scanDirectoryForCodeFiles(
-  dirPath: string,
-  baseDir: string = dirPath
-): Promise<
-  Array<{
-    path: string;
-    fileName: string;
-    content: string;
-    language: string;
-    size: number;
-  }>
-> {
-  const files: Array<{
-    path: string;
-    fileName: string;
-    content: string;
-    language: string;
-    size: number;
-  }> = [];
-
-  try {
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dirPath, entry.name);
-      const relativePath = path.relative(baseDir, fullPath);
-
-      // 跳過應忽略的目錄
-      if (
-        entry.isDirectory() &&
-        [
-          "node_modules",
-          ".git",
-          "dist",
-          "build",
-          "target",
-          ".vscode",
-          ".idea",
-          ".next",
-          "out",
-        ].includes(entry.name)
-      ) {
-        continue;
-      }
-
-      if (entry.isDirectory()) {
-        // 遞歸掃描子目錄
-        const subFiles = await scanDirectoryForCodeFiles(fullPath, baseDir);
-        files.push(...subFiles);
-      } else if (entry.isFile()) {
-        // 檢查是否是支援的程式碼檔案
-        const ext = path.extname(entry.name).toLowerCase();
-        if (SUPPORTED_EXTENSIONS.includes(ext)) {
-          try {
-            const content = await fs.readFile(fullPath, "utf-8");
-
-            // 檢查檔案大小（限制為 1MB）
-            if (content.length > 1024 * 1024) {
-              console.warn(`File ${relativePath} exceeds 1MB limit, skipping`);
-              continue;
-            }
-
-            files.push({
-              path: relativePath,
-              fileName: entry.name,
-              content,
-              language: detectLanguage(ext),
-              size: content.length,
-            });
-          } catch (error) {
-            console.warn(`Failed to read file ${relativePath}:`, error);
-            continue;
-          }
-        }
-      }
-    }
-  } catch (error) {
-    console.error(`Error scanning directory ${dirPath}:`, error);
-  }
-
-  return files;
-}
-
-/**
- * 從檔案副檔名推斷程式語言
- */
-function detectLanguage(ext: string): string {
+function detectLanguage(extension: string): string {
   const languageMap: Record<string, string> = {
     ".go": "go",
     ".sql": "sql",
     ".pas": "delphi",
+    ".dpr": "delphi",
     ".delphi": "delphi",
     ".ts": "typescript",
     ".js": "javascript",
@@ -180,49 +40,109 @@ function detectLanguage(ext: string): string {
     ".h": "c",
     ".hpp": "cpp",
     ".scala": "scala",
-    ".kotlin": "kotlin",
+    ".kt": "kotlin",
     ".rs": "rust",
     ".swift": "swift",
   };
-  return languageMap[ext.toLowerCase()] || "unknown";
+  return languageMap[extension] ?? "unknown";
 }
 
-/**
- * 清理臨時目錄
- */
-export async function cleanupTempDir(tempDir: string): Promise<void> {
+export function isValidGitUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (/^git@[^:]+:[^/]+\/[^/]+(?:\.git)?$/i.test(trimmed)) {
+    return true;
+  }
+
   try {
-    const entries = await fs.readdir(tempDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(tempDir, entry.name);
-      if (entry.isDirectory()) {
-        await removeDirectory(fullPath);
-      } else {
-        await fs.unlink(fullPath);
-      }
+    const parsed = new URL(trimmed);
+    if (!["https:", "http:"].includes(parsed.protocol)) {
+      return false;
     }
-    await fs.rmdir(tempDir);
-  } catch (error) {
-    console.warn(`Failed to cleanup temp directory ${tempDir}:`, error);
+    return parsed.pathname.split("/").filter(Boolean).length >= 2;
+  } catch {
+    return false;
   }
 }
 
-/**
- * 遞歸刪除目錄
- */
-async function removeDirectory(dirPath: string): Promise<void> {
+export function extractRepoName(gitUrl: string): string {
+  const sanitized = gitUrl.trim().replace(/\/+$/, "");
+  const rawName = sanitized.split(/[/:]/).pop() ?? "repository";
+  return rawName.replace(/\.git$/i, "") || "repository";
+}
+
+export async function cloneAndExtractFiles(
+  gitUrl: string,
+  tempDir: string
+): Promise<Array<{ path: string; fileName: string; content: string; language: string; size: number }>> {
+  const repoName = extractRepoName(gitUrl);
+  const repoPath = path.join(tempDir, repoName);
+
   try {
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dirPath, entry.name);
-      if (entry.isDirectory()) {
-        await removeDirectory(fullPath);
-      } else {
-        await fs.unlink(fullPath);
-      }
+    await fs.mkdir(tempDir, { recursive: true });
+    await simpleGit().clone(gitUrl, repoPath, ["--depth", "1"]);
+    const extractedFiles = await scanDirectoryForCodeFiles(repoPath);
+    if (extractedFiles.length === 0) {
+      throw new AppError("EMPTY_SOURCE", "The repository does not contain supported source files.");
     }
-    await fs.rmdir(dirPath);
+    return extractedFiles;
   } catch (error) {
-    console.warn(`Failed to remove directory ${dirPath}:`, error);
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError("GIT_CLONE_FAILED", "Failed to clone or scan the repository.", error instanceof Error ? error.message : undefined);
+  }
+}
+
+async function scanDirectoryForCodeFiles(
+  directoryPath: string,
+  baseDir: string = directoryPath
+): Promise<Array<{ path: string; fileName: string; content: string; language: string; size: number }>> {
+  const extractedFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const fullPath = path.join(directoryPath, entry.name);
+    const relativePath = normalizePath(path.relative(baseDir, fullPath));
+
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
+      extractedFiles.push(...(await scanDirectoryForCodeFiles(fullPath, baseDir)));
+      continue;
+    }
+
+    const extension = path.extname(entry.name).toLowerCase();
+    if (!SUPPORTED_EXTENSIONS.includes(extension as (typeof SUPPORTED_EXTENSIONS)[number])) {
+      continue;
+    }
+
+    const content = await fs.readFile(fullPath, "utf8");
+    const size = Buffer.byteLength(content, "utf8");
+    if (size > 5 * 1024 * 1024) {
+      continue;
+    }
+
+    extractedFiles.push({
+      path: relativePath,
+      fileName: entry.name,
+      content,
+      language: detectLanguage(extension),
+      size,
+    });
+  }
+
+  return extractedFiles;
+}
+
+export async function cleanupTempDir(tempDir: string): Promise<void> {
+  try {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  } catch {
+    // Intentionally swallow cleanup errors.
   }
 }

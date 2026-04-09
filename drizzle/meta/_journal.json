@@ -15,6 +15,13 @@
       "when": 1770103185125,
       "tag": "0001_opposite_kingpin",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1775679318885,
+      "tag": "0002_fast_spencer_smythe",
+      "breakpoints": true
     }
   ]
 }

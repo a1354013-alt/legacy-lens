@@ -1,10 +1,22 @@
 import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
+import { AppError } from "../appError";
 import type { TrpcContext } from "./context";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
+  errorFormatter({ shape, error }) {
+    const appError = error.cause instanceof AppError ? error.cause : undefined;
+    return {
+      ...shape,
+      data: {
+        ...shape.data,
+        appCode: appError?.code,
+        details: appError?.details,
+      },
+    };
+  },
 });
 
 export const router = t.router;

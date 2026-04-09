@@ -1,246 +1,168 @@
-/**
- * Legacy Lens - 程式碼解析引擎
- * 支援 Go 和 SQL 程式碼的静态分析
- */
+import type { AnalysisWarning } from "../../shared/contracts";
+import type { AnalyzedSymbol, FieldReference, SymbolDependency } from "./types";
 
-import { parseTypeScriptAST, parseBabelAST, extractFunctionsFromAST, extractCallsFromAST, calculateComplexity } from "./astParser";
-
-export interface Symbol {
-  id?: number;
-  name: string;
-  type: "function" | "method" | "query" | "procedure" | "table";
-  file: string;
-  startLine: number;
-  endLine: number;
-  signature?: string;
-  description?: string;
+export interface FileParser {
+  parseSymbols(): AnalyzedSymbol[];
+  parseDependencies(symbols: AnalyzedSymbol[]): SymbolDependency[];
+  parseFieldReferences(symbols: AnalyzedSymbol[]): FieldReference[];
+  collectWarnings(): AnalysisWarning[];
 }
 
-export interface Dependency {
-  from: string; // 呼叫者
-  to: string; // 被呼叫者
-  type: "calls" | "reads" | "writes"; // 呼叫、讀取、寫入
-  line: number;
+function normalizeName(value: string): string {
+  return value.trim().replace(/^["'`]+|["'`]+$/g, "");
 }
 
-export interface FieldReference {
-  field: string;
-  table: string;
-  type: "read" | "write" | "calculate";
-  file: string;
-  line: number;
+function findBlockEnd(lines: string[], startIndex: number, openPattern: RegExp, closePattern: RegExp): number {
+  let depth = 0;
+  for (let index = startIndex; index < lines.length; index += 1) {
+    if (openPattern.test(lines[index] ?? "")) {
+      depth += 1;
+    }
+    if (closePattern.test(lines[index] ?? "")) {
+      depth -= 1;
+      if (depth <= 0) {
+        return index + 1;
+      }
+    }
+  }
+  return startIndex + 1;
 }
 
-export interface MagicValue {
-  value: string;
-  type: string; // "string" | "number" | "date"
-  file: string;
-  line: number;
-  context: string; // 上下文片段
+function findOwnerSymbol(symbols: AnalyzedSymbol[], line: number): AnalyzedSymbol | undefined {
+  return symbols.find((symbol) => symbol.startLine <= line && symbol.endLine >= line);
 }
 
-/**
- * Go 程式碼解析器
- */
-export class GoParser {
-  private content: string;
-  private file: string;
+function parseSqlFragments(content: string): Array<{ line: number; sql: string }> {
+  const fragments: Array<{ line: number; sql: string }> = [];
+  const lines = content.split(/\r?\n/);
+  const quotePattern = /["'`](SELECT|INSERT|UPDATE|DELETE)[\s\S]*?["'`]/gi;
 
-  constructor(content: string, file: string) {
-    this.content = content;
-    this.file = file;
-  }
+  lines.forEach((line, index) => {
+    const matches = line.match(quotePattern);
+    if (!matches) return;
 
-  /**
-   * 解析 Go 函數定義
-   * 匹配模式：func (receiver) FunctionName(params) returnType { ... }
-   */
-  parseFunctions(): Symbol[] {
-    const symbols: Symbol[] = [];
-    const lines = this.content.split("\n");
+    for (const raw of matches) {
+      fragments.push({
+        line: index + 1,
+        sql: raw.slice(1, -1),
+      });
+    }
+  });
 
-    // 匹配函數定義
-    const funcRegex = /^\s*func\s+(?:\([^)]*\)\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/;
+  return fragments;
+}
 
-    lines.forEach((line, index) => {
-      const match = line.match(funcRegex);
-      if (match) {
-        const name = match[1];
-        symbols.push({
-          name,
-          type: "function",
-          file: this.file,
-          startLine: index + 1,
-          endLine: index + 1,
-          signature: line.trim(),
-        });
-      }
-    });
+function parseSqlReference(sql: string, line: number, file: string, symbolName?: string): FieldReference[] {
+  const normalizedSql = sql.replace(/\s+/g, " ").trim();
+  const references: FieldReference[] = [];
 
-    return symbols;
-  }
-
-  /**
-   * 解析 Go 結構體和方法
-   */
-  parseStructs(): Symbol[] {
-    const symbols: Symbol[] = [];
-    const lines = this.content.split("\n");
-
-    // 匹配結構體定義
-    const structRegex = /^\s*type\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+struct/;
-
-    lines.forEach((line, index) => {
-      const match = line.match(structRegex);
-      if (match) {
-        const name = match[1];
-        symbols.push({
-          name,
-          type: "table", // 在 Go 中，struct 類似於表
-          file: this.file,
-          startLine: index + 1,
-          endLine: index + 1,
-          signature: line.trim(),
-        });
-      }
-    });
-
-    return symbols;
-  }
-
-  /**
-   * 解析函數呼叫關係
-   */
-  parseCalls(): Dependency[] {
-    const dependencies: Dependency[] = [];
-    const lines = this.content.split("\n");
-
-    // 匹配函數呼叫：functionName(...) 或 receiver.Method(...)
-    const callRegex = /([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
-
-    lines.forEach((line, index) => {
-      let match;
-      while ((match = callRegex.exec(line)) !== null) {
-        const calledFunc = match[1];
-        // 排除關鍵字
-        if (!["if", "for", "switch", "return", "func", "type"].includes(calledFunc)) {
-          dependencies.push({
-            from: "unknown", // 在完整分析中會被填充
-            to: calledFunc,
-            type: "calls",
-            line: index + 1,
-          });
-        }
-      }
-    });
-
-    return dependencies;
-  }
-
-  /**
-   * 解析資料庫操作（db.Query, db.Exec 等）
-   */
-  parseDBOperations(): FieldReference[] {
-    const references: FieldReference[] = [];
-    const lines = this.content.split("\n");
-
-    // 匹配 db.Query、db.Exec、db.Insert 等
-    const dbRegex = /db\.(Query|Exec|Insert|Update|Delete)\s*\(\s*["']([^"']+)["']/g;
-
-    lines.forEach((line, index) => {
-      let match;
-      while ((match = dbRegex.exec(line)) !== null) {
-        const operation = match[1].toLowerCase();
-        const sql = match[2];
-
-        // 簡單的 SQL 分析
-        const type = operation === "query" ? "read" : "write";
-        references.push({
-          field: "sql_statement",
-          table: "unknown",
-          type,
-          file: this.file,
-          line: index + 1,
-        });
-      }
-    });
-
+  const insertMatch = normalizedSql.match(/INSERT\s+INTO\s+([a-zA-Z_][\w$]*)\s*\(([^)]+)\)/i);
+  if (insertMatch) {
+    const table = normalizeName(insertMatch[1]);
+    const fields = insertMatch[2].split(",").map((value) => normalizeName(value));
+    for (const field of fields) {
+      if (!field) continue;
+      references.push({ table, field, type: "write", file, line, symbolName, context: normalizedSql });
+    }
     return references;
   }
 
-  /**
-   * 檢測魔法值（硬編碼的常數）
-   */
-  detectMagicValues(): MagicValue[] {
-    const magicValues: MagicValue[] = [];
-    const lines = this.content.split("\n");
-
-    // 匹配字串字面值（長度 > 3）
-    const stringRegex = /["']([^"']{4,})["']/g;
-    // 匹配數字（不是在註解中）
-    const numberRegex = /\b(\d{4,})\b/g;
-
-    lines.forEach((line, index) => {
-      // 跳過註解
-      if (line.trim().startsWith("//")) return;
-
-      let match;
-
-      // 檢查字串
-      while ((match = stringRegex.exec(line)) !== null) {
-        magicValues.push({
-          value: match[1],
-          type: "string",
-          file: this.file,
-          line: index + 1,
-          context: line.trim(),
-        });
-      }
-
-      // 檢查數字
-      while ((match = numberRegex.exec(line)) !== null) {
-        magicValues.push({
-          value: match[1],
-          type: "number",
-          file: this.file,
-          line: index + 1,
-          context: line.trim(),
-        });
-      }
-    });
-
-    return magicValues;
+  const updateMatch = normalizedSql.match(/UPDATE\s+([a-zA-Z_][\w$]*)\s+SET\s+(.+?)(?:\s+WHERE|$)/i);
+  if (updateMatch) {
+    const table = normalizeName(updateMatch[1]);
+    const assignments = updateMatch[2].split(",");
+    for (const assignment of assignments) {
+      const field = normalizeName(assignment.split("=")[0] ?? "");
+      if (!field) continue;
+      references.push({ table, field, type: "write", file, line, symbolName, context: normalizedSql });
+    }
+    return references;
   }
+
+  const deleteMatch = normalizedSql.match(/DELETE\s+FROM\s+([a-zA-Z_][\w$]*)/i);
+  if (deleteMatch) {
+    references.push({
+      table: normalizeName(deleteMatch[1]),
+      field: "*",
+      type: "write",
+      file,
+      line,
+      symbolName,
+      context: normalizedSql,
+    });
+    return references;
+  }
+
+  const selectMatch = normalizedSql.match(/SELECT\s+(.+?)\s+FROM\s+([a-zA-Z_][\w$]*)/i);
+  if (selectMatch) {
+    const fields = selectMatch[1].split(",");
+    const table = normalizeName(selectMatch[2]);
+    for (const rawField of fields) {
+      const field = normalizeName(rawField.split(/\s+AS\s+/i)[0] ?? rawField);
+      if (!field || field === "*") continue;
+      references.push({ table, field, type: "read", file, line, symbolName, context: normalizedSql });
+    }
+  }
+
+  return references;
 }
 
-/**
- * SQL 程式碼解析器
- */
-export class SQLParser {
-  private content: string;
-  private file: string;
+function buildCallDependencies(lines: string[], symbols: AnalyzedSymbol[], excludedNames: string[]): SymbolDependency[] {
+  const dependencies: SymbolDependency[] = [];
+  const knownNames = new Set(symbols.map((symbol) => symbol.name));
+  const builtins = new Set([...excludedNames, "if", "for", "switch", "return", "func", "select", "update", "delete"]);
+  const callPattern = /\b([a-zA-Z_][\w$]*)\s*\(/g;
 
-  constructor(content: string, file: string) {
-    this.content = content;
-    this.file = file;
-  }
+  lines.forEach((line, index) => {
+    const owner = findOwnerSymbol(symbols, index + 1);
+    if (!owner) return;
 
-  /**
-   * 解析 SQL 表定義
-   */
-  parseTables(): Symbol[] {
-    const symbols: Symbol[] = [];
-    const lines = this.content.split("\n");
+    let match: RegExpExecArray | null;
+    while ((match = callPattern.exec(line)) !== null) {
+      const target = match[1];
+      if (!target || builtins.has(target.toLowerCase()) || !knownNames.has(target) || target === owner.name) {
+        continue;
+      }
 
-    // 匹配 CREATE TABLE
-    const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z_][a-zA-Z0-9_]*)/i;
+      dependencies.push({
+        from: owner.name,
+        to: target,
+        type: "calls",
+        line: index + 1,
+      });
+    }
+  });
+
+  return dependencies;
+}
+
+export class GoParser implements FileParser {
+  constructor(private readonly content: string, private readonly file: string) {}
+
+  parseSymbols(): AnalyzedSymbol[] {
+    const lines = this.content.split(/\r?\n/);
+    const symbols: AnalyzedSymbol[] = [];
+    const functionPattern = /^\s*func\s+(?:\(([^)]+)\)\s+)?([a-zA-Z_][\w$]*)\s*\(/;
+    const structPattern = /^\s*type\s+([a-zA-Z_][\w$]*)\s+struct\b/;
 
     lines.forEach((line, index) => {
-      const match = line.match(tableRegex);
-      if (match) {
-        const name = match[1];
+      const functionMatch = line.match(functionPattern);
+      if (functionMatch) {
         symbols.push({
-          name,
+          name: functionMatch[2],
+          type: functionMatch[1] ? "method" : "function",
+          file: this.file,
+          startLine: index + 1,
+          endLine: findBlockEnd(lines, index, /{/g, /}/g),
+          signature: line.trim(),
+        });
+        return;
+      }
+
+      const structMatch = line.match(structPattern);
+      if (structMatch) {
+        symbols.push({
+          name: structMatch[1],
           type: "table",
           file: this.file,
           startLine: index + 1,
@@ -253,27 +175,74 @@ export class SQLParser {
     return symbols;
   }
 
-  /**
-   * 解析 SQL 查詢和存儲過程
-   */
-  parseQueries(): Symbol[] {
-    const symbols: Symbol[] = [];
-    const lines = this.content.split("\n");
+  parseDependencies(symbols: AnalyzedSymbol[]): SymbolDependency[] {
+    return buildCallDependencies(this.content.split(/\r?\n/), symbols, []);
+  }
 
-    // 匹配 SELECT、INSERT、UPDATE、DELETE
-    const queryRegex = /^(SELECT|INSERT|UPDATE|DELETE|CREATE\s+PROCEDURE|CREATE\s+FUNCTION)\s+/i;
+  parseFieldReferences(symbols: AnalyzedSymbol[]): FieldReference[] {
+    const fragments = parseSqlFragments(this.content);
+    return fragments.flatMap(({ line, sql }) => {
+      const owner = findOwnerSymbol(symbols, line);
+      return parseSqlReference(sql, line, this.file, owner?.name);
+    });
+  }
+
+  collectWarnings(): AnalysisWarning[] {
+    return [];
+  }
+}
+
+export class SQLParser implements FileParser {
+  constructor(private readonly content: string, private readonly file: string) {}
+
+  parseSymbols(): AnalyzedSymbol[] {
+    const lines = this.content.split(/\r?\n/);
+    const symbols: AnalyzedSymbol[] = [];
 
     lines.forEach((line, index) => {
-      const match = line.match(queryRegex);
-      if (match) {
-        const type = match[1].toUpperCase();
-        let symbolType: "query" | "procedure" | "function" = "query";
-        if (type.includes("PROCEDURE")) symbolType = "procedure";
-        if (type.includes("FUNCTION")) symbolType = "function";
-
+      const tableMatch = line.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z_][\w$]*)/i);
+      if (tableMatch) {
         symbols.push({
-          name: `${type}_${index}`,
-          type: symbolType,
+          name: tableMatch[1],
+          type: "table",
+          file: this.file,
+          startLine: index + 1,
+          endLine: index + 1,
+          signature: line.trim(),
+        });
+        return;
+      }
+
+      const procedureMatch = line.match(/CREATE\s+PROCEDURE\s+([a-zA-Z_][\w$]*)/i);
+      if (procedureMatch) {
+        symbols.push({
+          name: procedureMatch[1],
+          type: "procedure",
+          file: this.file,
+          startLine: index + 1,
+          endLine: index + 1,
+          signature: line.trim(),
+        });
+        return;
+      }
+
+      const functionMatch = line.match(/CREATE\s+FUNCTION\s+([a-zA-Z_][\w$]*)/i);
+      if (functionMatch) {
+        symbols.push({
+          name: functionMatch[1],
+          type: "function",
+          file: this.file,
+          startLine: index + 1,
+          endLine: index + 1,
+          signature: line.trim(),
+        });
+        return;
+      }
+
+      if (/^(SELECT|INSERT|UPDATE|DELETE)\b/i.test(line.trim())) {
+        symbols.push({
+          name: `query_${index + 1}`,
+          type: "query",
           file: this.file,
           startLine: index + 1,
           endLine: index + 1,
@@ -285,103 +254,135 @@ export class SQLParser {
     return symbols;
   }
 
-  /**
-   * 解析欄位引用（SELECT、WHERE、INSERT、UPDATE）
-   */
-  parseFieldReferences(): FieldReference[] {
-    const references: FieldReference[] = [];
-    const lines = this.content.split("\n");
+  parseDependencies(symbols: AnalyzedSymbol[]): SymbolDependency[] {
+    const dependencies: SymbolDependency[] = [];
+    const lines = this.content.split(/\r?\n/);
+    const knownNames = new Set(symbols.map((symbol) => symbol.name));
 
     lines.forEach((line, index) => {
-      // 匹配 SELECT 子句中的欄位
-      const selectMatch = line.match(/SELECT\s+([^FROM]+)/i);
-      if (selectMatch) {
-        const fields = selectMatch[1].split(",");
-        fields.forEach((field) => {
-          const fieldName = field.trim().split(/\s+/).pop() || "";
-          if (fieldName && fieldName !== "*") {
-            references.push({
-              field: fieldName,
-              table: "unknown",
-              type: "read",
-              file: this.file,
-              line: index + 1,
-            });
-          }
-        });
-      }
+      const owner = findOwnerSymbol(symbols, index + 1);
+      if (!owner) return;
 
-      // 匹配 INSERT 子句中的欄位
-      const insertMatch = line.match(/INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]+)\)/i);
-      if (insertMatch) {
-        const table = insertMatch[1];
-        const fields = insertMatch[2].split(",");
-        fields.forEach((field) => {
-          const fieldName = field.trim();
-          references.push({
-            field: fieldName,
-            table,
-            type: "write",
-            file: this.file,
-            line: index + 1,
-          });
-        });
-      }
-
-      // 匹配 UPDATE 子句中的欄位
-      const updateMatch = line.match(/UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+SET\s+([^WHERE]+)/i);
-      if (updateMatch) {
-        const table = updateMatch[1];
-        const setClause = updateMatch[2];
-        const fields = setClause.split(",");
-        fields.forEach((field) => {
-          const fieldName = field.split("=")[0].trim();
-          references.push({
-            field: fieldName,
-            table,
-            type: "write",
-            file: this.file,
-            line: index + 1,
-          });
+      const match = line.match(/\bEXEC(?:UTE)?\s+([a-zA-Z_][\w$]*)/i);
+      const target = match?.[1];
+      if (target && knownNames.has(target)) {
+        dependencies.push({
+          from: owner.name,
+          to: target,
+          type: "references",
+          line: index + 1,
         });
       }
     });
 
-    return references;
+    return dependencies;
   }
 
-  /**
-   * 檢測 SQL 缺少 WHERE 條件的危險查詢
-   */
-  detectDangerousQueries(): Array<{ type: string; line: number; query: string }> {
-    const dangerous: Array<{ type: string; line: number; query: string }> = [];
-    const lines = this.content.split("\n");
-
-    lines.forEach((line, index) => {
-      // 檢測 DELETE 或 UPDATE 沒有 WHERE
-      if (/^(DELETE|UPDATE)\s+/i.test(line) && !/WHERE\s+/i.test(line)) {
-        dangerous.push({
-          type: "missing_where",
-          line: index + 1,
-          query: line.trim(),
-        });
-      }
+  parseFieldReferences(symbols: AnalyzedSymbol[]): FieldReference[] {
+    const lines = this.content.split(/\r?\n/);
+    return lines.flatMap((line, index) => {
+      const owner = findOwnerSymbol(symbols, index + 1);
+      return parseSqlReference(line, index + 1, this.file, owner?.name);
     });
+  }
 
-    return dangerous;
+  collectWarnings(): AnalysisWarning[] {
+    return [];
   }
 }
 
-/**
- * 統一的解析器工廠
- */
+export class DelphiParser implements FileParser {
+  constructor(private readonly content: string, private readonly file: string) {}
+
+  parseSymbols(): AnalyzedSymbol[] {
+    const lines = this.content.split(/\r?\n/);
+    const symbols: AnalyzedSymbol[] = [];
+    const pattern = /^\s*(procedure|function)\s+([a-zA-Z_][\w$]*)/i;
+
+    lines.forEach((line, index) => {
+      const match = line.match(pattern);
+      if (!match) return;
+
+      symbols.push({
+        name: match[2],
+        type: match[1].toLowerCase() === "procedure" ? "procedure" : "function",
+        file: this.file,
+        startLine: index + 1,
+        endLine: findBlockEnd(lines, index, /\bbegin\b/i, /\bend\b\s*;?/i),
+        signature: line.trim(),
+      });
+    });
+
+    return symbols;
+  }
+
+  parseDependencies(symbols: AnalyzedSymbol[]): SymbolDependency[] {
+    return buildCallDependencies(this.content.split(/\r?\n/), symbols, ["inherited"]);
+  }
+
+  parseFieldReferences(symbols: AnalyzedSymbol[]): FieldReference[] {
+    const fragments = parseSqlFragments(this.content);
+    return fragments.flatMap(({ line, sql }) => {
+      const owner = findOwnerSymbol(symbols, line);
+      return parseSqlReference(sql, line, this.file, owner?.name);
+    });
+  }
+
+  collectWarnings(): AnalysisWarning[] {
+    const warnings: AnalysisWarning[] = [];
+    if (!/begin\b/i.test(this.content) || !/end\b/i.test(this.content)) {
+      warnings.push({
+        code: "DELPHI_BLOCK_UNBALANCED",
+        message: "Delphi source may have incomplete procedure blocks; line ranges are best-effort.",
+        filePath: this.file,
+      });
+    }
+    return warnings;
+  }
+}
+
+export class UnsupportedParser implements FileParser {
+  constructor(private readonly file: string, private readonly language: string) {}
+
+  parseSymbols(): AnalyzedSymbol[] {
+    return [];
+  }
+
+  parseDependencies(): SymbolDependency[] {
+    return [];
+  }
+
+  parseFieldReferences(): FieldReference[] {
+    return [];
+  }
+
+  collectWarnings(): AnalysisWarning[] {
+    return [
+      {
+        code: "LANGUAGE_UNSUPPORTED",
+        message: `Unsupported language for analysis: ${this.language}`,
+        filePath: this.file,
+      },
+    ];
+  }
+}
+
 export class ParserFactory {
-  static createParser(language: string, content: string, file: string) {
-    if (language.toLowerCase() === "go") {
+  static createParser(language: string, content: string, file: string): FileParser {
+    const normalized = language.replace(/^\./, "").toLowerCase();
+
+    if (normalized === "go") {
       return new GoParser(content, file);
-    } else if (language.toLowerCase() === "sql") {
+    }
+
+    if (normalized === "sql") {
       return new SQLParser(content, file);
     }
-    throw new Error(`Unsupported language: ${language}`);
+
+    if (normalized === "pas" || normalized === "dpr" || normalized === "delphi") {
+      return new DelphiParser(content, file);
+    }
+
+    return new UnsupportedParser(file, normalized);
   }
 }

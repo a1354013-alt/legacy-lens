@@ -1,17 +1,9 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, json, boolean, index } from "drizzle-orm/mysql-core";
+import type { AnalysisMetrics, AnalysisWarning } from "../shared/contracts";
+import { analysisStatuses, fileStatuses, projectLanguages, projectSourceTypes, projectStatuses } from "../shared/contracts";
+import { index, int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
 export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
   id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
@@ -25,13 +17,6 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-// ============================================================================
-// Legacy Lens: 程式碼考古與規則文件生成器 - Core Tables
-// ============================================================================
-
-/**
- * 專案表：儲存已匯入的程式碼專案
- */
 export const projects = mysqlTable(
   "projects",
   {
@@ -39,12 +24,14 @@ export const projects = mysqlTable(
     userId: int("userId").notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
-    language: mysqlEnum("language", ["go", "delphi", "sql"]).notNull(),
-    sourceType: mysqlEnum("sourceType", ["upload", "git"]).notNull(),
-    sourceUrl: text("sourceUrl"), // Git URL or local path
-    status: mysqlEnum("status", ["pending", "analyzing", "completed", "failed"]).default("pending"),
-    analysisProgress: int("analysisProgress").default(0), // 0-100
+    language: mysqlEnum("language", projectLanguages).notNull(),
+    sourceType: mysqlEnum("sourceType", projectSourceTypes).notNull(),
+    sourceUrl: text("sourceUrl"),
+    status: mysqlEnum("status", projectStatuses).default("draft").notNull(),
+    importProgress: int("importProgress").default(0).notNull(),
+    analysisProgress: int("analysisProgress").default(0).notNull(),
     errorMessage: text("errorMessage"),
+    lastErrorCode: varchar("lastErrorCode", { length: 64 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -56,9 +43,6 @@ export const projects = mysqlTable(
 export type Project = typeof projects.$inferSelect;
 export type InsertProject = typeof projects.$inferInsert;
 
-/**
- * 檔案表：儲存專案中的原始檔案資訊
- */
 export const files = mysqlTable(
   "files",
   {
@@ -66,8 +50,9 @@ export const files = mysqlTable(
     projectId: int("projectId").notNull(),
     filePath: varchar("filePath", { length: 512 }).notNull(),
     fileName: varchar("fileName", { length: 255 }).notNull(),
-    fileType: varchar("fileType", { length: 50 }), // .go, .sql, .pas, etc.
-    content: text("content"), // 原始程式碼內容
+    fileType: varchar("fileType", { length: 50 }),
+    status: mysqlEnum("status", fileStatuses).default("stored").notNull(),
+    content: text("content"),
     lineCount: int("lineCount"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -79,9 +64,6 @@ export const files = mysqlTable(
 export type File = typeof files.$inferSelect;
 export type InsertFile = typeof files.$inferInsert;
 
-/**
- * 符號表：儲存解析出的 function、procedure、method 等符號
- */
 export const symbols = mysqlTable(
   "symbols",
   {
@@ -92,9 +74,9 @@ export const symbols = mysqlTable(
     type: mysqlEnum("type", ["function", "procedure", "method", "query", "table"]).notNull(),
     startLine: int("startLine").notNull(),
     endLine: int("endLine").notNull(),
-    signature: text("signature"), // 函數簽名
+    signature: text("signature"),
     description: text("description"),
-    metadata: json("metadata"), // 額外的 JSON 資訊
+    metadata: json("metadata"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -106,9 +88,6 @@ export const symbols = mysqlTable(
 export type Symbol = typeof symbols.$inferSelect;
 export type InsertSymbol = typeof symbols.$inferInsert;
 
-/**
- * 依賴關係表：儲存符號之間的呼叫關係（Call Graph）
- */
 export const dependencies = mysqlTable(
   "dependencies",
   {
@@ -130,9 +109,6 @@ export const dependencies = mysqlTable(
 export type Dependency = typeof dependencies.$inferSelect;
 export type InsertDependency = typeof dependencies.$inferInsert;
 
-/**
- * 欄位表：儲存資料庫欄位資訊
- */
 export const fields = mysqlTable(
   "fields",
   {
@@ -152,9 +128,6 @@ export const fields = mysqlTable(
 export type Field = typeof fields.$inferSelect;
 export type InsertField = typeof fields.$inferInsert;
 
-/**
- * 欄位依賴表：儲存欄位的讀/寫/計算關係
- */
 export const fieldDependencies = mysqlTable(
   "fieldDependencies",
   {
@@ -164,7 +137,7 @@ export const fieldDependencies = mysqlTable(
     symbolId: int("symbolId").notNull(),
     operationType: mysqlEnum("operationType", ["read", "write", "calculate"]).notNull(),
     lineNumber: int("lineNumber"),
-    context: text("context"), // 程式碼片段
+    context: text("context"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -177,9 +150,6 @@ export const fieldDependencies = mysqlTable(
 export type FieldDependency = typeof fieldDependencies.$inferSelect;
 export type InsertFieldDependency = typeof fieldDependencies.$inferInsert;
 
-/**
- * 風險表：儲存檢測到的風險項目
- */
 export const risks = mysqlTable(
   "risks",
   {
@@ -210,9 +180,6 @@ export const risks = mysqlTable(
 export type Risk = typeof risks.$inferSelect;
 export type InsertRisk = typeof risks.$inferInsert;
 
-/**
- * 規則表：儲存從程式碼中抽取的規則
- */
 export const rules = mysqlTable(
   "rules",
   {
@@ -221,7 +188,7 @@ export const rules = mysqlTable(
     ruleType: mysqlEnum("ruleType", ["validation", "format", "magic_value", "calculation"]).notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
-    condition: text("condition"), // 規則條件（YAML 或 JSON）
+    condition: text("condition"),
     sourceFile: varchar("sourceFile", { length: 512 }),
     lineNumber: int("lineNumber"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -234,18 +201,19 @@ export const rules = mysqlTable(
 export type Rule = typeof rules.$inferSelect;
 export type InsertRule = typeof rules.$inferInsert;
 
-/**
- * 分析結果表：儲存生成的文件與分析結果
- */
 export const analysisResults = mysqlTable(
   "analysisResults",
   {
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
-    flowMarkdown: text("flowMarkdown"), // FLOW.md 內容
-    dataDependencyMarkdown: text("dataDependencyMarkdown"), // DATA_DEPENDENCY.md 內容
-    risksMarkdown: text("risksMarkdown"), // RISKS.md 內容
-    rulesYaml: text("rulesYaml"), // RULES.yaml 內容
+    status: mysqlEnum("status", analysisStatuses).default("pending").notNull(),
+    flowMarkdown: text("flowMarkdown"),
+    dataDependencyMarkdown: text("dataDependencyMarkdown"),
+    risksMarkdown: text("risksMarkdown"),
+    rulesYaml: text("rulesYaml"),
+    summaryJson: json("summaryJson").$type<AnalysisMetrics | null>(),
+    warningsJson: json("warningsJson").$type<AnalysisWarning[]>().default([]).notNull(),
+    errorMessage: text("errorMessage"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

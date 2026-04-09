@@ -1,233 +1,261 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { getLoginUrl } from "@/const";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Upload, GitBranch, BarChart3, AlertTriangle, FileText } from "lucide-react";
-import { getLoginUrl } from "@/const";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Loader2, Plus, FileSearch, GitBranch, Trash2, RefreshCcw, FileText } from "lucide-react";
+import { projectStatusLabels, analysisStatusLabels, type AnalysisStatus, type ProjectStatus, type ProjectLanguage, type ProjectSourceType } from "@shared/contracts";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
+import { toast } from "sonner";
 import { useLocation } from "wouter";
 
+type ProjectRow = {
+  id: number;
+  name: string;
+  description: string | null;
+  language: ProjectLanguage;
+  sourceType: ProjectSourceType;
+  status: ProjectStatus;
+  importProgress: number;
+  analysisProgress: number;
+  errorMessage: string | null;
+  analysisStatus: AnalysisStatus;
+};
+
+function getBadgeVariant(status: ProjectStatus | AnalysisStatus) {
+  if (status === "failed") return "destructive";
+  if (status === "completed") return "default";
+  return "secondary";
+}
+
 export default function Home() {
-  const { user, loading, isAuthenticated } = useAuth();
+  const { user, loading, isAuthenticated, logout } = useAuth();
   const [, setLocation] = useLocation();
-  const { data: projects, isLoading: projectsLoading } = trpc.projects.list.useQuery(undefined, {
+  const utils = trpc.useUtils();
+  const projectsQuery = trpc.projects.list.useQuery(undefined, {
     enabled: isAuthenticated,
+    refetchOnWindowFocus: false,
+  });
+
+  const deleteProjectMutation = trpc.projects.delete.useMutation({
+    onSuccess: async () => {
+      await utils.projects.list.invalidate();
+    },
   });
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
-        <div className="text-center">
-          <Loader2 className="w-12 h-12 animate-spin mx-auto mb-4 text-blue-600" />
-          <p className="text-slate-600">載入中...</p>
-        </div>
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <Loader2 className="size-10 animate-spin text-slate-600" />
       </div>
     );
   }
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-        {/* Header */}
-        <header className="border-b border-slate-200 bg-white/80 backdrop-blur-sm sticky top-0 z-50">
-          <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center">
-                <FileText className="w-6 h-6 text-white" />
-              </div>
-              <h1 className="text-2xl font-bold text-slate-900">Legacy Lens</h1>
-            </div>
-            <a href={getLoginUrl()} className="text-blue-600 hover:text-blue-700 font-medium">
-              登入
-            </a>
-          </div>
-        </header>
-
-        {/* Hero Section */}
-        <section className="container mx-auto px-4 py-20">
-          <div className="max-w-3xl mx-auto text-center">
-            <h2 className="text-5xl font-bold text-slate-900 mb-6">
-              程式碼考古 × 規則文件生成
-            </h2>
-            <p className="text-xl text-slate-600 mb-8">
-              把看不懂的舊系統程式碼（Delphi/Go/SQL）變成「可接手的規格書＋風險清單」
+      <div className="min-h-screen bg-slate-50">
+        <main className="mx-auto flex min-h-screen max-w-5xl flex-col justify-center gap-10 px-6 py-16">
+          <div className="space-y-4">
+            <Badge variant="outline">PlateauBreaker</Badge>
+            <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-slate-950">
+              匯入舊系統程式碼，產出可追蹤的流程、資料依賴與風險報告。
+            </h1>
+            <p className="max-w-2xl text-lg leading-8 text-slate-600">
+              目前版本支援 ZIP 匯入與 Git 匯入，分析 Go、SQL、Delphi 檔案，並將結果寫回資料庫後提供下載。
             </p>
-            <a href={getLoginUrl()}>
-              <Button size="lg" className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-6 text-lg">
-                開始使用
-              </Button>
-            </a>
           </div>
-        </section>
 
-        {/* Features */}
-        <section className="container mx-auto px-4 py-16">
-          <div className="grid md:grid-cols-3 gap-8">
-            <Card className="border-slate-200 hover:shadow-lg transition-shadow">
-              <CardHeader>
-                <FileText className="w-8 h-8 text-blue-600 mb-2" />
-                <CardTitle>自動生成文件</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-slate-600">
-                  一鍵生成 FLOW.md、DATA_DEPENDENCY.md、RISKS.md，清晰展示系統流程與風險
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card className="border-slate-200 hover:shadow-lg transition-shadow">
-              <CardHeader>
-                <BarChart3 className="w-8 h-8 text-blue-600 mb-2" />
-                <CardTitle>欄位依賴分析</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-slate-600">
-                  清晰展示欄位的讀/寫/計算關係，快速定位變更影響範圍
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card className="border-slate-200 hover:shadow-lg transition-shadow">
-              <CardHeader>
-                <AlertTriangle className="w-8 h-8 text-blue-600 mb-2" />
-                <CardTitle>風險自動檢測</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-slate-600">
-                  檢測魔法值、多處寫入、缺少條件等風險，每個結論都附出處
-                </p>
-              </CardContent>
-            </Card>
+          <div className="grid gap-4 md:grid-cols-3">
+            <FeatureCard title="流程閉合" description="專案建立、檔案匯入、分析寫回、報告下載與刪除都會反映在狀態欄位。" />
+            <FeatureCard title="資料契約清楚" description="前後端共用狀態與下載契約，避免欄位漂移與假成功畫面。" />
+            <FeatureCard title="可追蹤結果" description="風險、欄位依賴、符號、規則與 Markdown 產物會一起落地。" />
           </div>
-        </section>
+
+          <div>
+            <Button size="lg" onClick={() => (window.location.href = getLoginUrl())}>
+              登入並開始
+            </Button>
+          </div>
+        </main>
       </div>
     );
   }
 
+  const projects = projectsQuery.data ?? [];
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      {/* Header */}
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center">
-              <FileText className="w-6 h-6 text-white" />
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900">Legacy Lens</h1>
+    <div className="min-h-screen bg-slate-50">
+      <header className="border-b bg-white">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+          <div>
+            <p className="text-sm font-medium text-slate-500">PlateauBreaker</p>
+            <h1 className="text-2xl font-semibold text-slate-950">專案首頁</h1>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="text-slate-600">{user?.name}</span>
-            <Button variant="outline" size="sm">
+          <div className="flex items-center gap-3">
+            <span className="hidden text-sm text-slate-600 sm:inline">{user?.name ?? user?.email ?? "使用者"}</span>
+            <Button variant="outline" onClick={() => setLocation("/import")}>
+              <Plus className="mr-2 size-4" />
+              匯入專案
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={async () => {
+                await logout();
+                window.location.href = getLoginUrl();
+              }}
+            >
               登出
             </Button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="container mx-auto px-4 py-12">
-        {/* Page Title */}
-        <div className="mb-12">
-          <h2 className="text-4xl font-bold text-slate-900 mb-2">我的專案</h2>
-          <p className="text-slate-600">管理和分析您的程式碼專案</p>
-        </div>
+      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
+        {projectsQuery.error ? (
+          <Alert variant="destructive">
+            <AlertTitle>專案列表載入失敗</AlertTitle>
+            <AlertDescription>{projectsQuery.error.message}</AlertDescription>
+          </Alert>
+        ) : null}
 
-        {/* Import Project Button */}
-        <div className="mb-8">
-          <Button
-            size="lg"
-            className="bg-blue-600 hover:bg-blue-700 text-white"
-            onClick={() => setLocation("/import")}
-          >
-            <Upload className="w-5 h-5 mr-2" />
-            匯入新專案
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-950">最近專案</h2>
+            <p className="text-sm text-slate-600">每個專案都會顯示匯入與分析的最新狀態。</p>
+          </div>
+          <Button variant="outline" onClick={() => projectsQuery.refetch()} disabled={projectsQuery.isFetching}>
+            <RefreshCcw className="mr-2 size-4" />
+            重新整理
           </Button>
         </div>
 
-        {/* Projects Grid */}
-        {projectsLoading ? (
-          <div className="flex justify-center py-12">
-            <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        {projectsQuery.isLoading ? (
+          <div className="flex justify-center py-24">
+            <Loader2 className="size-8 animate-spin text-slate-600" />
           </div>
-        ) : projects && projects.length > 0 ? (
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {projects.map((project) => (
-              <Card
-                key={project.id}
-                className="border-slate-200 hover:shadow-lg transition-all cursor-pointer"
-                onClick={() => setLocation(`/projects/${project.id}`)}
-              >
-                <CardHeader>
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex-1">
-                      <CardTitle className="text-lg">{project.name}</CardTitle>
-                      <CardDescription>{project.description}</CardDescription>
-                    </div>
-                    <Badge variant={project.status === "completed" ? "default" : "secondary"}>
-                      {getStatusLabel(project.status)}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-slate-600">語言:</span>
-                      <span className="font-medium text-slate-900">{project.language.toUpperCase()}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-600">來源:</span>
-                      <span className="font-medium text-slate-900">
-                        {project.sourceType === "upload" ? "上傳" : "Git"}
-                      </span>
-                    </div>
-                    {project.status === "analyzing" && (
-                      <div className="mt-4">
-                        <div className="w-full bg-slate-200 rounded-full h-2">
-                          <div
-                            className="bg-blue-600 h-2 rounded-full transition-all"
-                            style={{ width: `${project.analysisProgress}%` }}
-                          />
-                        </div>
-                        <p className="text-xs text-slate-500 mt-1">{project.analysisProgress}%</p>
-                      </div>
-                    )}
-                    {project.status === "failed" && project.errorMessage && (
-                      <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-xs">
-                        {project.errorMessage}
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        ) : (
-          <Card className="border-slate-200 border-dashed">
-            <CardContent className="pt-12 pb-12 text-center">
-              <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-              <p className="text-slate-600 mb-4">還沒有任何專案</p>
-              <Button
-                variant="outline"
-                onClick={() => setLocation("/import")}
-              >
-                建立第一個專案
-              </Button>
+        ) : projects.length === 0 ? (
+          <Card>
+            <CardContent className="p-0">
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <FileSearch />
+                  </EmptyMedia>
+                  <EmptyTitle>還沒有專案</EmptyTitle>
+                  <EmptyDescription>先建立一個專案並匯入 ZIP 或 Git repository，之後才能啟動分析。</EmptyDescription>
+                </EmptyHeader>
+                <EmptyContent>
+                  <Button onClick={() => setLocation("/import")}>前往匯入頁</Button>
+                </EmptyContent>
+              </Empty>
             </CardContent>
           </Card>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {projects.map((project) => (
+              <ProjectCard
+                key={project.id}
+                project={project}
+                deleting={deleteProjectMutation.isPending && deleteProjectMutation.variables === project.id}
+                onOpen={() => setLocation(`/projects/${project.id}/analysis`)}
+                onDelete={async () => {
+                  const confirmed = window.confirm(`確定要刪除專案「${project.name}」嗎？這會一併刪除檔案與分析結果。`);
+                  if (!confirmed) return;
+                  try {
+                    await deleteProjectMutation.mutateAsync(project.id);
+                    toast.success("專案已刪除。");
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : "刪除失敗。");
+                  }
+                }}
+              />
+            ))}
+          </div>
         )}
       </main>
     </div>
   );
 }
 
-function getStatusLabel(status: string | null): string {
-  if (!status) return "未知";
-  const labels: Record<string, string> = {
-    pending: "待分析",
-    analyzing: "分析中",
-    completed: "已完成",
-    failed: "失敗",
-  };
-  return labels[status] || status;
+function FeatureCard({ title, description }: { title: string; description: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm leading-6 text-slate-600">{description}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ProjectCard({
+  project,
+  deleting,
+  onOpen,
+  onDelete,
+}: {
+  project: ProjectRow;
+  deleting: boolean;
+  onOpen: () => void;
+  onDelete: () => Promise<void>;
+}) {
+  const analysisStatus = project.analysisStatus ?? "pending";
+
+  return (
+    <Card className="transition-shadow hover:shadow-md">
+      <CardHeader className="gap-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <CardTitle>{project.name}</CardTitle>
+            <CardDescription>{project.description || "未提供描述"}</CardDescription>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <Badge variant={getBadgeVariant(project.status)}>{projectStatusLabels[project.status]}</Badge>
+            <Badge variant={getBadgeVariant(analysisStatus)}>{analysisStatusLabels[analysisStatus]}</Badge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
+          <div className="flex items-center gap-2">
+            <FileText className="size-4" />
+            <span>{project.language.toUpperCase()}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <GitBranch className="size-4" />
+            <span>{project.sourceType === "git" ? "Git 匯入" : "ZIP 匯入"}</span>
+          </div>
+        </div>
+
+        {project.importProgress > 0 && project.importProgress < 100 ? (
+          <p className="text-sm text-slate-600">匯入進度 {project.importProgress}%</p>
+        ) : null}
+
+        {project.analysisProgress > 0 && project.status === "analyzing" ? (
+          <p className="text-sm text-slate-600">分析進度 {project.analysisProgress}%</p>
+        ) : null}
+
+        {project.errorMessage ? (
+          <Alert variant="destructive">
+            <AlertTitle>最近一次流程失敗</AlertTitle>
+            <AlertDescription>{project.errorMessage}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <div className="flex items-center justify-between gap-3">
+          <Button variant="outline" onClick={onOpen}>
+            開啟結果
+          </Button>
+          <Button variant="ghost" disabled={deleting} onClick={() => void onDelete()}>
+            {deleting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Trash2 className="mr-2 size-4" />}
+            刪除
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }

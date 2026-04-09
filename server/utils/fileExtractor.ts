@@ -1,117 +1,90 @@
-import { getDb } from "../db";
+import { and, eq, inArray } from "drizzle-orm";
 import { files as filesTable } from "../../drizzle/schema";
+import { getDb } from "../db";
 import type { ExtractedFile } from "./zipHandler";
 
-/**
- * P0-A FIX: Accept optional transaction parameter
- * 將提取的檔案保存到資料庫
- * @param projectId - 專案 ID
- * @param extractedFiles - 提取的檔案列表
- * @param dbOrTx - 可選的資料庫或 transaction 實例（如果提供，使用它；否則獲取新的 DB 連接）
- */
-export async function saveExtractedFiles(
-  projectId: number,
-  extractedFiles: ExtractedFile[],
-  dbOrTx?: any
-): Promise<number[]> {
-  const db = dbOrTx || (await getDb());
+type DbLike = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "insert" | "select" | "delete">;
+
+function detectFileType(filePath: string): string {
+  const lastDot = filePath.lastIndexOf(".");
+  return lastDot >= 0 ? filePath.slice(lastDot).toLowerCase() : "unknown";
+}
+
+async function resolveDb(dbOrTx?: DbLike): Promise<DbLike> {
+  const db = dbOrTx ?? (await getDb());
   if (!db) {
     throw new Error("Database not available");
   }
+  return db;
+}
 
+export async function saveExtractedFiles(projectId: number, extractedFiles: ExtractedFile[], dbOrTx?: DbLike): Promise<number[]> {
+  const db = await resolveDb(dbOrTx);
   const fileIds: number[] = [];
 
   for (const file of extractedFiles) {
-    try {
-      // P1-B FIX: Insert file
-      await db
-        .insert(filesTable)
-        .values({
-          projectId,
-          filePath: file.path,
-          fileName: file.fileName,
-          fileType: file.path.substring(file.path.lastIndexOf(".")),
-          content: file.content,
-          lineCount: file.content.split("\n").length,
-        });
-    } catch (error) {
-      console.error(`Failed to save file ${file.fileName}:`, error);
-      throw error;
+    const insertResult = await db.insert(filesTable).values({
+      projectId,
+      filePath: file.path,
+      fileName: file.fileName,
+      fileType: detectFileType(file.path),
+      status: "stored",
+      content: file.content,
+      lineCount: file.content.split(/\r?\n/).length,
+    });
+
+    const insertId = Number((insertResult as { insertId?: number }).insertId ?? 0);
+    if (insertId > 0) {
+      fileIds.push(insertId);
     }
   }
 
-  // P1-B FIX: Query back the inserted file IDs
-  // This is more reliable than depending on insertId which may not be available
-  // in all Drizzle + mysql2 combinations
-  if (extractedFiles.length > 0) {
-    const { eq, desc } = await import("drizzle-orm");
-    const insertedRecords = await db
-      .select({ id: filesTable.id })
-      .from(filesTable)
-      .where(eq(filesTable.projectId, projectId))
-      .orderBy(desc(filesTable.id))
-      .limit(extractedFiles.length);
-
-    for (const record of insertedRecords) {
-      fileIds.push(record.id);
-    }
+  if (fileIds.length === extractedFiles.length) {
+    return fileIds;
   }
 
-  return fileIds;
+  const filePaths = Array.from(new Set(extractedFiles.map((file) => file.path)));
+  const insertedRecords = await db
+    .select({ id: filesTable.id, filePath: filesTable.filePath })
+    .from(filesTable)
+    .where(and(eq(filesTable.projectId, projectId), inArray(filesTable.filePath, filePaths)));
+
+  const idByPath = new Map(insertedRecords.map((record) => [record.filePath, record.id]));
+  return extractedFiles
+    .map((file) => idByPath.get(file.path))
+    .filter((id): id is number => typeof id === "number");
 }
 
-/**
- * 獲取專案的所有檔案
- */
-export async function getProjectFiles(projectId: number, dbOrTx?: any) {
-  const db = dbOrTx || (await getDb());
+export async function getProjectFiles(projectId: number, dbOrTx?: DbLike) {
+  const db = dbOrTx ?? (await getDb());
   if (!db) {
     return [];
   }
 
-  const { eq } = await import("drizzle-orm");
   return db.select().from(filesTable).where(eq(filesTable.projectId, projectId));
 }
 
-/**
- * P0-A FIX: Accept optional transaction parameter
- * 刪除專案的所有檔案
- * @param projectId - 專案 ID
- * @param dbOrTx - 可選的資料庫或 transaction 實例
- */
-export async function deleteProjectFiles(projectId: number, dbOrTx?: any): Promise<void> {
-  const db = dbOrTx || (await getDb());
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { eq } = await import("drizzle-orm");
+export async function deleteProjectFiles(projectId: number, dbOrTx?: DbLike): Promise<void> {
+  const db = await resolveDb(dbOrTx);
   await db.delete(filesTable).where(eq(filesTable.projectId, projectId));
 }
 
-/**
- * 計算專案的總程式碼行數
- */
-export async function calculateTotalLineCount(projectId: number, dbOrTx?: any): Promise<number> {
+export async function calculateTotalLineCount(projectId: number, dbOrTx?: DbLike): Promise<number> {
   const projectFiles = await getProjectFiles(projectId, dbOrTx);
-  return projectFiles.reduce((total: number, file: any) => total + (file.lineCount || 0), 0);
+  return projectFiles.reduce((total, file) => total + (file.lineCount ?? 0), 0);
 }
 
-/**
- * 按語言分組統計檔案
- */
-export async function getFileStatsByLanguage(projectId: number, dbOrTx?: any) {
+export async function getFileStatsByLanguage(projectId: number, dbOrTx?: DbLike) {
   const projectFiles = await getProjectFiles(projectId, dbOrTx);
-
   const stats: Record<string, { count: number; lines: number }> = {};
 
   for (const file of projectFiles) {
-    const ext = file.fileType || "unknown";
-    if (!stats[ext]) {
-      stats[ext] = { count: 0, lines: 0 };
+    const key = file.fileType ?? "unknown";
+    if (!stats[key]) {
+      stats[key] = { count: 0, lines: 0 };
     }
-    stats[ext].count++;
-    stats[ext].lines += file.lineCount || 0;
+    stats[key].count += 1;
+    stats[key].lines += file.lineCount ?? 0;
   }
 
   return stats;
