@@ -153,6 +153,7 @@ export const appRouter = router({
           fileCount: result.files.length,
           fileIds: result.fileIds,
           files: result.files,
+          warnings: result.warnings,
         };
       } catch (error) {
         raiseAsTrpc(error);
@@ -167,6 +168,7 @@ export const appRouter = router({
           fileCount: result.files.length,
           fileIds: result.fileIds,
           files: result.files,
+          warnings: result.warnings,
         };
       } catch (error) {
         raiseAsTrpc(error);

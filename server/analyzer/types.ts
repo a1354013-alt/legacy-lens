@@ -61,6 +61,10 @@ export interface DetectedRule {
 }
 
 export interface FileAnalysisResult {
+  eligible: boolean;
+  analyzed: boolean;
+  degraded: boolean;
+  heuristic: boolean;
   symbols: AnalyzedSymbol[];
   dependencies: SymbolDependency[];
   fieldReferences: FieldReference[];

@@ -18,6 +18,22 @@ async function resolveDb(dbOrTx?: DbLike): Promise<DbLike> {
   return db;
 }
 
+function detectFileLanguage(filePath: string) {
+  const extension = detectFileType(filePath);
+  switch (extension) {
+    case ".go":
+      return "go";
+    case ".sql":
+      return "sql";
+    case ".pas":
+    case ".dpr":
+    case ".delphi":
+      return "delphi";
+    default:
+      return "unknown";
+  }
+}
+
 export async function saveExtractedFiles(projectId: number, extractedFiles: ExtractedFile[], dbOrTx?: DbLike): Promise<number[]> {
   const db = await resolveDb(dbOrTx);
   const fileIds: number[] = [];
@@ -74,12 +90,28 @@ export async function calculateTotalLineCount(projectId: number, dbOrTx?: DbLike
   return projectFiles.reduce((total, file) => total + (file.lineCount ?? 0), 0);
 }
 
-export async function getFileStatsByLanguage(projectId: number, dbOrTx?: DbLike) {
+export async function getFileStatsByExtension(projectId: number, dbOrTx?: DbLike) {
   const projectFiles = await getProjectFiles(projectId, dbOrTx);
   const stats: Record<string, { count: number; lines: number }> = {};
 
   for (const file of projectFiles) {
     const key = file.fileType ?? "unknown";
+    if (!stats[key]) {
+      stats[key] = { count: 0, lines: 0 };
+    }
+    stats[key].count += 1;
+    stats[key].lines += file.lineCount ?? 0;
+  }
+
+  return stats;
+}
+
+export async function getFileStatsByLanguage(projectId: number, dbOrTx?: DbLike) {
+  const projectFiles = await getProjectFiles(projectId, dbOrTx);
+  const stats: Record<string, { count: number; lines: number }> = {};
+
+  for (const file of projectFiles) {
+    const key = detectFileLanguage(file.filePath);
     if (!stats[key]) {
       stats[key] = { count: 0, lines: 0 };
     }

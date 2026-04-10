@@ -1,3 +1,4 @@
+import type { ImportWarning, ProjectLanguage } from "../../shared/contracts";
 import JSZip from "jszip";
 import { AppError } from "../appError";
 
@@ -5,12 +6,8 @@ const MAX_FILES_IN_ZIP = 2_000;
 const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
 const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 
-export const SUPPORTED_EXTENSIONS = [
-  ".go",
-  ".sql",
-  ".pas",
-  ".dpr",
-  ".delphi",
+export const SUPPORTED_SOURCE_EXTENSIONS = [".go", ".sql", ".pas", ".dpr", ".delphi"] as const;
+export const UNSUPPORTED_CODE_EXTENSIONS = [
   ".ts",
   ".js",
   ".java",
@@ -45,8 +42,13 @@ export interface ExtractedFile {
   path: string;
   fileName: string;
   content: string;
-  language: string;
+  language: ProjectLanguage;
   size: number;
+}
+
+export interface ExtractedSourceBundle {
+  files: ExtractedFile[];
+  warnings: ImportWarning[];
 }
 
 function normalizePath(filePath: string): string {
@@ -57,36 +59,29 @@ function shouldIgnoreFile(filePath: string): boolean {
   return IGNORED_PATTERNS.some((pattern) => pattern.test(filePath));
 }
 
-function detectLanguage(filePath: string): string {
+function detectLanguage(filePath: string): ProjectLanguage | null {
   const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
-  const languageMap: Record<string, string> = {
+  const languageMap: Record<string, ProjectLanguage> = {
     ".go": "go",
     ".sql": "sql",
     ".pas": "delphi",
     ".dpr": "delphi",
     ".delphi": "delphi",
-    ".ts": "typescript",
-    ".js": "javascript",
-    ".java": "java",
-    ".py": "python",
-    ".rb": "ruby",
-    ".php": "php",
-    ".cs": "csharp",
-    ".cpp": "cpp",
-    ".c": "c",
-    ".h": "c",
-    ".hpp": "cpp",
-    ".scala": "scala",
-    ".kt": "kotlin",
-    ".rs": "rust",
-    ".swift": "swift",
   };
-  return languageMap[ext] ?? "unknown";
+  return languageMap[ext] ?? null;
 }
 
-function isSupportedFile(filePath: string): boolean {
-  const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
-  return SUPPORTED_EXTENSIONS.includes(ext as (typeof SUPPORTED_EXTENSIONS)[number]);
+function getExtension(filePath: string) {
+  const index = filePath.lastIndexOf(".");
+  return index >= 0 ? filePath.slice(index).toLowerCase() : "";
+}
+
+function isSupportedFile(filePath: string) {
+  return SUPPORTED_SOURCE_EXTENSIONS.includes(getExtension(filePath) as (typeof SUPPORTED_SOURCE_EXTENSIONS)[number]);
+}
+
+function isKnownUnsupportedCodeFile(filePath: string) {
+  return UNSUPPORTED_CODE_EXTENSIONS.includes(getExtension(filePath) as (typeof UNSUPPORTED_CODE_EXTENSIONS)[number]);
 }
 
 export async function validateZipFile(base64Content: string): Promise<boolean> {
@@ -103,11 +98,12 @@ export async function validateZipFile(base64Content: string): Promise<boolean> {
   }
 }
 
-export async function extractFilesFromZip(base64Content: string): Promise<ExtractedFile[]> {
+export async function extractFilesFromZip(base64Content: string): Promise<ExtractedSourceBundle> {
   try {
     const buffer = Buffer.from(base64Content, "base64");
     const zip = await JSZip.loadAsync(buffer);
     const extractedFiles: ExtractedFile[] = [];
+    const warnings: ImportWarning[] = [];
     let totalExtractedSize = 0;
 
     const entries = Object.entries(zip.files);
@@ -121,13 +117,29 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       }
 
       const normalizedPath = normalizePath(rawPath);
-      if (!normalizedPath || shouldIgnoreFile(normalizedPath) || !isSupportedFile(normalizedPath)) {
+      if (!normalizedPath || shouldIgnoreFile(normalizedPath)) {
+        continue;
+      }
+
+      if (!isSupportedFile(normalizedPath)) {
+        if (isKnownUnsupportedCodeFile(normalizedPath)) {
+          warnings.push({
+            code: "IMPORT_LANGUAGE_UNSUPPORTED",
+            message: "The file was skipped because Legacy Lens currently supports import analysis only for Go, SQL, and Delphi.",
+            filePath: normalizedPath,
+          });
+        }
         continue;
       }
 
       const fileBuffer = await entry.async("nodebuffer");
       const fileSize = fileBuffer.length;
       if (fileSize > MAX_SINGLE_FILE_SIZE) {
+        warnings.push({
+          code: "IMPORT_FILE_TOO_LARGE",
+          message: "The file was skipped because it exceeds the maximum supported size.",
+          filePath: normalizedPath,
+        });
         continue;
       }
 
@@ -136,20 +148,28 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
         throw new AppError("ZIP_INVALID", "Archive expands beyond the allowed size limit.");
       }
 
+      const language = detectLanguage(normalizedPath);
+      if (!language) {
+        continue;
+      }
+
       extractedFiles.push({
         path: normalizedPath,
         fileName: normalizedPath.split("/").pop() ?? normalizedPath,
         content: fileBuffer.toString("utf8"),
-        language: detectLanguage(normalizedPath),
+        language,
         size: fileSize,
       });
     }
 
     if (extractedFiles.length === 0) {
-      throw new AppError("EMPTY_SOURCE", "No supported source files were found in the uploaded archive.");
+      throw new AppError("EMPTY_SOURCE", "No supported Go, SQL, or Delphi source files were found in the uploaded archive.");
     }
 
-    return extractedFiles;
+    return {
+      files: extractedFiles,
+      warnings,
+    };
   } catch (error) {
     if (error instanceof AppError) {
       throw error;

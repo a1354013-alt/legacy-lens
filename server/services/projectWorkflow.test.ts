@@ -10,6 +10,7 @@ type SortOrder = { type: "desc"; column: string } | undefined;
 
 let zipFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
 let gitFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
+let importWarnings: Array<{ code: string; message: string; filePath?: string }> = [];
 let analyzerResult: Record<string, unknown> | null = null;
 let fakeDb: ReturnType<typeof createFakeDb>;
 
@@ -28,14 +29,14 @@ vi.mock("../db", () => ({
 }));
 
 vi.mock("../utils/zipHandler", () => ({
-  SUPPORTED_EXTENSIONS: [".go", ".sql", ".pas"],
+  SUPPORTED_SOURCE_EXTENSIONS: [".go", ".sql", ".pas"],
   validateZipFile: vi.fn(async () => true),
-  extractFilesFromZip: vi.fn(async () => zipFiles),
+  extractFilesFromZip: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
 }));
 
 vi.mock("../utils/gitHandler", () => ({
   isValidGitUrl: vi.fn((url: string) => /^https:\/\/example\.com\/.+/.test(url)),
-  cloneAndExtractFiles: vi.fn(async () => gitFiles),
+  cloneAndExtractFiles: vi.fn(async () => ({ files: gitFiles, warnings: importWarnings })),
   cleanupTempDir: vi.fn(async () => undefined),
 }));
 
@@ -188,6 +189,7 @@ beforeEach(() => {
   fakeDb = createFakeDb();
   zipFiles = [];
   gitFiles = [];
+  importWarnings = [];
   analyzerResult = null;
 });
 
@@ -234,6 +236,7 @@ describe("project workflow", () => {
     const result = await importProjectZip(1, 7, "encoded");
 
     expect(result.files).toHaveLength(2);
+    expect(result.warnings).toHaveLength(0);
     expect(fakeDb.store.files).toHaveLength(2);
     expect(fakeDb.store.projects[0]).toMatchObject({
       status: "ready",
@@ -261,6 +264,7 @@ describe("project workflow", () => {
     const result = await importProjectGit(1, 7, "https://example.com/org/repo.git");
 
     expect(result.files).toHaveLength(1);
+    expect(result.warnings).toHaveLength(0);
     expect(fakeDb.store.projects[0]).toMatchObject({
       sourceUrl: "https://example.com/org/repo.git",
       status: "ready",
@@ -324,8 +328,11 @@ describe("project workflow", () => {
       riskScore: 8,
       metrics: {
         fileCount: 2,
+        eligibleFileCount: 2,
         analyzedFileCount: 1,
         skippedFileCount: 1,
+        heuristicFileCount: 1,
+        degradedFileCount: 1,
         symbolCount: 2,
         dependencyCount: 1,
         fieldCount: 1,

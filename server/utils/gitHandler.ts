@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type { ImportWarning, ProjectLanguage } from "../../shared/contracts";
 import { simpleGit } from "simple-git";
 import { AppError } from "../appError";
-import { SUPPORTED_EXTENSIONS } from "./zipHandler";
+import { SUPPORTED_SOURCE_EXTENSIONS, UNSUPPORTED_CODE_EXTENSIONS } from "./zipHandler";
 
 const IGNORED_DIRECTORIES = new Set([
   ".git",
@@ -21,30 +22,15 @@ function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
-function detectLanguage(extension: string): string {
-  const languageMap: Record<string, string> = {
+function detectLanguage(extension: string): ProjectLanguage | null {
+  const languageMap: Record<string, ProjectLanguage> = {
     ".go": "go",
     ".sql": "sql",
     ".pas": "delphi",
     ".dpr": "delphi",
     ".delphi": "delphi",
-    ".ts": "typescript",
-    ".js": "javascript",
-    ".java": "java",
-    ".py": "python",
-    ".rb": "ruby",
-    ".php": "php",
-    ".cs": "csharp",
-    ".cpp": "cpp",
-    ".c": "c",
-    ".h": "c",
-    ".hpp": "cpp",
-    ".scala": "scala",
-    ".kt": "kotlin",
-    ".rs": "rust",
-    ".swift": "swift",
   };
-  return languageMap[extension] ?? "unknown";
+  return languageMap[extension] ?? null;
 }
 
 export function isValidGitUrl(url: string): boolean {
@@ -77,18 +63,21 @@ export function extractRepoName(gitUrl: string): string {
 export async function cloneAndExtractFiles(
   gitUrl: string,
   tempDir: string
-): Promise<Array<{ path: string; fileName: string; content: string; language: string; size: number }>> {
+): Promise<{
+  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number }>;
+  warnings: ImportWarning[];
+}> {
   const repoName = extractRepoName(gitUrl);
   const repoPath = path.join(tempDir, repoName);
 
   try {
     await fs.mkdir(tempDir, { recursive: true });
     await simpleGit().clone(gitUrl, repoPath, ["--depth", "1"]);
-    const extractedFiles = await scanDirectoryForCodeFiles(repoPath);
-    if (extractedFiles.length === 0) {
-      throw new AppError("EMPTY_SOURCE", "The repository does not contain supported source files.");
+    const extracted = await scanDirectoryForCodeFiles(repoPath);
+    if (extracted.files.length === 0) {
+      throw new AppError("EMPTY_SOURCE", "The repository does not contain supported Go, SQL, or Delphi source files.");
     }
-    return extractedFiles;
+    return extracted;
   } catch (error) {
     if (error instanceof AppError) {
       throw error;
@@ -100,8 +89,12 @@ export async function cloneAndExtractFiles(
 async function scanDirectoryForCodeFiles(
   directoryPath: string,
   baseDir: string = directoryPath
-): Promise<Array<{ path: string; fileName: string; content: string; language: string; size: number }>> {
-  const extractedFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
+): Promise<{
+  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number }>;
+  warnings: ImportWarning[];
+}> {
+  const files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number }> = [];
+  const warnings: ImportWarning[] = [];
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -112,31 +105,50 @@ async function scanDirectoryForCodeFiles(
       if (IGNORED_DIRECTORIES.has(entry.name)) {
         continue;
       }
-      extractedFiles.push(...(await scanDirectoryForCodeFiles(fullPath, baseDir)));
+      const nested = await scanDirectoryForCodeFiles(fullPath, baseDir);
+      files.push(...nested.files);
+      warnings.push(...nested.warnings);
       continue;
     }
 
     const extension = path.extname(entry.name).toLowerCase();
-    if (!SUPPORTED_EXTENSIONS.includes(extension as (typeof SUPPORTED_EXTENSIONS)[number])) {
+    if (!SUPPORTED_SOURCE_EXTENSIONS.includes(extension as (typeof SUPPORTED_SOURCE_EXTENSIONS)[number])) {
+      if (UNSUPPORTED_CODE_EXTENSIONS.includes(extension as (typeof UNSUPPORTED_CODE_EXTENSIONS)[number])) {
+        warnings.push({
+          code: "IMPORT_LANGUAGE_UNSUPPORTED",
+          message: "The file was skipped because Legacy Lens currently supports import analysis only for Go, SQL, and Delphi.",
+          filePath: relativePath,
+        });
+      }
       continue;
     }
 
     const content = await fs.readFile(fullPath, "utf8");
     const size = Buffer.byteLength(content, "utf8");
     if (size > 5 * 1024 * 1024) {
+      warnings.push({
+        code: "IMPORT_FILE_TOO_LARGE",
+        message: "The file was skipped because it exceeds the maximum supported size.",
+        filePath: relativePath,
+      });
       continue;
     }
 
-    extractedFiles.push({
+    const language = detectLanguage(extension);
+    if (!language) {
+      continue;
+    }
+
+    files.push({
       path: relativePath,
       fileName: entry.name,
       content,
-      language: detectLanguage(extension),
+      language,
       size,
     });
   }
 
-  return extractedFiles;
+  return { files, warnings };
 }
 
 export async function cleanupTempDir(tempDir: string): Promise<void> {

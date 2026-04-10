@@ -1,6 +1,6 @@
 # Legacy Lens TODO
 
-This file tracks post-release work only. Historical bug-fix notes live in the `BUG_FIXES*.md` files and should not be treated as current delivery scope.
+This file tracks post-release work only.
 
 ## Near-term follow-up
 

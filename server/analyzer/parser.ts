@@ -87,6 +87,30 @@ function parseSqlFragments(content: string): Array<{ line: number; sql: string }
   return fragments;
 }
 
+function detectSqlHeuristicWarnings(content: string, file: string): AnalysisWarning[] {
+  const warnings: AnalysisWarning[] = [];
+
+  if (/["'`](SELECT|INSERT|UPDATE|DELETE)[\s\S]*?\n[\s\S]*?["'`]/i.test(content)) {
+    warnings.push({
+      code: "SQL_STRING_MULTILINE",
+      message: "Detected multi-line SQL string; field extraction may be incomplete.",
+      filePath: file,
+      heuristic: true,
+    });
+  }
+
+  if (/(SELECT|INSERT|UPDATE|DELETE)[^;\n]*("?\s*\+|&|\|\|)/i.test(content)) {
+    warnings.push({
+      code: "SQL_DYNAMIC_STRING",
+      message: "Detected dynamically constructed SQL; dependency extraction may be incomplete.",
+      filePath: file,
+      heuristic: true,
+    });
+  }
+
+  return warnings;
+}
+
 function parseSqlReference(sql: string, line: number, file: string, owner?: AnalyzedSymbol): FieldReference[] {
   const normalizedSql = sql.replace(/\s+/g, " ").trim();
   const references: FieldReference[] = [];
@@ -256,7 +280,7 @@ export class GoParser implements FileParser {
   }
 
   collectWarnings() {
-    return [];
+    return detectSqlHeuristicWarnings(this.content, this.file);
   }
 }
 
@@ -328,7 +352,16 @@ export class SQLParser implements FileParser {
   }
 
   collectWarnings() {
-    return [];
+    const warnings = detectSqlHeuristicWarnings(this.content, this.file);
+    if (this.content.includes("\n") && /(SELECT|INSERT|UPDATE|DELETE)\b/i.test(this.content) && !/;/.test(this.content)) {
+      warnings.push({
+        code: "SQL_STATEMENT_MULTILINE",
+        message: "Detected SQL statement spanning multiple lines; object extraction is best-effort.",
+        filePath: this.file,
+        heuristic: true,
+      });
+    }
+    return warnings;
   }
 }
 
@@ -403,7 +436,7 @@ export class DelphiParser implements FileParser {
   }
 
   collectWarnings() {
-    const warnings: AnalysisWarning[] = [];
+    const warnings: AnalysisWarning[] = detectSqlHeuristicWarnings(this.content, this.file);
     if (!/begin\b/i.test(this.content) || !/end\b/i.test(this.content)) {
       warnings.push({
         code: "DELPHI_BLOCK_UNBALANCED",
@@ -452,6 +485,11 @@ export class UnsupportedParser implements FileParser {
 }
 
 export class ParserFactory {
+  static isLanguageSupported(language: string) {
+    const normalized = language.replace(/^\./, "").toLowerCase();
+    return normalized === "go" || normalized === "sql" || normalized === "pas" || normalized === "dpr" || normalized === "delphi";
+  }
+
   static createParser(language: string, content: string, file: string): FileParser {
     const normalized = language.replace(/^\./, "").toLowerCase();
 

@@ -231,10 +231,10 @@ export default function AnalysisResult() {
         ) : null}
 
         <div className="grid gap-4 md:grid-cols-4">
-          <MetricCard title="Symbols" value={metrics?.symbolCount ?? snapshot?.symbols.length ?? 0} />
-          <MetricCard title="Dependencies" value={metrics?.dependencyCount ?? snapshot?.dependencies.length ?? 0} />
-          <MetricCard title="Fields" value={metrics?.fieldCount ?? snapshot?.fields.length ?? 0} />
-          <MetricCard title="Critical risks" value={criticalRisks} emphasis={criticalRisks > 0 ? "danger" : "default"} />
+          <MetricCard title="Imported files" value={metrics?.fileCount ?? 0} />
+          <MetricCard title="Analyzed files" value={metrics?.analyzedFileCount ?? 0} />
+          <MetricCard title="Skipped files" value={metrics?.skippedFileCount ?? 0} emphasis={(metrics?.skippedFileCount ?? 0) > 0 ? "danger" : "default"} />
+          <MetricCard title="Degraded files" value={metrics?.degradedFileCount ?? 0} emphasis={(metrics?.degradedFileCount ?? 0) > 0 ? "danger" : "default"} />
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
@@ -255,11 +255,33 @@ export default function AnalysisResult() {
                 <SummaryRow label="Project status" value={projectStatusLabels[project.status]} />
                 <SummaryRow label="Analysis status" value={analysisStatusLabels[report?.status ?? "pending"]} />
                 <SummaryRow label="Imported files" value={String(metrics?.fileCount ?? 0)} />
+                <SummaryRow label="Eligible files" value={String(metrics?.eligibleFileCount ?? 0)} />
                 <SummaryRow label="Analyzed files" value={String(metrics?.analyzedFileCount ?? 0)} />
                 <SummaryRow label="Skipped files" value={String(metrics?.skippedFileCount ?? 0)} />
+                <SummaryRow label="Heuristic files" value={String(metrics?.heuristicFileCount ?? 0)} />
+                <SummaryRow label="Degraded files" value={String(metrics?.degradedFileCount ?? 0)} />
                 <SummaryRow label="Derived rules" value={String(metrics?.ruleCount ?? snapshot?.rules.length ?? 0)} />
+                <SummaryRow label="Critical risks" value={String(criticalRisks)} />
               </CardContent>
             </Card>
+
+            {(report?.warningsJson?.length ?? 0) > 0 ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Persisted warnings</CardTitle>
+                  <CardDescription>These warnings explain why the result is partial or heuristic.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm text-slate-700">
+                  {(report?.warningsJson ?? []).map((warning, index) => (
+                    <div key={`${warning.code}-${warning.filePath ?? index}`} className="rounded-lg border px-3 py-2">
+                      <p className="font-medium text-slate-950">{warning.code}</p>
+                      <p>{warning.message}</p>
+                      {warning.filePath ? <p className="text-slate-500">{warning.filePath}</p> : null}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ) : null}
 
             {canRunAnalysis ? (
               <Card>

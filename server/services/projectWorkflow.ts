@@ -149,7 +149,7 @@ async function replaceProjectFiles(
     });
 
     await deleteProjectFiles(projectId, tx);
-    const fileIds = await saveExtractedFiles(projectId, extractedFiles, tx);
+    const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);
 
     await transitionProjectState(tx, projectId, {
       status: "ready",
@@ -177,12 +177,13 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
 
     return {
       fileIds,
-      files: extractedFiles.map((file) => ({
+      files: extractedFiles.files.map((file) => ({
         path: file.path,
         fileName: file.fileName,
         language: file.language,
         size: file.size,
       })),
+      warnings: extractedFiles.warnings,
     };
   } catch (error) {
     const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
@@ -215,12 +216,13 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
 
     return {
       fileIds,
-      files: extractedFiles.map((file) => ({
+      files: extractedFiles.files.map((file) => ({
         path: file.path,
         fileName: file.fileName,
         language: file.language,
         size: file.size,
       })),
+      warnings: extractedFiles.warnings,
     };
   } catch (error) {
     const appError = toAppError(error, new AppError("GIT_CLONE_FAILED", "Git import failed."));

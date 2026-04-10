@@ -1,6 +1,8 @@
 # Dependencies
 **/node_modules
 .pnpm-store/
+.manus-logs/
+.webdev/
 
 # Build outputs
 dist/
@@ -100,6 +102,7 @@ jspm_packages/
 # Temporary folders
 tmp/
 temp/
+*.tmp
 
 # Database
 *.db

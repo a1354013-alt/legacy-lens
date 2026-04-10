@@ -21,7 +21,7 @@ export const projects = mysqlTable(
   "projects",
   {
     id: int("id").autoincrement().primaryKey(),
-    userId: int("userId").notNull(),
+    userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
     language: mysqlEnum("language", projectLanguages).notNull(),
@@ -47,7 +47,7 @@ export const files = mysqlTable(
   "files",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     filePath: varchar("filePath", { length: 512 }).notNull(),
     fileName: varchar("fileName", { length: 255 }).notNull(),
     fileType: varchar("fileType", { length: 50 }),
@@ -68,8 +68,8 @@ export const symbols = mysqlTable(
   "symbols",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
-    fileId: int("fileId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    fileId: int("fileId").notNull().references(() => files.id, { onDelete: "cascade", onUpdate: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     type: mysqlEnum("type", ["function", "procedure", "method", "query", "table"]).notNull(),
     startLine: int("startLine").notNull(),
@@ -92,9 +92,9 @@ export const dependencies = mysqlTable(
   "dependencies",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
-    sourceSymbolId: int("sourceSymbolId").notNull(),
-    targetSymbolId: int("targetSymbolId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    sourceSymbolId: int("sourceSymbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    targetSymbolId: int("targetSymbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
     dependencyType: mysqlEnum("dependencyType", ["calls", "reads", "writes", "references"]).notNull(),
     lineNumber: int("lineNumber"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -113,7 +113,7 @@ export const fields = mysqlTable(
   "fields",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     tableName: varchar("tableName", { length: 255 }).notNull(),
     fieldName: varchar("fieldName", { length: 255 }).notNull(),
     fieldType: varchar("fieldType", { length: 100 }),
@@ -132,9 +132,9 @@ export const fieldDependencies = mysqlTable(
   "fieldDependencies",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
-    fieldId: int("fieldId").notNull(),
-    symbolId: int("symbolId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    fieldId: int("fieldId").notNull().references(() => fields.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    symbolId: int("symbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
     operationType: mysqlEnum("operationType", ["read", "write", "calculate"]).notNull(),
     lineNumber: int("lineNumber"),
     context: text("context"),
@@ -154,7 +154,7 @@ export const risks = mysqlTable(
   "risks",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     riskType: mysqlEnum("riskType", [
       "magic_value",
       "multiple_writes",
@@ -184,7 +184,7 @@ export const rules = mysqlTable(
   "rules",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     ruleType: mysqlEnum("ruleType", ["validation", "format", "magic_value", "calculation"]).notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
@@ -205,7 +205,7 @@ export const analysisResults = mysqlTable(
   "analysisResults",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     status: mysqlEnum("status", analysisStatuses).default("pending").notNull(),
     flowMarkdown: text("flowMarkdown"),
     dataDependencyMarkdown: text("dataDependencyMarkdown"),

@@ -180,6 +180,7 @@ export class Analyzer {
 
   async analyzeFile(file: AnalyzableFile): Promise<FileAnalysisResult> {
     const parser = ParserFactory.createParser(file.language, file.content, file.path);
+    const eligible = ParserFactory.isLanguageSupported(file.language);
     const symbols = parser.parseSymbols();
     const dependencies = parser.parseDependencies(symbols);
     const fieldReferences = parser.parseFieldReferences(symbols);
@@ -193,6 +194,10 @@ export class Analyzer {
     ]);
 
     return {
+      eligible,
+      analyzed: eligible,
+      degraded: warnings.length > 0,
+      heuristic: warnings.some((warning) => warning.heuristic),
       symbols,
       dependencies,
       fieldReferences,
@@ -207,9 +212,17 @@ export class Analyzer {
     const fieldReferences = [];
     const risks = [];
     const warnings: AnalysisWarning[] = [];
+    let eligibleFileCount = 0;
+    let analyzedFileCount = 0;
+    let degradedFileCount = 0;
+    let heuristicFileCount = 0;
 
     for (const file of files) {
       const result = await this.analyzeFile(file);
+      eligibleFileCount += result.eligible ? 1 : 0;
+      analyzedFileCount += result.analyzed ? 1 : 0;
+      degradedFileCount += result.degraded ? 1 : 0;
+      heuristicFileCount += result.heuristic ? 1 : 0;
       symbols.push(...result.symbols);
       dependencies.push(...result.dependencies);
       fieldReferences.push(...result.fieldReferences);
@@ -231,8 +244,11 @@ export class Analyzer {
 
     const metrics: AnalysisMetrics = {
       fileCount: files.length,
-      analyzedFileCount: files.length - combinedWarnings.filter((warning) => warning.code === "LANGUAGE_UNSUPPORTED").length,
-      skippedFileCount: combinedWarnings.filter((warning) => warning.code === "LANGUAGE_UNSUPPORTED").length,
+      eligibleFileCount,
+      analyzedFileCount,
+      skippedFileCount: files.length - analyzedFileCount,
+      heuristicFileCount,
+      degradedFileCount,
       symbolCount: symbols.length,
       dependencyCount: combinedDependencies.length,
       fieldCount: new Set(fieldReferences.map((reference) => `${reference.table}.${reference.field}`)).size,
@@ -243,9 +259,9 @@ export class Analyzer {
     };
 
     const status: AnalysisStatus =
-      metrics.analyzedFileCount === 0
+      metrics.eligibleFileCount === 0 || metrics.analyzedFileCount === 0
         ? "failed"
-        : combinedWarnings.length > 0
+        : metrics.skippedFileCount > 0 || metrics.heuristicFileCount > 0 || metrics.degradedFileCount > 0
           ? "partial"
           : "completed";
 

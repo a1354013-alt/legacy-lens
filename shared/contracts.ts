@@ -78,8 +78,11 @@ export interface ReportArchivePayload {
 
 export interface AnalysisMetrics {
   fileCount: number;
+  eligibleFileCount: number;
   analyzedFileCount: number;
   skippedFileCount: number;
+  heuristicFileCount: number;
+  degradedFileCount: number;
   symbolCount: number;
   dependencyCount: number;
   fieldCount: number;
@@ -94,6 +97,12 @@ export interface AnalysisWarning {
   message: string;
   filePath?: string;
   heuristic?: boolean;
+}
+
+export interface ImportWarning {
+  code: string;
+  message: string;
+  filePath?: string;
 }
 
 export interface AnalysisSnapshot {

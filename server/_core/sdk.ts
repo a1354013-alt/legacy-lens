@@ -40,16 +40,12 @@ const GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserI
 class OAuthService {
   constructor(private client: ReturnType<typeof axios.create>) {}
 
-  private decodeState(state: string): string {
-    return atob(state);
-  }
-
-  async getTokenByCode(code: string, state: string): Promise<ExchangeTokenResponse> {
+  async getTokenByCode(code: string, redirectUri: string): Promise<ExchangeTokenResponse> {
     const payload: ExchangeTokenRequest = {
       clientId: ENV.appId,
       grantType: "authorization_code",
       code,
-      redirectUri: this.decodeState(state),
+      redirectUri,
     };
 
     const { data } = await this.client.post<ExchangeTokenResponse>(EXCHANGE_TOKEN_PATH, payload);
@@ -94,8 +90,8 @@ class SDKServer {
     return first ? first.toLowerCase() : null;
   }
 
-  async exchangeCodeForToken(code: string, state: string): Promise<ExchangeTokenResponse> {
-    return this.oauthService.getTokenByCode(code, state);
+  async exchangeCodeForToken(code: string, redirectUri: string): Promise<ExchangeTokenResponse> {
+    return this.oauthService.getTokenByCode(code, redirectUri);
   }
 
   async getUserInfo(accessToken: string): Promise<GetUserInfoResponse> {

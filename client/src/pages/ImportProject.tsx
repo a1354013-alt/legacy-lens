@@ -21,6 +21,12 @@ type ImportedFile = {
   size: number;
 };
 
+type ImportWarning = {
+  code: string;
+  message: string;
+  filePath?: string;
+};
+
 function getPhaseLabel(phase: WorkflowPhase) {
   switch (phase) {
     case "creating":
@@ -75,6 +81,7 @@ export default function ImportProject() {
   const [projectId, setProjectId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importedFiles, setImportedFiles] = useState<ImportedFile[]>([]);
+  const [importWarnings, setImportWarnings] = useState<ImportWarning[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const projectQuery = trpc.projects.getById.useQuery(projectId ?? -1, {
@@ -136,6 +143,7 @@ export default function ImportProject() {
             });
 
       setImportedFiles(importResult.files);
+      setImportWarnings(importResult.warnings);
       setPhase("analyzing");
 
       const analysisResult = await analyzeMutation.mutateAsync(createResult.projectId);
@@ -188,8 +196,18 @@ export default function ImportProject() {
               <p>Server project status: {projectQuery.data?.status ?? "pending"}</p>
               <p>Analysis status: {projectQuery.data?.analysisStatus ?? "pending"}</p>
               {importedFiles.length > 0 ? <p>Imported files: {importedFiles.length}</p> : null}
+              {importWarnings.length > 0 ? <p>Import warnings: {importWarnings.length}</p> : null}
             </CardContent>
           </Card>
+        ) : null}
+
+        {importWarnings.length > 0 ? (
+          <Alert>
+            <AlertTitle>Some files were skipped during import</AlertTitle>
+            <AlertDescription>
+              {importWarnings.slice(0, 5).map((warning) => warning.filePath ?? warning.message).join(" | ")}
+            </AlertDescription>
+          </Alert>
         ) : null}
 
         <form className="space-y-6" onSubmit={handleSubmit}>
