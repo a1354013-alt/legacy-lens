@@ -6,9 +6,13 @@ export interface AnalyzableFile {
   language: string;
 }
 
+export type SymbolType = "function" | "procedure" | "method" | "query" | "table";
+
 export interface AnalyzedSymbol {
+  stableKey: string;
   name: string;
-  type: "function" | "procedure" | "method" | "query" | "table";
+  qualifiedName?: string;
+  type: SymbolType;
   file: string;
   startLine: number;
   endLine: number;
@@ -19,6 +23,8 @@ export interface AnalyzedSymbol {
 export interface SymbolDependency {
   from: string;
   to: string;
+  fromName: string;
+  toName: string;
   type: "calls" | "reads" | "writes" | "references";
   line: number;
 }
@@ -29,6 +35,7 @@ export interface FieldReference {
   type: "read" | "write" | "calculate";
   file: string;
   line: number;
+  symbolStableKey?: string;
   symbolName?: string;
   context?: string;
 }
@@ -77,4 +84,8 @@ export interface ProjectAnalysisResult {
   rulesYaml: string;
   riskScore: number;
   metrics: AnalysisMetrics;
+}
+
+export function buildSymbolStableKey(input: { file: string; name: string; startLine: number }) {
+  return `${input.file.replace(/\\/g, "/")}::${input.name}::${input.startLine}`;
 }

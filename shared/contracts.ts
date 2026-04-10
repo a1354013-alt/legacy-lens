@@ -22,29 +22,29 @@ export type AnalysisStatus = z.infer<typeof analysisStatusSchema>;
 export type ReportFormat = z.infer<typeof reportFormatSchema>;
 
 export const projectStatusLabels: Record<ProjectStatus, string> = {
-  draft: "待匯入",
-  importing: "匯入中",
-  ready: "可分析",
-  analyzing: "分析中",
-  completed: "已完成",
-  failed: "失敗",
+  draft: "Draft",
+  importing: "Importing",
+  ready: "Ready",
+  analyzing: "Analyzing",
+  completed: "Completed",
+  failed: "Failed",
 };
 
 export const analysisStatusLabels: Record<AnalysisStatus, string> = {
-  pending: "未開始",
-  processing: "分析中",
-  completed: "分析完成",
-  partial: "部分完成",
-  failed: "分析失敗",
+  pending: "Pending",
+  processing: "Processing",
+  completed: "Completed",
+  partial: "Completed with warnings",
+  failed: "Failed",
 };
 
 export const statusDescriptions: Record<ProjectStatus, string> = {
-  draft: "專案已建立，尚未匯入檔案。",
-  importing: "系統正在寫入或替換專案檔案。",
-  ready: "檔案已成功匯入，尚未啟動分析。",
-  analyzing: "分析器正在讀取檔案並寫回結果。",
-  completed: "分析與報告已成功落地。",
-  failed: "最近一次匯入或分析失敗，請查看錯誤訊息。",
+  draft: "The project exists but source import has not started yet.",
+  importing: "The server is validating and storing imported source files.",
+  ready: "The source import completed successfully and analysis can start.",
+  analyzing: "The server workflow is computing analysis artifacts for this project.",
+  completed: "The latest server-side analysis finished successfully.",
+  failed: "The latest import or analysis workflow failed and needs attention.",
 };
 
 export const appErrorCodes = [
@@ -93,6 +93,7 @@ export interface AnalysisWarning {
   code: string;
   message: string;
   filePath?: string;
+  heuristic?: boolean;
 }
 
 export interface AnalysisSnapshot {

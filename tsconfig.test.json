@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["server/**/*.test.ts", "server/**/*.spec.ts"],
+  "exclude": ["node_modules", "build", "dist"],
+  "compilerOptions": {
+    "types": ["node", "vite/client", "vitest/globals"]
+  }
+}

@@ -3,13 +3,15 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
+import { validateDbConfig } from "../db";
 import { createContext } from "./context";
+import { validateRuntimeConfig } from "./env";
+import { registerOAuthRoutes } from "./oauth";
 import { serveStatic, setupVite } from "./vite";
 
 function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     const server = net.createServer();
     server.listen(port, () => {
       server.close(() => resolve(true));
@@ -18,24 +20,27 @@ function isPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-async function findAvailablePort(startPort: number = 3000): Promise<number> {
-  for (let port = startPort; port < startPort + 20; port++) {
+async function findAvailablePort(startPort = 3000): Promise<number> {
+  for (let port = startPort; port < startPort + 20; port += 1) {
     if (await isPortAvailable(port)) {
       return port;
     }
   }
+
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
 async function startServer() {
+  validateRuntimeConfig();
+  await validateDbConfig();
+
   const app = express();
   const server = createServer(app);
-  // Configure body parser with larger size limit for file uploads
+
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  // OAuth callback under /api/oauth/callback
+
   registerOAuthRoutes(app);
-  // tRPC API
   app.use(
     "/api/trpc",
     createExpressMiddleware({
@@ -43,35 +48,23 @@ async function startServer() {
       createContext,
     })
   );
-  // development mode uses Vite, production mode uses static files
+
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
   } else {
     serveStatic(app);
   }
 
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  
-  // P2-D FIX: In production, fail fast if port is occupied
-  // In development, find available port for convenience
+  const preferredPort = Number.parseInt(process.env.PORT || "3000", 10);
   let port = preferredPort;
-  
+
   if (process.env.NODE_ENV === "development") {
-    // Development: find available port
     port = await findAvailablePort(preferredPort);
     if (port !== preferredPort) {
       console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
     }
-  } else {
-    // Production: fail fast if port is occupied
-    const isAvailable = await isPortAvailable(preferredPort);
-    if (!isAvailable) {
-      throw new Error(
-        `Port ${preferredPort} is already in use. ` +
-        `Set PORT environment variable to use a different port. ` +
-        `In containerized environments, ensure the port is not bound to a specific IP address.`
-      );
-    }
+  } else if (!(await isPortAvailable(preferredPort))) {
+    throw new Error(`Port ${preferredPort} is already in use. Set PORT to a different value before starting the server.`);
   }
 
   server.listen(port, () => {
@@ -79,4 +72,7 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+startServer().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

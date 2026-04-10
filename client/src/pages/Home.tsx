@@ -1,13 +1,13 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Plus, FileSearch, GitBranch, Trash2, RefreshCcw, FileText } from "lucide-react";
-import { projectStatusLabels, analysisStatusLabels, type AnalysisStatus, type ProjectStatus, type ProjectLanguage, type ProjectSourceType } from "@shared/contracts";
+import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
+import { analysisStatusLabels, projectStatusLabels, type AnalysisStatus, type ProjectLanguage, type ProjectSourceType, type ProjectStatus } from "@shared/contracts";
+import { FileSearch, FileText, GitBranch, Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -25,9 +25,9 @@ type ProjectRow = {
 };
 
 function getBadgeVariant(status: ProjectStatus | AnalysisStatus) {
-  if (status === "failed") return "destructive";
-  if (status === "completed") return "default";
-  return "secondary";
+  if (status === "failed") return "destructive" as const;
+  if (status === "completed") return "default" as const;
+  return "secondary" as const;
 }
 
 export default function Home() {
@@ -58,24 +58,24 @@ export default function Home() {
       <div className="min-h-screen bg-slate-50">
         <main className="mx-auto flex min-h-screen max-w-5xl flex-col justify-center gap-10 px-6 py-16">
           <div className="space-y-4">
-            <Badge variant="outline">PlateauBreaker</Badge>
+            <Badge variant="outline">Legacy Lens</Badge>
             <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-slate-950">
-              匯入舊系統程式碼，產出可追蹤的流程、資料依賴與風險報告。
+              Import a legacy codebase, analyze structural dependencies, and export a reviewable report package.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-slate-600">
-              目前版本支援 ZIP 匯入與 Git 匯入，分析 Go、SQL、Delphi 檔案，並將結果寫回資料庫後提供下載。
+              The current delivery path focuses on deterministic import, server-owned workflow state, persisted analysis artifacts, and reproducible report export.
             </p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            <FeatureCard title="流程閉合" description="專案建立、檔案匯入、分析寫回、報告下載與刪除都會反映在狀態欄位。" />
-            <FeatureCard title="資料契約清楚" description="前後端共用狀態與下載契約，避免欄位漂移與假成功畫面。" />
-            <FeatureCard title="可追蹤結果" description="風險、欄位依賴、符號、規則與 Markdown 產物會一起落地。" />
+            <FeatureCard title="Import Sources" description="Create a project from ZIP upload or Git clone and store normalized source files in MySQL." />
+            <FeatureCard title="Persisted Analysis" description="Run heuristic analysis for Go, SQL, and Delphi, then persist symbols, dependencies, risks, rules, and documents." />
+            <FeatureCard title="Exportable Reports" description="Review the saved result in the UI and download the same persisted report bundle as a ZIP archive." />
           </div>
 
           <div>
             <Button size="lg" onClick={() => (window.location.href = getLoginUrl())}>
-              登入並開始
+              Sign in
             </Button>
           </div>
         </main>
@@ -90,14 +90,14 @@ export default function Home() {
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div>
-            <p className="text-sm font-medium text-slate-500">PlateauBreaker</p>
-            <h1 className="text-2xl font-semibold text-slate-950">專案首頁</h1>
+            <p className="text-sm font-medium text-slate-500">Legacy Lens</p>
+            <h1 className="text-2xl font-semibold text-slate-950">Projects</h1>
           </div>
           <div className="flex items-center gap-3">
-            <span className="hidden text-sm text-slate-600 sm:inline">{user?.name ?? user?.email ?? "使用者"}</span>
+            <span className="hidden text-sm text-slate-600 sm:inline">{user?.name ?? user?.email ?? "Signed-in user"}</span>
             <Button variant="outline" onClick={() => setLocation("/import")}>
               <Plus className="mr-2 size-4" />
-              匯入專案
+              New project
             </Button>
             <Button
               variant="ghost"
@@ -106,7 +106,7 @@ export default function Home() {
                 window.location.href = getLoginUrl();
               }}
             >
-              登出
+              Sign out
             </Button>
           </div>
         </div>
@@ -115,19 +115,19 @@ export default function Home() {
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         {projectsQuery.error ? (
           <Alert variant="destructive">
-            <AlertTitle>專案列表載入失敗</AlertTitle>
+            <AlertTitle>Failed to load projects</AlertTitle>
             <AlertDescription>{projectsQuery.error.message}</AlertDescription>
           </Alert>
         ) : null}
 
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-slate-950">最近專案</h2>
-            <p className="text-sm text-slate-600">每個專案都會顯示匯入與分析的最新狀態。</p>
+            <h2 className="text-xl font-semibold text-slate-950">Recent work</h2>
+            <p className="text-sm text-slate-600">Server workflow state and analysis status are shown separately so the delivery path stays traceable.</p>
           </div>
           <Button variant="outline" onClick={() => projectsQuery.refetch()} disabled={projectsQuery.isFetching}>
             <RefreshCcw className="mr-2 size-4" />
-            重新整理
+            Refresh
           </Button>
         </div>
 
@@ -143,11 +143,11 @@ export default function Home() {
                   <EmptyMedia variant="icon">
                     <FileSearch />
                   </EmptyMedia>
-                  <EmptyTitle>還沒有專案</EmptyTitle>
-                  <EmptyDescription>先建立一個專案並匯入 ZIP 或 Git repository，之後才能啟動分析。</EmptyDescription>
+                  <EmptyTitle>No projects yet</EmptyTitle>
+                  <EmptyDescription>Create a project and import a ZIP archive or Git repository to begin analysis.</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
-                  <Button onClick={() => setLocation("/import")}>前往匯入頁</Button>
+                  <Button onClick={() => setLocation("/import")}>Create project</Button>
                 </EmptyContent>
               </Empty>
             </CardContent>
@@ -161,13 +161,13 @@ export default function Home() {
                 deleting={deleteProjectMutation.isPending && deleteProjectMutation.variables === project.id}
                 onOpen={() => setLocation(`/projects/${project.id}/analysis`)}
                 onDelete={async () => {
-                  const confirmed = window.confirm(`確定要刪除專案「${project.name}」嗎？這會一併刪除檔案與分析結果。`);
+                  const confirmed = window.confirm(`Delete project "${project.name}" and all imported files, analysis artifacts, and reports?`);
                   if (!confirmed) return;
                   try {
                     await deleteProjectMutation.mutateAsync(project.id);
-                    toast.success("專案已刪除。");
+                    toast.success("Project deleted.");
                   } catch (error) {
-                    toast.error(error instanceof Error ? error.message : "刪除失敗。");
+                    toast.error(error instanceof Error ? error.message : "Failed to delete project.");
                   }
                 }}
               />
@@ -203,19 +203,17 @@ function ProjectCard({
   onOpen: () => void;
   onDelete: () => Promise<void>;
 }) {
-  const analysisStatus = project.analysisStatus ?? "pending";
-
   return (
     <Card className="transition-shadow hover:shadow-md">
       <CardHeader className="gap-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <CardTitle>{project.name}</CardTitle>
-            <CardDescription>{project.description || "未提供描述"}</CardDescription>
+            <CardDescription>{project.description || "No description provided."}</CardDescription>
           </div>
           <div className="flex flex-col items-end gap-2">
             <Badge variant={getBadgeVariant(project.status)}>{projectStatusLabels[project.status]}</Badge>
-            <Badge variant={getBadgeVariant(analysisStatus)}>{analysisStatusLabels[analysisStatus]}</Badge>
+            <Badge variant={getBadgeVariant(project.analysisStatus)}>{analysisStatusLabels[project.analysisStatus]}</Badge>
           </div>
         </div>
       </CardHeader>
@@ -227,32 +225,27 @@ function ProjectCard({
           </div>
           <div className="flex items-center gap-2">
             <GitBranch className="size-4" />
-            <span>{project.sourceType === "git" ? "Git 匯入" : "ZIP 匯入"}</span>
+            <span>{project.sourceType === "git" ? "Git import" : "ZIP upload"}</span>
           </div>
         </div>
 
-        {project.importProgress > 0 && project.importProgress < 100 ? (
-          <p className="text-sm text-slate-600">匯入進度 {project.importProgress}%</p>
-        ) : null}
-
-        {project.analysisProgress > 0 && project.status === "analyzing" ? (
-          <p className="text-sm text-slate-600">分析進度 {project.analysisProgress}%</p>
-        ) : null}
+        {project.status === "importing" ? <p className="text-sm text-slate-600">Import is running on the server.</p> : null}
+        {project.status === "analyzing" ? <p className="text-sm text-slate-600">Analysis is running on the server.</p> : null}
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>最近一次流程失敗</AlertTitle>
+            <AlertTitle>Latest workflow error</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
 
         <div className="flex items-center justify-between gap-3">
           <Button variant="outline" onClick={onOpen}>
-            開啟結果
+            Open analysis
           </Button>
           <Button variant="ghost" disabled={deleting} onClick={() => void onDelete()}>
             {deleting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Trash2 className="mr-2 size-4" />}
-            刪除
+            Delete
           </Button>
         </div>
       </CardContent>

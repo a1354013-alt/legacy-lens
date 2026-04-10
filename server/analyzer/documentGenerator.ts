@@ -1,17 +1,24 @@
 import type { AnalyzedSymbol, DetectedRisk, DetectedRule, FieldReference, SymbolDependency } from "./types";
 
-function unique<T>(values: T[]): T[] {
+function unique<T>(values: T[]) {
   return Array.from(new Set(values));
 }
 
 export class DocumentGenerator {
   generateFlowDocument(symbols: AnalyzedSymbol[], dependencies: SymbolDependency[]): string {
+    const symbolByKey = new Map(symbols.map((symbol) => [symbol.stableKey, symbol]));
     const entryPoints = symbols.filter((symbol) => ["main", "serve", "handler"].includes(symbol.name.toLowerCase()));
     const roots = entryPoints.length > 0 ? entryPoints : symbols.slice(0, 8);
-    const lines = ["# FLOW", "", "This document summarizes the discovered callable entry points and downstream calls.", ""];
+    const lines = [
+      "# FLOW",
+      "",
+      "This document summarizes discovered callable entry points and downstream calls.",
+      "Heuristic note: symbol and dependency resolution is best-effort, not compiler-grade.",
+      "",
+    ];
 
     for (const symbol of roots) {
-      lines.push(`## ${symbol.name}`);
+      lines.push(`## ${symbol.qualifiedName ?? symbol.name}`);
       lines.push("");
       lines.push(`- Type: ${symbol.type}`);
       lines.push(`- Location: ${symbol.file}:${symbol.startLine}`);
@@ -19,7 +26,10 @@ export class DocumentGenerator {
         lines.push(`- Signature: \`${symbol.signature}\``);
       }
 
-      const downstream = dependencies.filter((dependency) => dependency.from === symbol.name).map((dependency) => dependency.to);
+      const downstream = dependencies
+        .filter((dependency) => dependency.from === symbol.stableKey)
+        .map((dependency) => symbolByKey.get(dependency.to)?.qualifiedName ?? symbolByKey.get(dependency.to)?.name ?? dependency.toName);
+
       lines.push(`- Downstream calls: ${downstream.length > 0 ? unique(downstream).join(", ") : "None detected"}`);
       lines.push("");
     }
@@ -39,7 +49,13 @@ export class DocumentGenerator {
       byTable.set(reference.table, bucket);
     }
 
-    const lines = ["# DATA_DEPENDENCY", "", "This document tracks read/write/calculate activity per table field.", ""];
+    const lines = [
+      "# DATA_DEPENDENCY",
+      "",
+      "This document tracks read/write/calculate activity per table field.",
+      "Heuristic note: SQL extraction from application code is best-effort.",
+      "",
+    ];
 
     for (const [tableName, references] of Array.from(byTable.entries())) {
       lines.push(`## ${tableName}`);
@@ -53,15 +69,9 @@ export class DocumentGenerator {
       }
 
       for (const [fieldName, fieldEntries] of Array.from(fieldMap.entries())) {
-        const reads = fieldEntries
-          .filter((entry: FieldReference) => entry.type === "read")
-          .map((entry: FieldReference) => `${entry.file}:${entry.line}`);
-        const writes = fieldEntries
-          .filter((entry: FieldReference) => entry.type === "write")
-          .map((entry: FieldReference) => `${entry.file}:${entry.line}`);
-        const calcs = fieldEntries
-          .filter((entry: FieldReference) => entry.type === "calculate")
-          .map((entry: FieldReference) => `${entry.file}:${entry.line}`);
+        const reads = fieldEntries.filter((entry) => entry.type === "read").map((entry) => `${entry.file}:${entry.line}`);
+        const writes = fieldEntries.filter((entry) => entry.type === "write").map((entry) => `${entry.file}:${entry.line}`);
+        const calcs = fieldEntries.filter((entry) => entry.type === "calculate").map((entry) => `${entry.file}:${entry.line}`);
         lines.push(`### ${fieldName}`);
         lines.push("");
         lines.push(`- Reads: ${reads.length > 0 ? reads.join(", ") : "None"}`);

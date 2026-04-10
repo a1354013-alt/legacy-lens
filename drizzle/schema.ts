@@ -1,6 +1,6 @@
 import type { AnalysisMetrics, AnalysisWarning } from "../shared/contracts";
 import { analysisStatuses, fileStatuses, projectLanguages, projectSourceTypes, projectStatuses } from "../shared/contracts";
-import { index, int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
@@ -219,6 +219,7 @@ export const analysisResults = mysqlTable(
   },
   (table) => ({
     projectIdIdx: index("analysisResults_projectId_idx").on(table.projectId),
+    projectIdUniqueIdx: uniqueIndex("analysisResults_projectId_unique").on(table.projectId),
   })
 );
 

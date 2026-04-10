@@ -1,15 +1,6 @@
 import { useMemo, useState } from "react";
 import { useLocation, useRoute } from "wouter";
-import {
-  AlertCircle,
-  ArrowLeft,
-  Download,
-  FileText,
-  Loader2,
-  RefreshCcw,
-  ShieldAlert,
-  TriangleAlert,
-} from "lucide-react";
+import { ArrowLeft, Download, FileText, Loader2, RefreshCcw, ShieldAlert, TriangleAlert } from "lucide-react";
 import { analysisStatusLabels, projectStatusLabels } from "@shared/contracts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -38,7 +29,7 @@ function downloadBase64File(base64: string, fileName: string, mimeType: string) 
 
 function renderDocumentPreview(content: string | null | undefined) {
   if (!content) {
-    return "尚未產生。";
+    return "No persisted document is available yet.";
   }
   return content.split("\n").slice(0, 12).join("\n");
 }
@@ -46,7 +37,7 @@ function renderDocumentPreview(content: string | null | undefined) {
 export default function AnalysisResult() {
   const [, setLocation] = useLocation();
   const [, params] = useRoute("/projects/:id/analysis");
-  const projectId = params?.id ? Number(params.id) : NaN;
+  const projectId = params?.id ? Number(params.id) : Number.NaN;
   const [activeTab, setActiveTab] = useState("overview");
   const utils = trpc.useUtils();
 
@@ -54,10 +45,18 @@ export default function AnalysisResult() {
     enabled: Number.isFinite(projectId),
     refetchOnWindowFocus: false,
   });
+
+  const pollEnabled =
+    projectQuery.data?.status === "analyzing" ||
+    projectQuery.data?.analysisStatus === "pending" ||
+    projectQuery.data?.analysisStatus === "processing";
+
   const snapshotQuery = trpc.analysis.getSnapshot.useQuery(projectId, {
     enabled: Number.isFinite(projectId),
+    refetchInterval: pollEnabled ? 2000 : false,
     refetchOnWindowFocus: false,
   });
+
   const reportDownloadQuery = trpc.analysis.downloadReport.useQuery(
     { projectId, format: "zip" },
     { enabled: false }
@@ -81,14 +80,19 @@ export default function AnalysisResult() {
   );
 
   const canRunAnalysis = project ? ["ready", "failed", "completed"].includes(project.status) : false;
+  const isAnalyzing = project?.status === "analyzing" || report?.status === "processing";
 
   const handleRunAnalysis = async () => {
     if (!project) return;
     try {
       const result = await triggerAnalysisMutation.mutateAsync(project.id);
-      toast.success(result.status === "partial" ? "分析已完成，但有警告。" : "分析已完成。");
+      toast.success(
+        result.status === "partial"
+          ? "Analysis completed with warnings. Review heuristic output before using it as source-of-truth."
+          : "Analysis completed."
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "分析失敗。");
+      toast.error(error instanceof Error ? error.message : "Analysis failed.");
     }
   };
 
@@ -96,13 +100,13 @@ export default function AnalysisResult() {
     try {
       const result = await reportDownloadQuery.refetch();
       if (!result.data) {
-        toast.error("報告尚未準備完成。");
+        toast.error("The persisted report archive is not ready yet.");
         return;
       }
       downloadBase64File(result.data.base64, result.data.fileName, result.data.mimeType);
-      toast.success("報告已下載。");
+      toast.success("Report downloaded.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "下載失敗。");
+      toast.error(error instanceof Error ? error.message : "Failed to download report.");
     }
   };
 
@@ -110,8 +114,8 @@ export default function AnalysisResult() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <Alert variant="destructive">
-          <AlertTitle>路由參數錯誤</AlertTitle>
-          <AlertDescription>無法辨識專案編號。</AlertDescription>
+          <AlertTitle>Invalid project identifier</AlertTitle>
+          <AlertDescription>The requested project id is not valid.</AlertDescription>
         </Alert>
       </div>
     );
@@ -129,8 +133,8 @@ export default function AnalysisResult() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
-          <AlertTitle>找不到專案</AlertTitle>
-          <AlertDescription>{projectQuery.error?.message ?? "此專案不存在或你沒有權限存取。"}</AlertDescription>
+          <AlertTitle>Project not available</AlertTitle>
+          <AlertDescription>{projectQuery.error?.message ?? "The project could not be loaded."}</AlertDescription>
         </Alert>
       </div>
     );
@@ -143,21 +147,21 @@ export default function AnalysisResult() {
           <div className="flex items-center gap-4">
             <Button variant="ghost" onClick={() => setLocation("/")}>
               <ArrowLeft className="mr-2 size-4" />
-              返回首頁
+              Back to projects
             </Button>
             <div>
               <h1 className="text-2xl font-semibold text-slate-950">{project.name}</h1>
-              <p className="text-sm text-slate-600">查看目前專案狀態、分析結果與報告產物。</p>
+              <p className="text-sm text-slate-600">The report view and ZIP export both come from the same persisted analysis result row.</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <Button variant="outline" onClick={() => snapshotQuery.refetch()} disabled={snapshotQuery.isFetching}>
               <RefreshCcw className="mr-2 size-4" />
-              重新整理
+              Refresh
             </Button>
-            <Button onClick={handleDownloadReport} disabled={reportDownloadQuery.isFetching || !report}>
+            <Button onClick={handleDownloadReport} disabled={reportDownloadQuery.isFetching || !report || isAnalyzing}>
               {reportDownloadQuery.isFetching ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}
-              下載報告
+              Download ZIP
             </Button>
           </div>
         </div>
@@ -165,104 +169,108 @@ export default function AnalysisResult() {
 
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         <div className="flex flex-wrap items-center gap-3">
-          <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>
-            專案狀態：{projectStatusLabels[project.status]}
-          </Badge>
+          <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>Project: {projectStatusLabels[project.status]}</Badge>
           <Badge variant={report?.status === "failed" ? "destructive" : report?.status === "completed" ? "default" : "secondary"}>
-            分析狀態：{analysisStatusLabels[report?.status ?? "pending"]}
+            Analysis: {analysisStatusLabels[report?.status ?? "pending"]}
           </Badge>
-          <Badge variant="outline">語言：{project.language.toUpperCase()}</Badge>
-          <Badge variant="outline">來源：{project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
+          <Badge variant="outline">Language: {project.language.toUpperCase()}</Badge>
+          <Badge variant="outline">Source: {project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
         </div>
+
+        <Alert>
+          <AlertTitle>Heuristic analysis</AlertTitle>
+          <AlertDescription>Go, SQL, and Delphi parsing in this release is heuristic. Review output before treating it as compiler-grade semantic truth.</AlertDescription>
+        </Alert>
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>最近一次流程失敗</AlertTitle>
+            <AlertTitle>Latest workflow error</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
 
         {report?.status === "partial" ? (
           <Alert>
-            <AlertTitle>分析已完成，但有警告</AlertTitle>
+            <AlertTitle>Completed with warnings</AlertTitle>
             <AlertDescription>
-              {(report.warningsJson ?? []).map((warning) => warning.message).join("；") || "部分檔案被略過或只能提供最佳努力結果。"}
+              {(report.warningsJson ?? []).map((warning) => warning.message).join(" | ") || "Some files were skipped or analyzed with reduced confidence."}
             </AlertDescription>
           </Alert>
         ) : null}
 
-        {!report && project.status !== "analyzing" ? (
+        {isAnalyzing ? (
           <Card>
             <CardHeader>
-              <CardTitle>尚未有可用分析結果</CardTitle>
-              <CardDescription>只有在檔案成功匯入且分析寫回完成後，這個頁面才會顯示完整內容。</CardDescription>
+              <CardTitle>Analysis in progress</CardTitle>
+              <CardDescription>This page is polling the server every 2 seconds until the workflow reaches a terminal state.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-slate-600">
+              <p>Project workflow: {project.status}</p>
+              <p>Analysis row: {report?.status ?? "pending"}</p>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {!report && !isAnalyzing ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>No analysis result yet</CardTitle>
+              <CardDescription>Run analysis to generate persisted artifacts, UI snapshots, and downloadable report content.</CardDescription>
             </CardHeader>
             <CardContent>
               {canRunAnalysis ? (
                 <Button onClick={handleRunAnalysis} disabled={triggerAnalysisMutation.isPending}>
                   {triggerAnalysisMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <TriangleAlert className="mr-2 size-4" />}
-                  重新執行分析
+                  Run analysis
                 </Button>
               ) : (
-                <p className="text-sm text-slate-600">目前專案狀態不允許啟動分析。</p>
+                <p className="text-sm text-slate-600">The current project state does not allow analysis right now.</p>
               )}
             </CardContent>
           </Card>
         ) : null}
 
-        {project.status === "analyzing" ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>分析進行中</CardTitle>
-              <CardDescription>後端正在處理檔案與寫回結果，完成前不會顯示為成功。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-slate-600">分析進度 {project.analysisProgress}%</p>
-            </CardContent>
-          </Card>
-        ) : null}
-
         <div className="grid gap-4 md:grid-cols-4">
-          <MetricCard title="符號" value={metrics?.symbolCount ?? snapshot?.symbols.length ?? 0} />
-          <MetricCard title="依賴" value={metrics?.dependencyCount ?? snapshot?.dependencies.length ?? 0} />
-          <MetricCard title="欄位" value={metrics?.fieldCount ?? snapshot?.fields.length ?? 0} />
-          <MetricCard title="Critical 風險" value={criticalRisks} emphasis={criticalRisks > 0 ? "danger" : "default"} />
+          <MetricCard title="Symbols" value={metrics?.symbolCount ?? snapshot?.symbols.length ?? 0} />
+          <MetricCard title="Dependencies" value={metrics?.dependencyCount ?? snapshot?.dependencies.length ?? 0} />
+          <MetricCard title="Fields" value={metrics?.fieldCount ?? snapshot?.fields.length ?? 0} />
+          <MetricCard title="Critical risks" value={criticalRisks} emphasis={criticalRisks > 0 ? "danger" : "default"} />
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList>
-            <TabsTrigger value="overview">總覽</TabsTrigger>
-            <TabsTrigger value="risks">風險</TabsTrigger>
-            <TabsTrigger value="symbols">符號</TabsTrigger>
-            <TabsTrigger value="documents">文件</TabsTrigger>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="risks">Risks</TabsTrigger>
+            <TabsTrigger value="symbols">Symbols</TabsTrigger>
+            <TabsTrigger value="documents">Documents</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>分析摘要</CardTitle>
-                <CardDescription>這些數字全部來自後端實際落地的分析結果。</CardDescription>
+                <CardTitle>Analysis summary</CardTitle>
+                <CardDescription>These counts come from the persisted analysis result snapshot.</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-3 text-sm md:grid-cols-2">
-                <SummaryRow label="專案狀態" value={projectStatusLabels[project.status]} />
-                <SummaryRow label="分析狀態" value={analysisStatusLabels[report?.status ?? "pending"]} />
-                <SummaryRow label="檔案總數" value={String(metrics?.fileCount ?? 0)} />
-                <SummaryRow label="已分析檔案" value={String(metrics?.analyzedFileCount ?? 0)} />
-                <SummaryRow label="略過檔案" value={String(metrics?.skippedFileCount ?? 0)} />
-                <SummaryRow label="規則數量" value={String(metrics?.ruleCount ?? snapshot?.rules.length ?? 0)} />
+                <SummaryRow label="Project status" value={projectStatusLabels[project.status]} />
+                <SummaryRow label="Analysis status" value={analysisStatusLabels[report?.status ?? "pending"]} />
+                <SummaryRow label="Imported files" value={String(metrics?.fileCount ?? 0)} />
+                <SummaryRow label="Analyzed files" value={String(metrics?.analyzedFileCount ?? 0)} />
+                <SummaryRow label="Skipped files" value={String(metrics?.skippedFileCount ?? 0)} />
+                <SummaryRow label="Derived rules" value={String(metrics?.ruleCount ?? snapshot?.rules.length ?? 0)} />
               </CardContent>
             </Card>
 
             {canRunAnalysis ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>重新執行</CardTitle>
-                  <CardDescription>當你重新匯入檔案或修正失敗狀態後，可以再次執行分析。</CardDescription>
+                  <CardTitle>Re-run analysis</CardTitle>
+                  <CardDescription>Use this when imported files changed or when you want to regenerate the persisted analysis snapshot.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <Button onClick={handleRunAnalysis} disabled={triggerAnalysisMutation.isPending}>
                     {triggerAnalysisMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <ShieldAlert className="mr-2 size-4" />}
-                    重新分析
+                    Run analysis
                   </Button>
                 </CardContent>
               </Card>
@@ -276,23 +284,21 @@ export default function AnalysisResult() {
                   <CardHeader>
                     <div className="flex items-center justify-between gap-4">
                       <CardTitle className="text-lg">{risk.title}</CardTitle>
-                      <Badge variant={risk.severity === "critical" || risk.severity === "high" ? "destructive" : "secondary"}>
-                        {risk.severity}
-                      </Badge>
+                      <Badge variant={risk.severity === "critical" || risk.severity === "high" ? "destructive" : "secondary"}>{risk.severity}</Badge>
                     </div>
                     <CardDescription>
                       {risk.sourceFile ?? "unknown"}:{risk.lineNumber ?? "?"}
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2 text-sm text-slate-700">
-                    <p>{risk.description ?? "未提供描述"}</p>
-                    {risk.recommendation ? <p className="text-slate-600">建議：{risk.recommendation}</p> : null}
+                    <p>{risk.description ?? "No description provided."}</p>
+                    {risk.recommendation ? <p className="text-slate-600">Recommendation: {risk.recommendation}</p> : null}
                   </CardContent>
                 </Card>
               ))
             ) : (
               <Card>
-                <CardContent className="py-10 text-center text-sm text-slate-600">目前沒有已落地的風險紀錄。</CardContent>
+                <CardContent className="py-10 text-center text-sm text-slate-600">No persisted risks were found for this project.</CardContent>
               </Card>
             )}
           </TabsContent>
@@ -300,12 +306,12 @@ export default function AnalysisResult() {
           <TabsContent value="symbols" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>符號與欄位摘要</CardTitle>
-                <CardDescription>確認資料流是否真的寫回到資料庫。</CardDescription>
+                <CardTitle>Symbols and fields</CardTitle>
+                <CardDescription>This view is sourced from the persisted database snapshot rather than recomputing in the browser.</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2 rounded-lg border p-4">
-                  <h3 className="font-medium text-slate-950">符號</h3>
+                  <h3 className="font-medium text-slate-950">Symbols</h3>
                   <div className="space-y-2 text-sm">
                     {(snapshot?.symbols.slice(0, 12) ?? []).map((symbol) => (
                       <div key={symbol.id} className="flex items-center justify-between gap-3">
@@ -316,7 +322,7 @@ export default function AnalysisResult() {
                   </div>
                 </div>
                 <div className="space-y-2 rounded-lg border p-4">
-                  <h3 className="font-medium text-slate-950">欄位</h3>
+                  <h3 className="font-medium text-slate-950">Fields</h3>
                   <div className="space-y-2 text-sm">
                     {(snapshot?.fields.slice(0, 12) ?? []).map((field) => (
                       <div key={field.id} className="flex items-center justify-between gap-3">
@@ -333,10 +339,10 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="documents" className="grid gap-4 lg:grid-cols-2">
-            <DocumentCard title="FLOW.md" description="流程摘要" content={renderDocumentPreview(report?.flowMarkdown)} />
-            <DocumentCard title="DATA_DEPENDENCY.md" description="資料依賴" content={renderDocumentPreview(report?.dataDependencyMarkdown)} />
-            <DocumentCard title="RISKS.md" description="風險清單" content={renderDocumentPreview(report?.risksMarkdown)} />
-            <DocumentCard title="RULES.yaml" description="規則彙整" content={renderDocumentPreview(report?.rulesYaml)} />
+            <DocumentCard title="FLOW.md" description="Call-flow summary" content={renderDocumentPreview(report?.flowMarkdown)} />
+            <DocumentCard title="DATA_DEPENDENCY.md" description="Field read/write summary" content={renderDocumentPreview(report?.dataDependencyMarkdown)} />
+            <DocumentCard title="RISKS.md" description="Risk register" content={renderDocumentPreview(report?.risksMarkdown)} />
+            <DocumentCard title="RULES.yaml" description="Derived rules" content={renderDocumentPreview(report?.rulesYaml)} />
           </TabsContent>
         </Tabs>
       </main>

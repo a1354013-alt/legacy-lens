@@ -98,6 +98,18 @@ function dedupeRisks(risks: DetectedRisk[]): DetectedRisk[] {
   });
 }
 
+function dedupeWarnings(warnings: AnalysisWarning[]): AnalysisWarning[] {
+  const seen = new Set<string>();
+  return warnings.filter((warning) => {
+    const key = `${warning.code}:${warning.filePath ?? ""}:${warning.message}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 function buildRules(fieldReferences: FieldReference[], risks: DetectedRisk[]): DetectedRule[] {
   const rules: DetectedRule[] = [];
   const writeCounts = new Map<string, number>();
@@ -207,25 +219,33 @@ export class Analyzer {
 
     const combinedRisks = dedupeRisks([...risks, ...this.riskDetector.detectMultipleWrites(fieldReferences)]);
     const combinedDependencies = dedupeDependencies(dependencies);
+    const combinedWarnings = dedupeWarnings([
+      ...warnings,
+      {
+        code: "HEURISTIC_ANALYSIS",
+        message: "Analysis results are heuristic for Go, SQL, and Delphi; review before using them as source-of-truth.",
+        heuristic: true,
+      },
+    ]);
     const rules = buildRules(fieldReferences, combinedRisks);
 
     const metrics: AnalysisMetrics = {
       fileCount: files.length,
-      analyzedFileCount: files.length - warnings.filter((warning) => warning.code === "LANGUAGE_UNSUPPORTED").length,
-      skippedFileCount: warnings.filter((warning) => warning.code === "LANGUAGE_UNSUPPORTED").length,
+      analyzedFileCount: files.length - combinedWarnings.filter((warning) => warning.code === "LANGUAGE_UNSUPPORTED").length,
+      skippedFileCount: combinedWarnings.filter((warning) => warning.code === "LANGUAGE_UNSUPPORTED").length,
       symbolCount: symbols.length,
       dependencyCount: combinedDependencies.length,
       fieldCount: new Set(fieldReferences.map((reference) => `${reference.table}.${reference.field}`)).size,
       fieldDependencyCount: fieldReferences.length,
       riskCount: combinedRisks.length,
       ruleCount: rules.length,
-      warningCount: warnings.length,
+      warningCount: combinedWarnings.length,
     };
 
     const status: AnalysisStatus =
       metrics.analyzedFileCount === 0
         ? "failed"
-        : metrics.warningCount > 0
+        : combinedWarnings.length > 0
           ? "partial"
           : "completed";
 
@@ -238,7 +258,7 @@ export class Analyzer {
       fieldReferences,
       risks: combinedRisks,
       rules,
-      warnings,
+      warnings: combinedWarnings,
       flowDocument: this.documentGenerator.generateFlowDocument(symbols, combinedDependencies),
       dataDependencyDocument: this.documentGenerator.generateDataDependencyDocument(fieldReferences),
       risksDocument: this.documentGenerator.generateRisksDocument(combinedRisks),

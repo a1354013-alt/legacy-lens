@@ -1,17 +1,5 @@
 import JSZip from "jszip";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  analysisResults,
-  dependencies,
-  fieldDependencies,
-  fields,
-  files,
-  projects,
-  risks,
-  rules,
-  symbols,
-} from "../../drizzle/schema";
-
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
 type Condition =
@@ -151,7 +139,7 @@ function createFakeDb(initialStore?: Partial<Store>) {
     }
   }
 
-  const db = {
+  const db: any = {
     store,
     select(selection?: Row) {
       return new SelectQuery(selection);
@@ -302,11 +290,11 @@ describe("project workflow", () => {
       status: "partial",
       language: "go",
       symbols: [
-        { name: "main", type: "function", file: "main.go", startLine: 1, endLine: 5, signature: "func main()" },
-        { name: "query_1", type: "query", file: "repo.sql", startLine: 1, endLine: 1, signature: "SELECT amount FROM orders" },
+        { stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 5, signature: "func main()" },
+        { stableKey: "repo.sql::query_1::1", name: "query_1", type: "query", file: "repo.sql", startLine: 1, endLine: 1, signature: "SELECT amount FROM orders" },
       ],
-      dependencies: [{ from: "main", to: "query_1", type: "calls", line: 3 }],
-      fieldReferences: [{ table: "orders", field: "amount", type: "read", file: "repo.sql", line: 1, context: "SELECT amount FROM orders" }],
+      dependencies: [{ from: "main.go::main::1", to: "repo.sql::query_1::1", fromName: "main", toName: "query_1", type: "calls", line: 3 }],
+      fieldReferences: [{ table: "orders", field: "amount", type: "read", file: "repo.sql", line: 1, symbolStableKey: "repo.sql::query_1::1", context: "SELECT amount FROM orders" }],
       risks: [
         {
           title: "Date literal embedded in code",

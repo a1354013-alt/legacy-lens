@@ -1,5 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
-import { analysisStatusSchema, projectLanguageSchema, projectSourceTypeSchema, projectStatusSchema } from "@shared/contracts";
+import { projectLanguageSchema, projectSourceTypeSchema } from "@shared/contracts";
 import { TRPCError } from "@trpc/server";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -14,6 +14,7 @@ import {
   buildReportArchive,
   createProjectForUser,
   deleteProjectCascade,
+  getAnalysisResult,
   getAnalysisSnapshot,
   getOwnedProject,
   importProjectGit,
@@ -37,14 +38,6 @@ const uploadFilesSchema = z.object({
 const cloneGitSchema = z.object({
   projectId: projectIdSchema,
   gitUrl: z.string().trim().min(1),
-});
-
-const updateStatusSchema = z.object({
-  projectId: projectIdSchema,
-  status: projectStatusSchema,
-  importProgress: z.number().int().min(0).max(100).optional(),
-  analysisProgress: z.number().int().min(0).max(100).optional(),
-  errorMessage: z.string().nullable().optional(),
 });
 
 function raiseAsTrpc(error: unknown): never {
@@ -179,30 +172,6 @@ export const appRouter = router({
         raiseAsTrpc(error);
       }
     }),
-
-    updateStatus: protectedProcedure.input(updateStatusSchema).mutation(async ({ ctx, input }) => {
-      try {
-        const db = await getDb();
-        if (!db) {
-          throw new AppError("DATABASE_UNAVAILABLE", "Database connection is not configured.");
-        }
-
-        await getOwnedProject(input.projectId, ctx.user.id);
-        await db
-          .update(projects)
-          .set({
-            status: input.status,
-            importProgress: input.importProgress,
-            analysisProgress: input.analysisProgress,
-            errorMessage: input.errorMessage,
-          })
-          .where(eq(projects.id, input.projectId));
-
-        return { success: true };
-      } catch (error) {
-        raiseAsTrpc(error);
-      }
-    }),
   }),
 
   analysis: router({
@@ -223,11 +192,7 @@ export const appRouter = router({
 
     getResult: protectedProcedure.input(projectIdSchema).query(async ({ ctx, input }) => {
       try {
-        const db = await getDb();
-        if (!db) return null;
-        await getOwnedProject(input, ctx.user.id);
-        const [report] = await db.select().from(analysisResults).where(eq(analysisResults.projectId, input)).limit(1);
-        return report ?? null;
+        return await getAnalysisResult(input, ctx.user.id);
       } catch (error) {
         raiseAsTrpc(error);
       }
