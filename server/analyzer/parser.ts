@@ -9,6 +9,26 @@ export interface FileParser {
   collectWarnings(): AnalysisWarning[];
 }
 
+export interface DelphiUnitInfo {
+  unitName: string;
+  usesUnits: string[];
+  interfaceSymbols: AnalyzedSymbol[];
+  implementationSymbols: AnalyzedSymbol[];
+}
+
+export interface DfmObjectInfo {
+  objectName: string;
+  objectType: string;
+  eventHandlers: Array<{ eventName: string; handlerName: string }>;
+  properties: Record<string, string>;
+}
+
+export interface DfmAnalysisResult {
+  formName?: string;
+  objects: DfmObjectInfo[];
+  warnings: AnalysisWarning[];
+}
+
 function normalizeName(value: string) {
   return value.trim().replace(/^["'`]+|["'`]+$/g, "");
 }
@@ -399,8 +419,164 @@ function extractDelphiSymbol(line: string) {
   };
 }
 
+/**
+ * Extract Delphi unit name and uses clause from content.
+ * Returns null if no unit/library/program declaration is found.
+ */
+export function extractDelphiUnitInfo(content: string): { unitName: string; usesUnits: string[] } | null {
+  const lines = content.split(/\r?\n/);
+  let unitName: string | null = null;
+  const usesUnits: string[] = [];
+  let inUsesClause = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    // Skip comments
+    if (trimmed.startsWith("//") || trimmed.startsWith("{")) {
+      continue;
+    }
+
+    // Match unit/library/program declaration
+    const unitMatch = trimmed.match(/^\s*(unit|library|program)\s+([A-Za-z_][\w$]*)/i);
+    if (unitMatch && !unitName) {
+      unitName = unitMatch[2];
+    }
+
+    // Detect uses clause start
+    const usesStartMatch = trimmed.match(/^\s*uses\s+(.*)$/i);
+    if (usesStartMatch) {
+      inUsesClause = true;
+      const rest = usesStartMatch[1];
+      if (rest.includes(";")) {
+        // Single-line uses clause
+        const units = rest.split(";")[0]?.split(",").map((u) => u.trim().replace(/\s+in\s+.*/i, "")) ?? [];
+        usesUnits.push(...units.filter(Boolean));
+        inUsesClause = false;
+      } else {
+        // Multi-line uses clause
+        const units = rest.split(",").map((u) => u.trim().replace(/\s+in\s+.*/i, "")) ?? [];
+        usesUnits.push(...units.filter(Boolean));
+      }
+      continue;
+    }
+
+    // Continue parsing multi-line uses clause
+    if (inUsesClause) {
+      if (trimmed.includes(";")) {
+        const beforeSemi = trimmed.split(";")[0] ?? "";
+        const units = beforeSemi.split(",").map((u) => u.trim().replace(/\s+in\s+.*/i, "")) ?? [];
+        usesUnits.push(...units.filter(Boolean));
+        inUsesClause = false;
+      } else {
+        const units = trimmed.split(",").map((u) => u.trim().replace(/\s+in\s+.*/i, "")) ?? [];
+        usesUnits.push(...units.filter(Boolean));
+      }
+    }
+
+    // Stop at interface/implementation/initialization/finalization
+    if (/^\s*(interface|implementation|initialization|finalization)\b/i.test(trimmed)) {
+      inUsesClause = false;
+    }
+  }
+
+  if (!unitName) {
+    return null;
+  }
+
+  return { unitName, usesUnits: Array.from(new Set(usesUnits)) };
+}
+
+/**
+ * Parse .dfm file to extract form metadata and object tree.
+ * This is a basic parser that handles common DFM patterns.
+ */
+export function parseDfmContent(content: string, filePath: string): DfmAnalysisResult {
+  const warnings: AnalysisWarning[] = [];
+  const objects: DfmObjectInfo[] = [];
+  let formName: string | undefined;
+
+  const lines = content.split(/\r?\n/);
+  let currentObject: DfmObjectInfo | null = null;
+  let depth = 0;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
+
+    // Skip comments and empty lines
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    // Match object declaration: object ClassName or object TButton: Button1
+    const objectMatch = trimmed.match(/^object\s+([A-Za-z_][\w$]*)(?::\s*([A-Za-z_][\w$]*))?/i);
+    if (objectMatch) {
+      const objName = objectMatch[2] ?? objectMatch[1];
+      const objType = objectMatch[1];
+      
+      // First object at root level is typically the form
+      if (depth === 0 && !formName) {
+        formName = objName;
+      }
+
+      currentObject = {
+        objectName: objName,
+        objectType: objType,
+        eventHandlers: [],
+        properties: {},
+      };
+      objects.push(currentObject);
+      depth += 1;
+      continue;
+    }
+
+    // Match end of object
+    if (/^end$/i.test(trimmed)) {
+      depth -= 1;
+      if (depth <= 0) {
+        currentObject = null;
+        depth = 0;
+      }
+      continue;
+    }
+
+    // Match property assignment: PropertyName = Value
+    const propMatch = trimmed.match(/^([A-Za-z_][\w$]*)\s*=\s*(.+)$/);
+    if (propMatch && currentObject) {
+      const propName = propMatch[1];
+      const propValue = propMatch[2]?.trim() ?? "";
+      
+      // Check for event handler (On<Event> = HandlerName)
+      if (propName.startsWith("On") && /^[A-Za-z_][\w$]*$/.test(propValue)) {
+        currentObject.eventHandlers.push({
+          eventName: propName,
+          handlerName: propValue,
+        });
+      } else {
+        currentObject.properties[propName] = propValue;
+      }
+    }
+  }
+
+  if (objects.length === 0) {
+    warnings.push({
+      code: "DFM_NO_OBJECTS",
+      message: "No objects were found in the DFM file. The file may be malformed or use an unsupported format.",
+      filePath,
+      heuristic: true,
+    });
+  }
+
+  return { formName, objects, warnings };
+}
+
 export class DelphiParser implements FileParser {
-  constructor(private readonly content: string, private readonly file: string) {}
+  private readonly unitInfo: ReturnType<typeof extractDelphiUnitInfo>;
+
+  constructor(private readonly content: string, private readonly file: string) {
+    this.unitInfo = extractDelphiUnitInfo(content);
+  }
 
   parseSymbols(): AnalyzedSymbol[] {
     const lines = this.content.split(/\r?\n/);
@@ -426,8 +602,28 @@ export class DelphiParser implements FileParser {
     return symbols;
   }
 
-  parseDependencies(symbols: AnalyzedSymbol[]) {
-    return buildCallDependencies(this.content.split(/\r?\n/), symbols, ["inherited"]);
+  parseDependencies(symbols: AnalyzedSymbol[]): SymbolDependency[] {
+    const dependencies: SymbolDependency[] = [];
+    
+    // Add uses clause dependencies
+    if (this.unitInfo) {
+      for (const usedUnit of this.unitInfo.usesUnits) {
+        // Create a synthetic dependency for the unit reference
+        dependencies.push({
+          from: symbols[0]?.stableKey ?? `${this.file}::${this.unitInfo.unitName}::1`,
+          to: `unit::${usedUnit}`,
+          fromName: this.unitInfo.unitName,
+          toName: usedUnit,
+          type: "references",
+          line: 1,
+        });
+      }
+    }
+    
+    // Add call dependencies
+    dependencies.push(...buildCallDependencies(this.content.split(/\r?\n/), symbols, ["inherited"]));
+    
+    return dependencies;
   }
 
   parseFieldReferences(symbols: AnalyzedSymbol[]) {
@@ -437,10 +633,20 @@ export class DelphiParser implements FileParser {
 
   collectWarnings() {
     const warnings: AnalysisWarning[] = detectSqlHeuristicWarnings(this.content, this.file);
+    
     if (!/begin\b/i.test(this.content) || !/end\b/i.test(this.content)) {
       warnings.push({
         code: "DELPHI_BLOCK_UNBALANCED",
         message: "Delphi source may have incomplete procedure blocks; ranges are best-effort.",
+        filePath: this.file,
+        heuristic: true,
+      });
+    }
+
+    if (!this.unitInfo) {
+      warnings.push({
+        code: "DELPHI_UNIT_NOT_FOUND",
+        message: "No unit/library/program declaration found; file may be an include file or malformed.",
         filePath: this.file,
         heuristic: true,
       });
