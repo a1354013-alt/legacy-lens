@@ -6,7 +6,7 @@ export interface AnalyzableFile {
   language: string;
 }
 
-export type SymbolType = "function" | "procedure" | "method" | "query" | "table";
+export type SymbolType = "function" | "procedure" | "method" | "query" | "table" | "class";
 
 export interface AnalyzedSymbol {
   stableKey: string;

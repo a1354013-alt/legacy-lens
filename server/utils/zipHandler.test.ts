@@ -20,4 +20,24 @@ describe("zipHandler", () => {
       }),
     ]);
   });
+
+  it("imports Delphi support files and emits limited analysis warnings", async () => {
+    const zip = new JSZip();
+    zip.file("Form1.dfm", "object Form1: TForm1\nend\n");
+    zip.file("types.inc", "const X = 1;\n");
+    zip.file("package.dpk", "package Project;\nend.\n");
+    zip.file("layout.fmx", "object Form1: TForm1\nend\n");
+
+    const base64 = await zip.generateAsync({ type: "base64" });
+    const result = await extractFilesFromZip(base64);
+
+    expect(result.files.map((file) => file.fileName).sort()).toEqual(["Form1.dfm", "layout.fmx", "package.dpk", "types.inc"].sort());
+    expect(result.files.every((file) => file.language === "delphi")).toBe(true);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IMPORT_LIMITED_ANALYSIS", filePath: "Form1.dfm" }),
+      expect.objectContaining({ code: "IMPORT_LIMITED_ANALYSIS", filePath: "types.inc" }),
+      expect.objectContaining({ code: "IMPORT_LIMITED_ANALYSIS", filePath: "package.dpk" }),
+      expect.objectContaining({ code: "IMPORT_LIMITED_ANALYSIS", filePath: "layout.fmx" }),
+    ]));
+  });
 });

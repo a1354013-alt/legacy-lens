@@ -288,7 +288,7 @@ export default function ImportProject() {
             <Card>
               <CardHeader>
                 <CardTitle>Upload ZIP archive</CardTitle>
-                <CardDescription>The server accepts supported source files and skips ignored build or dependency directories.</CardDescription>
+                <CardDescription>The server accepts supported source files and skips ignored build or dependency directories. Delphi import includes .pas/.dpr/.delphi and related files such as .dfm, .inc, .dpk, and .fmx.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <button

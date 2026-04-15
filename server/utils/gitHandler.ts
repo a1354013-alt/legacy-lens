@@ -18,6 +18,8 @@ const IGNORED_DIRECTORIES = new Set([
   ".vscode",
 ]);
 
+const LIMITED_ANALYSIS_EXTENSIONS = new Set([".dfm", ".inc", ".dpk", ".fmx"]);
+
 function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
@@ -141,6 +143,14 @@ async function scanDirectoryForCodeFiles(
     const language = detectLanguage(extension);
     if (!language) {
       continue;
+    }
+
+    if (LIMITED_ANALYSIS_EXTENSIONS.has(extension)) {
+      warnings.push({
+        code: "IMPORT_LIMITED_ANALYSIS",
+        message: "The file was imported, but only limited Delphi analysis is available for this file type.",
+        filePath: relativePath,
+      });
     }
 
     files.push({

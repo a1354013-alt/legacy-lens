@@ -112,6 +112,175 @@ export class RiskDetector {
     });
   }
 
+  detectDelphiPatterns(content: string, file: string): DetectedRisk[] {
+    const risks: DetectedRisk[] = [];
+    const lines = content.split(/\r?\n/);
+    const seen = new Set<string>();
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i] ?? "";
+      const trimmed = line.trim();
+      
+      if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("#") || trimmed.startsWith("{") || trimmed.startsWith("(*")) {
+        i++;
+        continue;
+      }
+
+      const fieldByNameMatch = trimmed.match(/FieldByName\(\s*['"]([^'"]+)['"]\s*\)/i);
+      if (fieldByNameMatch) {
+        const key = `FieldByName:${fieldByNameMatch[1]}:${i}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          risks.push({
+            title: "Delphi field access detected",
+            description: `Found FieldByName(\"${fieldByNameMatch[1]}\") usage. Review data access patterns and result validation.`,
+            severity: "low",
+            category: "other",
+            sourceFile: file,
+            lineNumber: i + 1,
+            suggestion: "Confirm that field names are valid and that the data access is protected against missing fields.",
+            codeSnippet: trimmed,
+          });
+        }
+      }
+
+      const paramByNameMatch = trimmed.match(/ParamByName\(\s*['"]([^'"]+)['"]\s*\)/i);
+      if (paramByNameMatch) {
+        const key = `ParamByName:${paramByNameMatch[1]}:${i}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          risks.push({
+            title: "Delphi query parameter usage detected",
+            description: `Found ParamByName(\"${paramByNameMatch[1]}\"); verify parameters are used consistently with the SQL statement.`,
+            severity: "low",
+            category: "other",
+            sourceFile: file,
+            lineNumber: i + 1,
+            suggestion: "Verify that parameters are applied to parameterized SQL statements rather than string-concatenated queries.",
+            codeSnippet: trimmed,
+          });
+        }
+      }
+
+      if (/\bSQL\.Add\s*\(/i.test(trimmed) && /\+/.test(trimmed)) {
+        const key = `SQL.Add.dynamic:${i}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          risks.push({
+            title: "Dynamic Delphi SQL construction",
+            description: "Detected SQL.Add with string concatenation; this can expose the application to SQL injection or broken queries.",
+            severity: "high",
+            category: "other",
+            sourceFile: file,
+            lineNumber: i + 1,
+            suggestion: "Use parameterized query building and avoid concatenating user input into SQL strings.",
+            codeSnippet: trimmed,
+          });
+        }
+      }
+
+      if (/\bSQL\.Text\b.*:=.*\+/.test(trimmed)) {
+        const key = `SQL.Text.dynamic:${i}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          risks.push({
+            title: "Dynamic SQL text assignment",
+            description: "Detected SQL.Text assignment using string concatenation; this is a common source of query risk.",
+            severity: "high",
+            category: "other",
+            sourceFile: file,
+            lineNumber: i + 1,
+            suggestion: "Review the SQL text and convert it to parameterized queries where possible.",
+            codeSnippet: trimmed,
+          });
+        }
+      }
+
+      // Detect empty except blocks (including multi-line)
+      if (/\bexcept\b/i.test(trimmed) && !/raise\b/i.test(trimmed)) {
+        // Look ahead for empty handler (just semicolon or 'end;')
+        let j = i + 1;
+        let foundEmptyHandler = false;
+        while (j < Math.min(i + 10, lines.length)) {
+          const nextTrimmed = (lines[j] ?? "").trim();
+          if (!nextTrimmed) {
+            j++;
+            continue;
+          }
+          if (nextTrimmed === ";") {
+            foundEmptyHandler = true;
+            break;
+          }
+          if (/^end;?$/i.test(nextTrimmed) && !foundEmptyHandler) {
+            foundEmptyHandler = true;
+            break;
+          }
+          if (/\b(on|raise|begin|try)\b/i.test(nextTrimmed) || /^[^;]*:=/.test(nextTrimmed)) {
+            // Non-empty handler found
+            break;
+          }
+          j++;
+        }
+        if (foundEmptyHandler) {
+          const key = `empty.except:${i}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            risks.push({
+              title: "Broad or empty Delphi exception handling",
+              description: "Found an except block without a concrete handling action; this can suppress runtime failures.",
+              severity: "high",
+              category: "other",
+              sourceFile: file,
+              lineNumber: i + 1,
+              suggestion: "Avoid empty exception handlers and handle or log exceptions explicitly.",
+              codeSnippet: trimmed,
+            });
+          }
+        }
+      }
+
+      const dbComponentMatch = trimmed.match(/\b(TQuery|TADOQuery|TClientDataSet|TFDQuery|DataSource)\b/i);
+      if (dbComponentMatch) {
+        const key = `query.type:${i}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          risks.push({
+            title: "Delphi database component detected",
+            description: `Found Delphi database component usage (${dbComponentMatch[1]}). Review connection and query handling patterns.`,
+            severity: "low",
+            category: "other",
+            sourceFile: file,
+            lineNumber: i + 1,
+            suggestion: "Check whether the component uses parameterized queries and proper transaction boundaries.",
+            codeSnippet: trimmed,
+          });
+        }
+      }
+
+      if (/([A-Za-z]:\\|\\\\)[^"'\s]+/.test(trimmed) || /\b(Database|Data Source|User ID|Password|Pwd|Server|Provider)\b/i.test(trimmed)) {
+        const key = `hardcoded.path:${i}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          risks.push({
+            title: "Hardcoded Delphi path or connection string",
+            description: "Detected a hardcoded filesystem path or connection string pattern in Delphi code.",
+            severity: "medium",
+            category: "other",
+            sourceFile: file,
+            lineNumber: i + 1,
+            suggestion: "Move environment-specific values to configuration and avoid literal paths in code.",
+            codeSnippet: trimmed,
+          });
+        }
+      }
+
+      i++;
+    }
+
+    return risks;
+  }
+
   detectFormatConversionRisks(content: string, file: string): DetectedRisk[] {
     const lines = content.split(/\r?\n/);
     const patterns: Array<{ regex: RegExp; severity: DetectedRisk["severity"]; label: string }> = [

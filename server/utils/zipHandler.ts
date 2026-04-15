@@ -29,7 +29,7 @@ export const UNSUPPORTED_CODE_EXTENSIONS = [
  * Extensions that are supported for import but have limited analysis capabilities.
  * These files will be imported and counted, but may not produce full symbol/dependency data.
  */
-export const LIMITED_ANALYSIS_EXTENSIONS = [".dfm", ".inc", ".fmx"] as const;
+export const LIMITED_ANALYSIS_EXTENSIONS = [".dfm", ".inc", ".dpk", ".fmx"] as const;
 
 const IGNORED_PATTERNS = [
   /^__MACOSX\//,
@@ -88,6 +88,10 @@ function getExtension(filePath: string) {
 
 function isSupportedFile(filePath: string) {
   return SUPPORTED_SOURCE_EXTENSIONS.includes(getExtension(filePath) as (typeof SUPPORTED_SOURCE_EXTENSIONS)[number]);
+}
+
+function isLimitedAnalysisFile(filePath: string) {
+  return LIMITED_ANALYSIS_EXTENSIONS.includes(getExtension(filePath) as (typeof LIMITED_ANALYSIS_EXTENSIONS)[number]);
 }
 
 function isKnownUnsupportedCodeFile(filePath: string) {
@@ -161,6 +165,14 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       const language = detectLanguage(normalizedPath);
       if (!language) {
         continue;
+      }
+
+      if (isLimitedAnalysisFile(normalizedPath)) {
+        warnings.push({
+          code: "IMPORT_LIMITED_ANALYSIS",
+          message: "The file was imported, but only limited Delphi analysis is available for this file type.",
+          filePath: normalizedPath,
+        });
       }
 
       extractedFiles.push({

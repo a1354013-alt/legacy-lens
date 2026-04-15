@@ -191,6 +191,7 @@ export class Analyzer {
       ...this.riskDetector.detectMagicValues(collectMagicValues(file.content, file.path)),
       ...this.riskDetector.detectMissingConditions(sqlSnippets),
       ...this.riskDetector.detectFormatConversionRisks(file.content, file.path),
+      ...(file.language === "delphi" ? this.riskDetector.detectDelphiPatterns(file.content, file.path) : []),
     ]);
 
     return {
