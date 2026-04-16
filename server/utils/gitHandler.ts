@@ -18,6 +18,8 @@ const IGNORED_DIRECTORIES = new Set([
   ".vscode",
 ]);
 
+const LIMITED_ANALYSIS_EXTENSIONS = new Set([".dfm", ".inc", ".dpk", ".fmx"]);
+
 function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
@@ -29,6 +31,10 @@ function detectLanguage(extension: string): ProjectLanguage | null {
     ".pas": "delphi",
     ".dpr": "delphi",
     ".delphi": "delphi",
+    ".dfm": "delphi",
+    ".inc": "delphi",
+    ".dpk": "delphi",
+    ".fmx": "delphi",
   };
   return languageMap[extension] ?? null;
 }
@@ -75,7 +81,7 @@ export async function cloneAndExtractFiles(
     await simpleGit().clone(gitUrl, repoPath, ["--depth", "1"]);
     const extracted = await scanDirectoryForCodeFiles(repoPath);
     if (extracted.files.length === 0) {
-      throw new AppError("EMPTY_SOURCE", "The repository does not contain supported Go, SQL, or Delphi source files.");
+      throw new AppError("EMPTY_SOURCE", "The repository does not contain supported Go, SQL, or Delphi source files. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx");
     }
     return extracted;
   } catch (error) {
@@ -137,6 +143,14 @@ async function scanDirectoryForCodeFiles(
     const language = detectLanguage(extension);
     if (!language) {
       continue;
+    }
+
+    if (LIMITED_ANALYSIS_EXTENSIONS.has(extension)) {
+      warnings.push({
+        code: "IMPORT_LIMITED_ANALYSIS",
+        message: "The file was imported, but only limited Delphi analysis is available for this file type.",
+        filePath: relativePath,
+      });
     }
 
     files.push({

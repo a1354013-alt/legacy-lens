@@ -6,7 +6,7 @@ const MAX_FILES_IN_ZIP = 2_000;
 const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
 const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 
-export const SUPPORTED_SOURCE_EXTENSIONS = [".go", ".sql", ".pas", ".dpr", ".delphi"] as const;
+export const SUPPORTED_SOURCE_EXTENSIONS = [".go", ".sql", ".pas", ".dpr", ".delphi", ".dfm", ".inc", ".dpk", ".fmx"] as const;
 export const UNSUPPORTED_CODE_EXTENSIONS = [
   ".ts",
   ".js",
@@ -24,6 +24,12 @@ export const UNSUPPORTED_CODE_EXTENSIONS = [
   ".rs",
   ".swift",
 ] as const;
+
+/**
+ * Extensions that are supported for import but have limited analysis capabilities.
+ * These files will be imported and counted, but may not produce full symbol/dependency data.
+ */
+export const LIMITED_ANALYSIS_EXTENSIONS = [".dfm", ".inc", ".dpk", ".fmx"] as const;
 
 const IGNORED_PATTERNS = [
   /^__MACOSX\//,
@@ -67,6 +73,10 @@ function detectLanguage(filePath: string): ProjectLanguage | null {
     ".pas": "delphi",
     ".dpr": "delphi",
     ".delphi": "delphi",
+    ".dfm": "delphi",
+    ".inc": "delphi",
+    ".dpk": "delphi",
+    ".fmx": "delphi",
   };
   return languageMap[ext] ?? null;
 }
@@ -78,6 +88,10 @@ function getExtension(filePath: string) {
 
 function isSupportedFile(filePath: string) {
   return SUPPORTED_SOURCE_EXTENSIONS.includes(getExtension(filePath) as (typeof SUPPORTED_SOURCE_EXTENSIONS)[number]);
+}
+
+function isLimitedAnalysisFile(filePath: string) {
+  return LIMITED_ANALYSIS_EXTENSIONS.includes(getExtension(filePath) as (typeof LIMITED_ANALYSIS_EXTENSIONS)[number]);
 }
 
 function isKnownUnsupportedCodeFile(filePath: string) {
@@ -153,6 +167,14 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
         continue;
       }
 
+      if (isLimitedAnalysisFile(normalizedPath)) {
+        warnings.push({
+          code: "IMPORT_LIMITED_ANALYSIS",
+          message: "The file was imported, but only limited Delphi analysis is available for this file type.",
+          filePath: normalizedPath,
+        });
+      }
+
       extractedFiles.push({
         path: normalizedPath,
         fileName: normalizedPath.split("/").pop() ?? normalizedPath,
@@ -163,7 +185,7 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
     }
 
     if (extractedFiles.length === 0) {
-      throw new AppError("EMPTY_SOURCE", "No supported Go, SQL, or Delphi source files were found in the uploaded archive.");
+      throw new AppError("EMPTY_SOURCE", "No supported Go, SQL, or Delphi source files were found in the uploaded archive. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx");
     }
 
     return {

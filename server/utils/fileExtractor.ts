@@ -28,6 +28,10 @@ function detectFileLanguage(filePath: string) {
     case ".pas":
     case ".dpr":
     case ".delphi":
+    case ".dfm":
+    case ".inc":
+    case ".dpk":
+    case ".fmx":
       return "delphi";
     default:
       return "unknown";

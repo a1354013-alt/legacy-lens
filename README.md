@@ -18,9 +18,9 @@ Legacy Lens currently supports import and analysis only for:
 
 - Go (`.go`)
 - SQL (`.sql`)
-- Delphi (`.pas`, `.dpr`, `.delphi`)
+- Delphi (`.pas`, `.dpr`, `.delphi`, `.dfm`, `.inc`, `.dpk`, `.fmx`)
 
-Unsupported code files are skipped during import with explicit warnings. They are not treated as analyzed source.
+Delphi form and package files such as `.dfm`, `.inc`, `.dpk`, and `.fmx` are imported and recognized, but they may be analyzed with reduced heuristics compared to `.pas`/`.dpr` source files. Unsupported code files are skipped during import with explicit warnings. They are not treated as analyzed source.
 
 ## Analysis output
 
