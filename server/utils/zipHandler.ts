@@ -1,6 +1,8 @@
 import type { ImportWarning, ProjectLanguage } from "../../shared/contracts";
 import JSZip from "jszip";
 import { AppError } from "../appError";
+import iconvLite from "iconv-lite";
+import jschardet from "jschardet";
 
 const MAX_FILES_IN_ZIP = 2_000;
 const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
@@ -50,6 +52,8 @@ export interface ExtractedFile {
   content: string;
   language: ProjectLanguage;
   size: number;
+  encoding?: string;
+  encodingWarning?: string;
 }
 
 export interface ExtractedSourceBundle {
@@ -175,12 +179,24 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
         });
       }
 
+      // Decode content with encoding detection
+      const decoded = decodeTextContent(fileBuffer, normalizedPath);
+      if (decoded.warning) {
+        warnings.push({
+          code: "IMPORT_ENCODING_DETECTED",
+          message: decoded.warning,
+          filePath: normalizedPath,
+        });
+      }
+
       extractedFiles.push({
         path: normalizedPath,
         fileName: normalizedPath.split("/").pop() ?? normalizedPath,
-        content: fileBuffer.toString("utf8"),
+        content: decoded.content,
         language,
         size: fileSize,
+        encoding: decoded.encoding,
+        encodingWarning: decoded.warning,
       });
     }
 
@@ -216,5 +232,87 @@ export async function countCodeFilesInZip(base64Content: string): Promise<number
     return count;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * Detect text encoding and decode buffer to string.
+ * Supports UTF-8, UTF-8 BOM, and attempts to detect legacy encodings.
+ * Returns decoded content with encoding metadata.
+ */
+export function decodeTextContent(buffer: Buffer, filePath: string): { content: string; encoding: string; warning?: string } {
+  // Check for UTF-8 BOM
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return {
+      content: buffer.toString("utf8", 3),
+      encoding: "UTF-8-BOM",
+    };
+  }
+
+  // Try UTF-8 first (most common)
+  try {
+    const content = buffer.toString("utf8");
+    // Simple heuristic: check if content looks like valid UTF-8
+    if (!/[^\x00-\x7F]/.test(content) || Buffer.from(content, "utf8").equals(buffer)) {
+      return { content, encoding: "UTF-8" };
+    }
+  } catch {
+    // Fall through to detection
+  }
+
+  // Use jschardet to detect encoding for non-UTF-8 content
+  const detected = jschardet.detect(buffer);
+  const detectedEncoding = detected.encoding?.toLowerCase() ?? "utf8";
+
+  // Map detected encoding to iconv-lite supported encodings
+  const encodingMap: Record<string, string> = {
+    "utf-8": "utf8",
+    "ascii": "utf8",
+    "iso-8859-1": "latin1",
+    "windows-1252": "win1252",
+    "ibm866": "cp866",
+    "shift_jis": "shiftjis",
+    "euc-jp": "eucjp",
+    "euc-kr": "euckr",
+    "big5": "big5",
+    "gb2312": "gb2312",
+    "gbk": "gbk",
+    "windows-1250": "win1250",
+    "windows-1251": "win1251",
+    "windows-1253": "win1253",
+    "windows-1254": "win1254",
+    "windows-1255": "win1255",
+    "windows-1256": "win1256",
+    "windows-1257": "win1257",
+    "windows-1258": "win1258",
+    "macroman": "macroman",
+    "koi8-r": "koi8r",
+    "koi8-u": "koi8u",
+  };
+
+  const targetEncoding = encodingMap[detectedEncoding] ?? "utf8";
+  
+  try {
+    const content = iconvLite.decode(buffer, targetEncoding);
+    const confidence = detected.confidence ?? 0;
+    
+    let warning: string | undefined;
+    if (confidence < 0.8 || targetEncoding !== "utf8") {
+      warning = `Detected encoding: ${detected.encoding} (confidence: ${(confidence * 100).toFixed(0)}%). Content decoded with ${targetEncoding}. Legacy encoding may cause analysis issues.`;
+    }
+    
+    return {
+      content,
+      encoding: detected.encoding ?? "UTF-8",
+      warning,
+    };
+  } catch (decodeError) {
+    // Fallback: try latin1 as last resort (never fails)
+    const fallbackContent = buffer.toString("latin1");
+    return {
+      content: fallbackContent,
+      encoding: "LATIN1-FALLBACK",
+      warning: `Failed to decode with detected encoding (${detected.encoding}). Fell back to Latin-1. Content may be corrupted.`,
+    };
   }
 }

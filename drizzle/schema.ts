@@ -71,7 +71,7 @@ export const symbols = mysqlTable(
     projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     fileId: int("fileId").notNull().references(() => files.id, { onDelete: "cascade", onUpdate: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
-    type: mysqlEnum("type", ["function", "procedure", "method", "query", "table"]).notNull(),
+    type: mysqlEnum("type", ["function", "procedure", "method", "query", "table", "class"]).notNull(),
     startLine: int("startLine").notNull(),
     endLine: int("endLine").notNull(),
     signature: text("signature"),
