@@ -7,7 +7,20 @@ dist/
 build/
 target/
 
-# Logs and temp files
+# Build artifacts
+dist/
+build/
+target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.class
+*.py.obj
+
+# Logs
 *.log
 *.tmp
 
