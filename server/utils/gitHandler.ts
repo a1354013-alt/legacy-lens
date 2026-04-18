@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ImportWarning, ProjectLanguage } from "../../shared/contracts";
 import { simpleGit } from "simple-git";
 import { AppError } from "../appError";
-import { SUPPORTED_SOURCE_EXTENSIONS, UNSUPPORTED_CODE_EXTENSIONS } from "./zipHandler";
+import { SUPPORTED_SOURCE_EXTENSIONS, UNSUPPORTED_CODE_EXTENSIONS, decodeTextContent } from "./zipHandler";
 
 const IGNORED_DIRECTORIES = new Set([
   ".git",
@@ -70,7 +70,7 @@ export async function cloneAndExtractFiles(
   gitUrl: string,
   tempDir: string
 ): Promise<{
-  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number }>;
+  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
   const repoName = extractRepoName(gitUrl);
@@ -96,10 +96,10 @@ async function scanDirectoryForCodeFiles(
   directoryPath: string,
   baseDir: string = directoryPath
 ): Promise<{
-  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number }>;
+  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
-  const files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number }> = [];
+  const files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number; encoding?: string; encodingWarning?: string }> = [];
   const warnings: ImportWarning[] = [];
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
 
@@ -130,7 +130,15 @@ async function scanDirectoryForCodeFiles(
     }
 
     const content = await fs.readFile(fullPath, "utf8");
-    const size = Buffer.byteLength(content, "utf8");
+    const decoded = decodeTextContent(Buffer.from(content), relativePath);
+    if (decoded.warning) {
+      warnings.push({
+        code: "IMPORT_ENCODING_DETECTED",
+        message: decoded.warning,
+        filePath: relativePath,
+      });
+    }
+    const size = Buffer.byteLength(decoded.content, "utf8");
     if (size > 5 * 1024 * 1024) {
       warnings.push({
         code: "IMPORT_FILE_TOO_LARGE",
@@ -156,9 +164,11 @@ async function scanDirectoryForCodeFiles(
     files.push({
       path: relativePath,
       fileName: entry.name,
-      content,
+      content: decoded.content,
       language,
       size,
+      encoding: decoded.encoding,
+      encodingWarning: decoded.warning,
     });
   }
 
