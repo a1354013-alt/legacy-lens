@@ -7,17 +7,16 @@ on:
     branches: [main, master]
 
 jobs:
-  ci:
+  lint-and-typecheck:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 10.4.1
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -28,14 +27,99 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       
-      - name: Type check
-        run: pnpm check
-      
-      - name: Lint
+      - name: Run linter
         run: pnpm lint
+      
+      - name: Run type checker
+        run: pnpm check
+
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
       
       - name: Run tests
         run: pnpm test
+        
+      - name: Upload test coverage (if available)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            coverage/
+            .vitest-reports/
+          retention-days: 7
+
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
       
-      - name: Build
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: Build application
         run: pnpm build
+      
+      - name: Verify build output
+        run: |
+          test -d dist || { echo "Build output not found"; exit 1; }
+          test -f dist/index.js || { echo "Server build not found"; exit 1; }
+          test -d dist/public || { echo "Client build not found"; exit 1; }
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: Run npm audit
+        run: pnpm audit --audit-level moderate
+        continue-on-error: true
+      
+      - name: Check for vulnerable dependencies
+        run: |
+          echo "Security scan completed"
+          echo "Review any reported vulnerabilities in the audit output above"

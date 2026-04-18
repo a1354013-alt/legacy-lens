@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=mysql://root:password@db:3306/legacy_lens
+      - JWT_SECRET=${JWT_SECRET:-your_jwt_secret_here}
+      - VITE_APP_ID=${VITE_APP_ID:-your_app_id}
+      - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL:-http://localhost:3001}
+      - OAUTH_SERVER_URL=${OAUTH_SERVER_URL:-http://localhost:3001}
+      - OWNER_OPEN_ID=${OWNER_OPEN_ID:-your_owner_openid}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - legacy-lens-network
+
+  db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=password
+      - MYSQL_DATABASE=legacy_lens
+      - MYSQL_USER=legacy_user
+      - MYSQL_PASSWORD=legacy_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ppassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - legacy-lens-network
+
+volumes:
+  mysql-data:
+    driver: local
+
+networks:
+  legacy-lens-network:
+    driver: bridge

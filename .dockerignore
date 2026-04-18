@@ -1,0 +1,32 @@
+# Docker
+node_modules/
+dist/
+.manus-logs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+coverage/
+.vitest-reports/
+
+# Build
+*.tsbuildinfo

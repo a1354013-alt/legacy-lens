@@ -7,6 +7,11 @@ dist/
 build/
 target/
 
+# Build artifacts
+dist/
+build/
+target/
+
 # Python
 __pycache__/
 *.pyc
@@ -17,28 +22,24 @@ __pycache__/
 
 # Logs
 *.log
+*.tmp
 
 # Environment
 .env
 .env.local
-*.env.*
+.env.*
 
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# OS
-.DS_Store
-Thumbs.db
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Compressed files
+# Compression
 *.zip
 *.gz
 *.tar
@@ -57,4 +58,22 @@ htmlcov/
 *.Z
 *.lz
 *.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+htmlcov/
+.coverage
+
+# Cache
+.mypy_cache/
+.pytest_cache/
+.gradle/
 ```
