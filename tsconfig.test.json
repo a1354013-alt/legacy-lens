@@ -1,6 +1,10 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["server/**/*.test.ts", "server/**/*.spec.ts"],
+  "include": [
+    "server/**/*.test.ts",
+    "server/**/*.spec.ts",
+    "client/**/*.smoke.test.tsx"
+  ],
   "exclude": ["node_modules", "build", "dist"],
   "compilerOptions": {
     "types": ["node", "vite/client", "vitest/globals"]
