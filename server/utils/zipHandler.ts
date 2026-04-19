@@ -149,7 +149,7 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       if (!isSafeRelativePath(normalizedPath)) {
         warnings.push({
           code: "IMPORT_UNSAFE_PATH",
-          message: "The file was skipped because its archive path is not a safe relative path.",
+          message: "The file was skipped because its path is not a safe relative path.",
           filePath: rawPath,
         });
         continue;

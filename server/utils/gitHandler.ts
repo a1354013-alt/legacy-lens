@@ -23,9 +23,21 @@ const LIMITED_ANALYSIS_EXTENSIONS = new Set([".dfm", ".inc", ".dpk", ".fmx"]);
 const MAX_FILES_IN_REPO = 2_000;
 const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
 const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
+const GIT_CLONE_TIMEOUT_MS = 120_000;
 
 function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
+}
+
+function isSafeRelativePath(normalizedPath: string): boolean {
+  if (!normalizedPath) return false;
+  if (normalizedPath.includes("\0")) return false;
+
+  const segments = normalizedPath.split("/").filter(Boolean);
+  if (segments.length === 0) return false;
+  if (segments.some((segment) => segment === "." || segment === "..")) return false;
+
+  return true;
 }
 
 function detectLanguage(extension: string): ProjectLanguage | null {
@@ -92,7 +104,7 @@ export async function cloneAndExtractFiles(
 
   try {
     await fs.mkdir(tempDir, { recursive: true });
-    await simpleGit({ timeout: { block: 120_000 } }).clone(gitUrl, repoPath, ["--depth", "1", "--no-tags"]);
+    await simpleGit({ timeout: { block: GIT_CLONE_TIMEOUT_MS } }).clone(gitUrl, repoPath, ["--depth", "1", "--no-tags"]);
     const extracted = await scanDirectoryForCodeFiles(repoPath, undefined, {
       fileLimit: MAX_FILES_IN_REPO,
       maxTotalBytes: MAX_TOTAL_EXTRACTED_SIZE,
@@ -105,7 +117,18 @@ export async function cloneAndExtractFiles(
     if (error instanceof AppError) {
       throw error;
     }
-    throw new AppError("GIT_CLONE_FAILED", "Failed to clone or scan the repository.", error instanceof Error ? error.message : undefined);
+
+    const details = error instanceof Error ? error.message : undefined;
+    const detailsNormalized = String(details ?? "").toLowerCase();
+    const timeoutHint = detailsNormalized.includes("timeout") || detailsNormalized.includes("timed out");
+
+    throw new AppError(
+      "GIT_CLONE_FAILED",
+      timeoutHint
+        ? `Failed to clone the repository (timeout after ${Math.round(GIT_CLONE_TIMEOUT_MS / 1000)}s). Try a smaller repo, or use ZIP import for a bounded upload.`
+        : "Failed to clone or scan the repository.",
+      details
+    );
   }
 }
 
@@ -137,6 +160,15 @@ async function scanDirectoryForCodeFiles(
     }
 
     if (entry.isSymbolicLink()) {
+      continue;
+    }
+
+    if (!isSafeRelativePath(relativePath)) {
+      warnings.push({
+        code: "IMPORT_UNSAFE_PATH",
+        message: "The file was skipped because its path is not a safe relative path.",
+        filePath: relativePath || entry.name,
+      });
       continue;
     }
 

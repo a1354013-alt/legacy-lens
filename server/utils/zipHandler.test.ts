@@ -3,6 +3,24 @@ import { describe, expect, it } from "vitest";
 import { extractFilesFromZip } from "./zipHandler";
 
 describe("zipHandler", () => {
+  it("skips unsafe paths and returns stable warnings", async () => {
+    const zip = new JSZip();
+    zip.file("../evil.go", "package main\nfunc main() {}\n");
+    zip.file("safe/main.go", "package main\nfunc main() {}\n");
+
+    const base64 = await zip.generateAsync({ type: "base64" });
+    const result = await extractFilesFromZip(base64);
+
+    expect(result.files.map((file) => file.path)).toEqual(["safe/main.go"]);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "IMPORT_UNSAFE_PATH",
+        filePath: "../evil.go",
+        message: "The file was skipped because its path is not a safe relative path.",
+      }),
+    ]));
+  });
+
   it("returns explicit warnings for unsupported languages in mixed archives", async () => {
     const zip = new JSZip();
     zip.file("main.go", "package main\nfunc main() {}\n");

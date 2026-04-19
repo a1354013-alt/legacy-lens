@@ -445,7 +445,10 @@ export async function analyzeProject(projectId: number, userId: number) {
     );
 
     if (result.status === "failed") {
-      throw new AppError("ANALYSIS_FAILED", "No analyzable files were found for the selected project language.");
+      throw new AppError(
+        "ANALYSIS_FAILED",
+        "No analyzable files were found in the imported source. Focus language affects UI navigation and summaries, not what files are eligible for analysis."
+      );
     }
 
     await db.transaction(async (tx) => {

@@ -2,6 +2,21 @@
 node_modules/
 dist/
 
+# Repo-only metadata (not needed for image build context)
+.github/
+samples/
+docs/
+*.md
+!.env.example
+README.md
+LICENSE
+AGENTS.md
+**/AGENTS.md
+
+# Local package manager / caches
+.pnpm-store/
+.pnp.*
+
 # Environment
 .env
 .env.local
@@ -26,6 +41,8 @@ Thumbs.db
 # Testing
 coverage/
 .vitest-reports/
+playwright-report/
+test-results/
 
 # Build
 *.tsbuildinfo

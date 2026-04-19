@@ -1,5 +1,5 @@
 # Legacy Lens - Docker Configuration
-# Multi-stage build for production-ready deployment
+# Multi-stage build for a production-like container image
 
 # ==============================================================================
 # Build Stage

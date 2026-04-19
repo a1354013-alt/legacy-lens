@@ -2,9 +2,9 @@
 
 Legacy Lens is a **legacy codebase ingestion + structural analysis workspace**. It imports Go / SQL / Delphi projects (ZIP upload or Git clone), runs deterministic server-side analysis, persists the results in MySQL, and lets you **export a reviewable ZIP report** generated from the same persisted snapshot.
 
-This repo is intentionally opinionated about “portfolio-grade” deliverables:
+This repo is intentionally opinionated about portfolio-grade, demo-ready deliverables:
 - Clear data contracts (import → persist → export)
-- Reproducible workflows (no “UI shows one thing, export shows another”)
+- Reproducible workflows (no "UI shows one thing, export shows another")
 - Honest limits (heuristic parsing, bounded imports)
 
 ## What It Does (Today)
@@ -32,21 +32,21 @@ Unsupported languages are skipped with explicit import warnings.
 
 ## Architecture (High Level)
 
-```
+```text
 Browser (React/Vite)
-  └─ tRPC client
-       └─ Express + tRPC (Node)
-            ├─ Import (ZIP/Git) → files table
-            ├─ Analyze → symbols/dependencies/fields/risks/rules tables
-            └─ Export ZIP → generated from persisted analysisResults snapshot
+  -> tRPC client
+       -> Express + tRPC (Node)
+            -> Import (ZIP/Git) -> files table
+            -> Analyze -> symbols/dependencies/fields/risks/rules tables
+            -> Export ZIP -> generated from persisted analysisResults snapshot
 
 MySQL (Drizzle ORM)
-  ├─ projects
-  ├─ files
-  ├─ symbols / dependencies
-  ├─ fields / fieldDependencies
-  ├─ risks / rules
-  └─ analysisResults (documents + metrics + warnings)
+  -> projects
+  -> files
+  -> symbols / dependencies
+  -> fields / fieldDependencies
+  -> risks / rules
+  -> analysisResults (documents + metrics + warnings)
 ```
 
 ## Quick Start (Local)
@@ -63,16 +63,19 @@ Copy:
 cp .env.example .env
 ```
 
-Minimum required variables:
+Minimum required variables (all modes):
 - `DATABASE_URL`
 - `JWT_SECRET`
 - `VITE_APP_ID`
+
+Required variables when **OAuth login is enabled** (DEV_AUTH_BYPASS is disabled):
 - `VITE_OAUTH_PORTAL_URL`
 - `OAUTH_SERVER_URL`
 
 #### Local dev without OAuth (recommended for demos)
 
-Legacy Lens supports a **dev-only auth bypass** that keeps the same cookie/session path but avoids setting up an OAuth provider:
+Legacy Lens supports a **dev-only auth bypass** that keeps the same cookie/session path but avoids setting up an OAuth provider.
+This is useful for demos and local development, but must never be enabled in production.
 
 In `.env` set:
 ```bash
@@ -81,7 +84,7 @@ VITE_DEV_AUTH_BYPASS=1
 DEV_AUTH_OPEN_ID=local-dev-user
 ```
 
-You still need to set `VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL` (placeholders are OK), but they won’t be used while the bypass is enabled.
+When bypass is enabled, you can omit `VITE_OAUTH_PORTAL_URL` and `OAUTH_SERVER_URL` (OAuth routes exist, but the UI sign-in button will use `/api/dev/login` instead).
 
 ### 2) Install deps
 ```bash
@@ -98,11 +101,12 @@ pnpm db:migrate
 pnpm dev
 ```
 
-Open `http://localhost:3000`. Click “Sign in”.
+Open `http://localhost:3000`. Click "Sign in".
 
 ## Quick Start (Docker)
 
-This repo ships a production build Dockerfile and a `docker-compose.yml` for running the app + MySQL locally.
+This repo ships a Dockerfile and a `docker-compose.yml` for running the app + MySQL locally (a production-like image).
+Note: `DEV_AUTH_BYPASS` is disabled when `NODE_ENV=production`, so Docker runs require a real OAuth provider (or a compatible stub).
 
 ```bash
 docker compose up --build
@@ -172,7 +176,7 @@ Import pipeline is intentionally bounded:
 - Parsing is **heuristic**, not compiler-grade.
 - Cross-file Delphi resolution is best-effort.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
-- Mixed-language repos are supported; the “Focus language” is a UI lens, not an analysis filter.
+- Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
 
 ## Roadmap (Not Implemented Yet)
 
@@ -186,4 +190,3 @@ These are intentionally not half-shipped in code:
 ## License
 
 MIT
-

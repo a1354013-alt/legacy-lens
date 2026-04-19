@@ -7,7 +7,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", "build/**", "drizzle/meta/**", "client/public/**", ".manus-logs/**", "client/src/internal/playground/archive/**"],
+    ignores: ["dist/**", "build/**", "drizzle/meta/**", "client/public/**"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
