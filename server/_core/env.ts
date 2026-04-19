@@ -9,6 +9,7 @@ const runtimeEnvSchema = z.object({
 
   DEV_AUTH_BYPASS: z.string().trim().optional(),
   DEV_AUTH_OPEN_ID: z.string().trim().optional(),
+  DEV_AUTH_BYPASS_UNSAFE_ALLOW: z.string().trim().optional(),
   NODE_ENV: z.string().trim().optional(),
 });
 
@@ -45,9 +46,13 @@ export const ENV = {
     parsedEnv.success
       ? parsedEnv.data.DEV_AUTH_OPEN_ID ?? ""
       : process.env.DEV_AUTH_OPEN_ID ?? "",
+  devAuthBypassUnsafeAllow:
+    parsedEnv.success
+      ? parsedEnv.data.DEV_AUTH_BYPASS_UNSAFE_ALLOW ?? ""
+      : process.env.DEV_AUTH_BYPASS_UNSAFE_ALLOW ?? "",
 } as const;
 
 export function isDevAuthBypassEnabled() {
-  if (ENV.isProduction) return false;
+  if (ENV.isProduction && !isTruthy(ENV.devAuthBypassUnsafeAllow)) return false;
   return isTruthy(ENV.devAuthBypass);
 }

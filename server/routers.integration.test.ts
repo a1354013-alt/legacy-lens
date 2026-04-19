@@ -276,5 +276,9 @@ describe("appRouter integration", () => {
     expect(metadataJson.projectName).toBe("integration-project");
     expect(metadataJson.focusLanguage).toBe("go");
     expect(typeof metadataJson.analysisVersion).toBe("string");
+    expect(metadataJson.fileCount).toBe(1);
+    expect(metadataJson.symbolCount).toBe(1);
+    expect(metadataJson.dependencyCount).toBe(0);
+    expect(metadataJson.warningCount).toBe(1);
   });
 });

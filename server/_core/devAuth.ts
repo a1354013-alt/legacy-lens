@@ -2,6 +2,7 @@ import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import type { Express, Request, Response } from "express";
 import { getSessionCookieOptions } from "./cookies";
 import { ENV, isDevAuthBypassEnabled } from "./env";
+import { logger } from "./logger";
 import { sdk } from "./sdk";
 import * as db from "../db";
 
@@ -31,22 +32,36 @@ export function registerDevAuthRoutes(app: Express) {
     const redirectPath = sanitizeRedirectPath(getQueryParam(req, "next"));
     const openId = getDevOpenId();
 
-    await db.upsertUser({
-      openId,
-      name: "Local Dev",
-      email: null,
-      loginMethod: "dev-bypass",
-      lastSignedIn: new Date(),
-    });
+    logger.info("Dev auth login started", { action: "auth.dev.login.start", status: "ok", openId });
 
-    const sessionToken = await sdk.createSessionToken(openId, {
-      name: "Local Dev",
-      expiresInMs: ONE_YEAR_MS,
-    });
+    try {
+      await db.upsertUser({
+        openId,
+        name: "Local Dev",
+        email: null,
+        loginMethod: "dev-bypass",
+        lastSignedIn: new Date(),
+      });
 
-    const cookieOptions = getSessionCookieOptions(req);
-    res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-    res.redirect(302, redirectPath);
+      const sessionToken = await sdk.createSessionToken(openId, {
+        name: "Local Dev",
+        expiresInMs: ONE_YEAR_MS,
+      });
+
+      const cookieOptions = getSessionCookieOptions(req);
+      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      res.redirect(302, redirectPath);
+
+      logger.info("Dev auth login completed", { action: "auth.dev.login.complete", status: "ok", openId });
+    } catch (error) {
+      logger.error("Dev auth login failed", {
+        action: "auth.dev.login.complete",
+        status: "error",
+        openId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ error: "Dev auth login failed" });
+    }
   });
 
   app.get("/api/dev/logout", (req: Request, res: Response) => {
@@ -59,6 +74,7 @@ export function registerDevAuthRoutes(app: Express) {
     const cookieOptions = getSessionCookieOptions(req);
     res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     res.redirect(302, redirectPath);
+
+    logger.info("Dev auth logout completed", { action: "auth.dev.logout", status: "ok" });
   });
 }
-

@@ -63,22 +63,29 @@ ZIP / Git
   v
 Normalizer
   v
-Database (persisted snapshot)
+Persisted Snapshot (DB)
   v
 Analyzer
   v
-Export ZIP
+Export Report ZIP
 ```
 
 ## Example Output
 
 ```text
-Example Report:
-Files analyzed: 1284
-Symbols detected: 14228
-Dependencies: 3912
-Warnings: 12
+Example (from `analysis-summary.json` inside an exported report ZIP):
+fileCount: 1284
+symbolCount: 14228
+dependencyCount: 3912
+warningCount: 12
 ```
+
+## What Makes This Repo Strong
+
+- Deterministic server-side analysis with bounded ingestion (ZIP/Git limits + stable warnings)
+- Persisted snapshot as the source of truth (UI reads persisted records; export is generated from the same snapshot)
+- Legacy encoding awareness during import (explicit detection + human-readable warnings)
+- Exportable review artifact (ZIP report with stable structure + `metadata.json` for audit/replay)
 
 ## Quick Start (Local)
 
@@ -145,9 +152,13 @@ Open `http://localhost:3000`. Click "Sign in".
 
 ## Quick Start (Docker)
 
-This repo ships a Dockerfile and a `docker-compose.yml` for running the app + MySQL locally (a production-like image intended for reproducible runs).
+This repo ships a Dockerfile and a `docker-compose.yml` for running the app + MySQL locally in a reproducible way.
 
-Note: `DEV_AUTH_BYPASS` is disabled when `NODE_ENV=production`, so Docker runs require a real OAuth provider (or a compatible stub).
+By default, `docker-compose.yml` runs in **demo mode**:
+- `DEV_AUTH_BYPASS=1` (server enables `/api/dev/login`)
+- `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1` (explicitly allows bypass even when the container runs with `NODE_ENV=production` for static serving)
+- `VITE_DEV_AUTH_BYPASS=1` (client builds the "Sign in" button to hit `/api/dev/login`)
+- OAuth URLs are still required as placeholders (`VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL`) because the server config schema is consistent across modes.
 
 ```bash
 docker compose up --build

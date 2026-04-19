@@ -11,6 +11,10 @@ WORKDIR /app
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10.4.1 --activate
 
+# Vite build-time variables (only the VITE_* subset is embedded into the client bundle)
+ARG VITE_DEV_AUTH_BYPASS=0
+ENV VITE_DEV_AUTH_BYPASS=$VITE_DEV_AUTH_BYPASS
+
 # Copy package files and patches (patches must be copied before install)
 COPY package.json pnpm-lock.yaml ./
 COPY patches/ ./patches/

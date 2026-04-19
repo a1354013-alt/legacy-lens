@@ -5,9 +5,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Build-time: embedded into the client bundle for the "Sign in" button routing.
+        VITE_DEV_AUTH_BYPASS: "1"
     ports:
       - "3000:3000"
     environment:
+      # Demo/local default: keep static serving (NODE_ENV=production) but explicitly allow dev auth bypass.
       - NODE_ENV=production
       - PORT=3000
       - DATABASE_URL=mysql://root:password@db:3306/legacy_lens
@@ -15,6 +19,9 @@ services:
       - VITE_APP_ID=${VITE_APP_ID:-your_app_id}
       - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL:-http://localhost:3001}
       - OAUTH_SERVER_URL=${OAUTH_SERVER_URL:-http://localhost:3001}
+      - DEV_AUTH_BYPASS=1
+      - DEV_AUTH_OPEN_ID=${DEV_AUTH_OPEN_ID:-local-dev-user}
+      - DEV_AUTH_BYPASS_UNSAFE_ALLOW=1
     depends_on:
       db:
         condition: service_healthy

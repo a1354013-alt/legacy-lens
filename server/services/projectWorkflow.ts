@@ -598,6 +598,8 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
     focusLanguage: project?.language ?? null,
     fileCount: metrics?.fileCount ?? 0,
     symbolCount: metrics?.symbolCount ?? 0,
+    dependencyCount: metrics?.dependencyCount ?? 0,
+    warningCount: metrics?.warningCount ?? 0,
   } as const;
 
   archive.file("metadata.json", JSON.stringify(metadata, null, 2), deterministicFileOptions);
