@@ -20,7 +20,6 @@ Legacy Lens addresses these pain points by providing automated structural analys
 - **Structural Analysis**: Extract symbols (functions, procedures, methods, classes, queries, tables), dependencies, and field references
 - **Risk Detection**: Heuristic-based identification of magic values, multiple writes, missing conditions, format conversions, and inconsistent logic
 - **Report Generation**: Markdown documentation (flow diagrams, data dependencies, risks) and YAML rule exports
-- **Analysis Diff** (Roadmap): Compare snapshots to track changes between analysis runs
 
 ### Supported Languages
 | Language | Extensions | Analysis Level |
@@ -30,7 +29,7 @@ Legacy Lens addresses these pain points by providing automated structural analys
 | Delphi | `.pas`, `.dpr`, `.delphi` | Full unit analysis |
 | Delphi Forms | `.dfm`, `.inc`, `.dpk`, `.fmx` | Limited heuristics (imported with warnings) |
 
-**Note**: Files in unsupported languages (TypeScript, JavaScript, Java, Python, etc.) are skipped during import with explicit warnings.
+**Note**: Files in unsupported languages (TypeScript, JavaScript, Java, Python, C++, etc.) are skipped during import with explicit warnings.
 
 ## System Architecture
 
