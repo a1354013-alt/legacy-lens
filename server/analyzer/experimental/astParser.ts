@@ -1,10 +1,13 @@
 /**
  * AST 解析器 - 使用 TypeScript Compiler API 和 Babel Parser
  * 進行更精確的程式碼分析
+ * 
+ * Note: This is experimental code not used in the production analysis pipeline.
  */
 
 import * as ts from "typescript";
 import { parse as babelParse } from "@babel/parser";
+import { logger } from "../../_core/logger";
 
 export interface ASTNode {
   type: string;
@@ -61,7 +64,7 @@ export function parseTypeScriptAST(code: string, fileName: string = "file.ts"): 
 
     return visitNode(sourceFile, code);
   } catch (error) {
-    console.error("TypeScript AST parsing failed:", error);
+    logger.warn("TypeScript AST parsing failed", { action: "experimental.ast.typescript.parse", status: "error", error: String(error) });
     return { type: "error", properties: { error: String(error) } };
   }
 }
@@ -164,7 +167,7 @@ export function parseBabelAST(code: string, language: "javascript" | "typescript
 
     return visitBabelNode(ast);
   } catch (error) {
-    console.error("Babel AST parsing failed:", error);
+    logger.warn("Babel AST parsing failed", { action: "experimental.ast.babel.parse", status: "error", error: String(error) });
     return { type: "error", properties: { error: String(error) } };
   }
 }
