@@ -130,7 +130,7 @@ async function scanDirectoryForCodeFiles(
     }
 
     const buffer = await fs.readFile(fullPath);
-    const decoded = decodeTextContent(buffer, relativePath);
+    const decoded = decodeTextContent(buffer);
     if (decoded.warning) {
       warnings.push({
         code: "IMPORT_ENCODING_DETECTED",

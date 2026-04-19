@@ -121,7 +121,7 @@ export class RiskDetector {
     while (i < lines.length) {
       const line = lines[i] ?? "";
       const trimmed = line.trim();
-      
+
       if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("#") || trimmed.startsWith("{") || trimmed.startsWith("(*")) {
         i++;
         continue;
@@ -134,7 +134,7 @@ export class RiskDetector {
           seen.add(key);
           risks.push({
             title: "Delphi field access detected",
-            description: `Found FieldByName(\"${fieldByNameMatch[1]}\") usage. Review data access patterns and result validation.`,
+            description: `Found FieldByName("${fieldByNameMatch[1]}") usage. Review data access patterns and result validation.`,
             severity: "low",
             category: "other",
             sourceFile: file,
@@ -152,7 +152,7 @@ export class RiskDetector {
           seen.add(key);
           risks.push({
             title: "Delphi query parameter usage detected",
-            description: `Found ParamByName(\"${paramByNameMatch[1]}\"); verify parameters are used consistently with the SQL statement.`,
+            description: `Found ParamByName("${paramByNameMatch[1]}"); verify parameters are used consistently with the SQL statement.`,
             severity: "low",
             category: "other",
             sourceFile: file,
@@ -197,9 +197,7 @@ export class RiskDetector {
         }
       }
 
-      // Detect empty except blocks (including multi-line)
       if (/\bexcept\b/i.test(trimmed) && !/raise\b/i.test(trimmed)) {
-        // Look ahead for empty handler (just semicolon or 'end;')
         let j = i + 1;
         let foundEmptyHandler = false;
         while (j < Math.min(i + 10, lines.length)) {
@@ -217,7 +215,6 @@ export class RiskDetector {
             break;
           }
           if (/\b(on|raise|begin|try)\b/i.test(nextTrimmed) || /^[^;]*:=/.test(nextTrimmed)) {
-            // Non-empty handler found
             break;
           }
           j++;

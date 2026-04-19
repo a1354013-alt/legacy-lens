@@ -179,8 +179,7 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
         });
       }
 
-      // Decode content with encoding detection
-      const decoded = decodeTextContent(fileBuffer, normalizedPath);
+      const decoded = decodeTextContent(fileBuffer);
       if (decoded.warning) {
         warnings.push({
           code: "IMPORT_ENCODING_DETECTED",
@@ -201,7 +200,10 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
     }
 
     if (extractedFiles.length === 0) {
-      throw new AppError("EMPTY_SOURCE", "No supported Go, SQL, or Delphi source files were found in the uploaded archive. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx");
+      throw new AppError(
+        "EMPTY_SOURCE",
+        "No supported Go, SQL, or Delphi source files were found in the uploaded archive. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx"
+      );
     }
 
     return {
@@ -212,7 +214,12 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
     if (error instanceof AppError) {
       throw error;
     }
-    throw new AppError("ZIP_INVALID", "Failed to read ZIP archive.", error instanceof Error ? error.message : undefined);
+
+    throw new AppError(
+      "ZIP_INVALID",
+      "Failed to read ZIP archive.",
+      error instanceof Error ? error.message : undefined
+    );
   }
 }
 
@@ -224,8 +231,10 @@ export async function countCodeFilesInZip(base64Content: string): Promise<number
 
     for (const [rawPath, entry] of Object.entries(zip.files)) {
       if (entry.dir) continue;
+
       const normalizedPath = normalizePath(rawPath);
       if (shouldIgnoreFile(normalizedPath) || !isSupportedFile(normalizedPath)) continue;
+
       count += 1;
     }
 
@@ -240,8 +249,7 @@ export async function countCodeFilesInZip(base64Content: string): Promise<number
  * Supports UTF-8, UTF-8 BOM, and attempts to detect legacy encodings.
  * Returns decoded content with encoding metadata.
  */
-export function decodeTextContent(buffer: Buffer, filePath: string): { content: string; encoding: string; warning?: string } {
-  // Check for UTF-8 BOM
+export function decodeTextContent(buffer: Buffer): { content: string; encoding: string; warning?: string } {
   if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
     return {
       content: buffer.toString("utf8", 3),
@@ -249,34 +257,32 @@ export function decodeTextContent(buffer: Buffer, filePath: string): { content: 
     };
   }
 
-  // Try UTF-8 first (most common)
   try {
     const content = buffer.toString("utf8");
-    // Simple heuristic: check if content looks like valid UTF-8
-    if (!/[^\x00-\x7F]/.test(content) || Buffer.from(content, "utf8").equals(buffer)) {
+    const hasNonAscii = Array.from(content).some((char) => char.charCodeAt(0) > 127);
+
+    if (!hasNonAscii || Buffer.from(content, "utf8").equals(buffer)) {
       return { content, encoding: "UTF-8" };
     }
   } catch {
     // Fall through to detection
   }
 
-  // Use jschardet to detect encoding for non-UTF-8 content
   const detected = jschardet.detect(buffer);
   const detectedEncoding = detected.encoding?.toLowerCase() ?? "utf8";
 
-  // Map detected encoding to iconv-lite supported encodings
   const encodingMap: Record<string, string> = {
     "utf-8": "utf8",
-    "ascii": "utf8",
+    ascii: "utf8",
     "iso-8859-1": "latin1",
     "windows-1252": "win1252",
-    "ibm866": "cp866",
-    "shift_jis": "shiftjis",
+    ibm866: "cp866",
+    shift_jis: "shiftjis",
     "euc-jp": "eucjp",
     "euc-kr": "euckr",
-    "big5": "big5",
-    "gb2312": "gb2312",
-    "gbk": "gbk",
+    big5: "big5",
+    gb2312: "gb2312",
+    gbk: "gbk",
     "windows-1250": "win1250",
     "windows-1251": "win1251",
     "windows-1253": "win1253",
@@ -285,29 +291,28 @@ export function decodeTextContent(buffer: Buffer, filePath: string): { content: 
     "windows-1256": "win1256",
     "windows-1257": "win1257",
     "windows-1258": "win1258",
-    "macroman": "macroman",
+    macroman: "macroman",
     "koi8-r": "koi8r",
     "koi8-u": "koi8u",
   };
 
   const targetEncoding = encodingMap[detectedEncoding] ?? "utf8";
-  
+
   try {
     const content = iconvLite.decode(buffer, targetEncoding);
     const confidence = detected.confidence ?? 0;
-    
+
     let warning: string | undefined;
     if (confidence < 0.8 || targetEncoding !== "utf8") {
       warning = `Detected encoding: ${detected.encoding} (confidence: ${(confidence * 100).toFixed(0)}%). Content decoded with ${targetEncoding}. Legacy encoding may cause analysis issues.`;
     }
-    
+
     return {
       content,
       encoding: detected.encoding ?? "UTF-8",
       warning,
     };
-  } catch (decodeError) {
-    // Fallback: try latin1 as last resort (never fails)
+  } catch {
     const fallbackContent = buffer.toString("latin1");
     return {
       content: fallbackContent,
