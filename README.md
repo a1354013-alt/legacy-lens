@@ -1,287 +1,189 @@
 # Legacy Lens
 
-**Legacy Lens** is a production-ready legacy code analysis tool that imports legacy codebases (Go, SQL, Delphi), runs structural analysis workflows, and generates comprehensive reports. It helps developers understand, document, and modernize aging software systems.
+Legacy Lens is a **legacy codebase ingestion + structural analysis workspace**. It imports Go / SQL / Delphi projects (ZIP upload or Git clone), runs deterministic server-side analysis, persists the results in MySQL, and lets you **export a reviewable ZIP report** generated from the same persisted snapshot.
 
-## Problem Statement
+This repo is intentionally opinionated about “portfolio-grade” deliverables:
+- Clear data contracts (import → persist → export)
+- Reproducible workflows (no “UI shows one thing, export shows another”)
+- Honest limits (heuristic parsing, bounded imports)
 
-Legacy systems often suffer from:
-- Missing or outdated documentation
-- Undocumented business logic embedded in old code
-- Risk of regression during modernization efforts
-- Difficulty finding developers familiar with older languages (Delphi, PowerBuilder, etc.)
+## What It Does (Today)
 
-Legacy Lens addresses these pain points by providing automated structural analysis, risk detection, and exportable documentation.
+- Import via **ZIP upload** or **Git clone**
+- Normalize + persist source files (encoding detection, size limits, warnings)
+- Analyze and persist:
+  - symbols (functions/procedures/methods/classes/queries/tables)
+  - dependencies (calls/reads/writes/references)
+  - field references (read/write/calculate)
+  - risks + derived rules (heuristics)
+  - documents (`FLOW.md`, `DATA_DEPENDENCY.md`, `RISKS.md`, `RULES.yaml`)
+- Export a ZIP report generated **only from persisted analysis**
 
-## Features
+## Supported Languages (Import + Analysis)
 
-### Core Capabilities
-- **Multi-format Import**: Upload ZIP archives or clone Git repositories
-- **Encoding Detection**: Automatic detection of UTF-8, UTF-8 BOM, and legacy encodings (Big5, CP950, Latin1, etc.) with warnings for ambiguous cases
-- **Structural Analysis**: Extract symbols (functions, procedures, methods, classes, queries, tables), dependencies, and field references
-- **Risk Detection**: Heuristic-based identification of magic values, multiple writes, missing conditions, format conversions, and inconsistent logic
-- **Report Generation**: Markdown documentation (flow diagrams, data dependencies, risks) and YAML rule exports
+| Language | Extensions | Notes |
+|---|---|---|
+| Go | `.go` | heuristic symbol/dependency extraction |
+| SQL | `.sql` | heuristic query/table/field extraction |
+| Delphi | `.pas`, `.dpr`, `.delphi` | heuristic unit analysis |
+| Delphi related | `.dfm`, `.inc`, `.dpk`, `.fmx` | imported with **limited analysis** warnings |
 
-### Supported Languages
-| Language | Extensions | Analysis Level |
-|----------|------------|----------------|
-| Go | `.go` | Full symbol/dependency extraction |
-| SQL | `.sql` | Query parsing, table/field extraction |
-| Delphi | `.pas`, `.dpr`, `.delphi` | Full unit analysis |
-| Delphi Forms | `.dfm`, `.inc`, `.dpk`, `.fmx` | Limited heuristics (imported with warnings) |
+Unsupported languages are skipped with explicit import warnings.
 
-**Note**: Files in unsupported languages (TypeScript, JavaScript, Java, Python, C++, etc.) are skipped during import with explicit warnings.
-
-## System Architecture
+## Architecture (High Level)
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Client (UI)   │────▶│  tRPC API Layer  │────▶│  Service Layer  │
-│   React + Vite  │     │  Express + tRPC  │     │  Workflow Logic │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                                        │
-                                                        ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   MySQL/PlanetScale │◀───│   Drizzle ORM    │◀───│   Analyzer      │
-│   Schema + Data │     │  Type-safe SQL   │     │  Parser + Risk  │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
+Browser (React/Vite)
+  └─ tRPC client
+       └─ Express + tRPC (Node)
+            ├─ Import (ZIP/Git) → files table
+            ├─ Analyze → symbols/dependencies/fields/risks/rules tables
+            └─ Export ZIP → generated from persisted analysisResults snapshot
+
+MySQL (Drizzle ORM)
+  ├─ projects
+  ├─ files
+  ├─ symbols / dependencies
+  ├─ fields / fieldDependencies
+  ├─ risks / rules
+  └─ analysisResults (documents + metrics + warnings)
 ```
 
-### Data Flow
-1. **Import Phase**: User uploads ZIP or provides Git URL → Files extracted with encoding detection → Stored in `files` table
-2. **Analysis Phase**: Analyzer parses each file → Extracts symbols, dependencies, field references, risks → Persisted to respective tables
-3. **Report Phase**: Aggregated results written to `analysisResults` table → UI displays from DB → ZIP report generated from same persisted data
-
-### Workflow States
-
-**Project Lifecycle:**
-- `draft` → `importing` → `ready` → `analyzing` → `completed` | `failed`
-
-**Analysis Result Lifecycle:**
-- `pending` → `processing` → `completed` | `partial` | `failed`
-
-## Quick Start
+## Quick Start (Local)
 
 ### Prerequisites
 - Node.js 20+
 - pnpm 10+
-- MySQL 8+ or PlanetScale account
+- MySQL 8+ (or compatible provider)
 
-### Environment Setup
+### 1) Configure env
 
-1. Copy `.env.example` to `.env`:
+Copy:
 ```bash
 cp .env.example .env
 ```
 
-2. Configure required variables:
+Minimum required variables:
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `VITE_APP_ID`
+- `VITE_OAUTH_PORTAL_URL`
+- `OAUTH_SERVER_URL`
+
+#### Local dev without OAuth (recommended for demos)
+
+Legacy Lens supports a **dev-only auth bypass** that keeps the same cookie/session path but avoids setting up an OAuth provider:
+
+In `.env` set:
 ```bash
-# Database
-DATABASE_URL="mysql://user:password@localhost:3306/legacy_lens"
-
-# OAuth (optional for local dev without auth)
-VITE_APP_ID="your-app-id"
-VITE_OAUTH_PORTAL_URL="https://oauth.example.com"
-JWT_SECRET="your-jwt-secret-min-32-chars"
-OAUTH_SERVER_URL="https://oauth.example.com"
-OWNER_OPEN_ID="your-open-id"
-
-# Optional: Forge integration (for advanced features)
-BUILT_IN_FORGE_API_URL="https://forge.example.com"
-BUILT_IN_FORGE_API_KEY="your-forge-api-key"
+DEV_AUTH_BYPASS=1
+VITE_DEV_AUTH_BYPASS=1
+DEV_AUTH_OPEN_ID=local-dev-user
 ```
 
-### Installation & Migration
+You still need to set `VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL` (placeholders are OK), but they won’t be used while the bypass is enabled.
 
+### 2) Install deps
 ```bash
-# Install dependencies
-pnpm install --frozen-lockfile
+pnpm install
+```
 
-# Run database migrations
+### 3) Run migrations
+```bash
 pnpm db:migrate
+```
 
-# (Optional) Seed sample data
-# pnpm db:seed
-
-# Start development server
+### 4) Start dev server
+```bash
 pnpm dev
 ```
 
-Access the application at `http://localhost:3000`.
+Open `http://localhost:3000`. Click “Sign in”.
 
-## Available Scripts
+## Quick Start (Docker)
+
+This repo ships a production build Dockerfile and a `docker-compose.yml` for running the app + MySQL locally.
+
+```bash
+docker compose up --build
+```
+
+Then run migrations once (in another terminal):
+```bash
+docker compose exec app pnpm db:migrate
+```
+
+Open `http://localhost:3000`.
+
+## Usage Flow (Import → Analyze → Export)
+
+1. Create a project
+2. Import source (ZIP or Git URL)
+3. Run analysis (server-side, persisted)
+4. Review the persisted snapshot in the UI
+5. Export report ZIP (generated from persisted analysis only)
+
+## Samples
+
+The `samples/` folder contains small fixtures you can ZIP for import:
+
+```text
+samples/
+  go/
+  sql/
+  delphi/
+```
+
+Example:
+1. Zip `samples/go/` into `samples-go.zip`
+2. Import the ZIP in the UI
+3. Run analysis
+4. Download the report
+
+## Health / System Info
+
+- Liveness: `GET /health`
+- Full health (includes DB check + version): `GET /api/health`
+- tRPC system health: `GET /api/trpc/system.health`
+
+Version is sourced from `package.json` (with `npm_package_version` as a fast path when available).
+
+## Scripts
 
 | Command | Description |
-|---------|-------------|
-| `pnpm dev` | Start development server (hot reload) |
-| `pnpm build` | Build production bundles (client + server) |
-| `pnpm start` | Run production server |
-| `pnpm typecheck` | TypeScript type checking |
-| `pnpm lint` | ESLint validation |
-| `pnpm test` | Run Vitest test suite |
-| `pnpm test:watch` | Run tests in watch mode |
-| `pnpm db:generate` | Generate Drizzle migrations from schema changes |
-| `pnpm db:migrate` | Apply pending migrations |
-| `pnpm db:push` | Generate + apply migrations (dev only) |
+|---|---|
+| `pnpm dev` | Dev server (Vite + API) |
+| `pnpm build` | Build client + bundle server to `dist/` |
+| `pnpm start` | Run production server from `dist/` |
+| `pnpm lint` | ESLint |
+| `pnpm check` | Typecheck (app + tests) |
+| `pnpm test` | Vitest |
+| `pnpm db:migrate` | Apply Drizzle migrations |
 
-## Sample Projects
+## Import Safety Boundaries
 
-The `samples/` directory contains minimal example projects for testing:
+Import pipeline is intentionally bounded:
+- ZIP: max 2,000 entries, max 5MB per file, max 500MB expanded
+- Git: scanned import is bounded to the same file + size limits
+- Path traversal defense: unsafe paths (e.g. `../`) are skipped with warnings
 
-```
-samples/
-├── go/          # Go sample with UserService, SQL operations
-├── sql/         # Standalone SQL scripts
-└── delphi/      # Delphi units and forms
-```
+## Limitations (Honest)
 
-### Try It Yourself
-1. Create a new project in the UI
-2. Upload `samples/go.zip` (create by zipping `samples/go/` contents)
-3. Wait for analysis to complete
-4. Explore symbols, dependencies, and detected risks
-5. Download the ZIP report
+- Parsing is **heuristic**, not compiler-grade.
+- Cross-file Delphi resolution is best-effort.
+- Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
+- Mixed-language repos are supported; the “Focus language” is a UI lens, not an analysis filter.
 
-## API Reference
+## Roadmap (Not Implemented Yet)
 
-### Health Check
-```bash
-curl http://localhost:3000/api/trpc/system.health
-```
-
-Response:
-```json
-{
-  "ok": true,
-  "timestamp": "2025-01-15T10:30:00.000Z",
-  "version": "1.0.0"
-}
-```
-
-### Key Endpoints (tRPC)
-- `project.create` - Create new analysis project
-- `project.importZip` / `project.importGit` - Import source code
-- `project.analyze` - Trigger analysis workflow
-- `project.exportReport` - Download ZIP report
-- `project.delete` - Remove project and all related data
-
-## Testing Strategy
-
-### Test Coverage
-- **Unit Tests**: Parser logic, risk detection, encoding handling
-- **Integration Tests**: Full import → analyze → export workflow
-- **Edge Cases**: 
-  - UTF-8 BOM files
-  - Non-UTF-8 legacy encodings (Big5, Latin1)
-  - Class symbol extraction
-  - Large file handling (>5MB skipped with warning)
-  - Empty/invalid ZIP archives
-
-Run tests:
-```bash
-pnpm test
-```
-
-## Limitations & Known Issues
-
-### Analysis Limitations
-- **Heuristic Parsing**: Not compiler-grade; may miss semantic relationships across units/files
-- **Dynamic SQL**: String-concatenated SQL queries may have incomplete field extraction
-- **Multi-line SQL**: Embedded multi-line SQL strings may not be fully parsed
-- **Delphi Cross-Unit Resolution**: Best-effort only; some inter-unit dependencies may be missed
-
-### Encoding Support
-- Fully supported: UTF-8, UTF-8 BOM
-- Best-effort detection: Big5, CP950, Latin1, Windows-125x, Shift_JIS, EUC-KR, GBK
-- Warning system alerts when confidence < 80% or fallback encoding used
-
-### Scale Limits
-- Max files per ZIP: 2,000
-- Max single file size: 5 MB
-- Max total extracted size: 500 MB
-
-## Repository Hygiene
-
-### Release Checklist
-Before creating a release:
-```bash
-pnpm install --frozen-lockfile
-pnpm check        # Type check
-pnpm lint         # Linting
-pnpm test         # All tests pass
-pnpm build        # Production build succeeds
-pnpm db:migrate   # Migrations apply cleanly
-```
-
-### Excluded from Releases
-The following are excluded via `.gitignore` and release packaging rules:
-- `.git/` - Version control metadata
-- `node_modules/` - Dependencies (reinstalled via pnpm)
-- `dist/` - Build artifacts
-- `.manus-logs/` - Debug logs
-- `coverage/` - Test coverage reports
-- `*.env*` - Environment files
-- OS/editor junk (`.DS_Store`, `.vscode/`, `.idea/`)
-
-### Packaging Verification
-```bash
-# Verify release archive does not contain excluded files
-zipinfo -1 release.zip | grep -E "^(\.git|node_modules|dist|\.manus)" && echo "FAIL: Excluded files found" || echo "PASS"
-```
-
-## CI/CD Status
-
-[![CI](https://github.com/your-org/legacy-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/legacy-lens/actions/workflows/ci.yml)
-
-GitHub Actions automatically runs on every push/PR:
-- Dependency installation (pnpm frozen lockfile)
-- TypeScript type checking
-- ESLint validation
-- Vitest test execution
-- Production build verification
-
-## Roadmap
-
-### Completed ✅
-- [x] ZIP/Git import with encoding detection
-- [x] Go, SQL, Delphi parser support
-- [x] Class symbol type support
-- [x] Risk detection (5 categories)
-- [x] Markdown/YAML report generation
-- [x] Encoding warning system
-- [x] Template module cleanup
-
-### In Progress 🚧
-- [ ] Analysis Diff / Snapshot Comparison API
-- [ ] Enhanced Delphi form (`.dfm`) analysis
-
-### Planned 📋
-- [ ] Interactive dependency graph visualization
-- [ ] Custom rule definition UI
-- [ ] Incremental analysis (diff-based re-analysis)
-- [ ] Export to Confluence / Notion
-- [ ] Additional language support (PowerBuilder, COBOL)
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Development Guidelines
-- Follow existing code style (ESLint + Prettier enforced)
-- Add tests for new functionality
-- Update README for user-facing changes
-- Ensure migrations are backward-compatible
+These are intentionally not half-shipped in code:
+- analysis diff / snapshot compare
+- interactive dependency graph
+- custom rule packs
+- Delphi form event mapping
+- ingestion preflight report
 
 ## License
 
-MIT License - See LICENSE file for details.
+MIT
 
-## Acknowledgments
-
-- Built with [tRPC](https://trpc.io/), [Drizzle ORM](https://orm.drizzle.team/), [React](https://react.dev/), [Vite](https://vitejs.dev/)
-- Icons by [Lucide](https://lucide.dev/)
-- UI components from [shadcn/ui](https://ui.shadcn.com/)
-- Encoding detection by [jschardet](https://github.com/aadsm/jschardet) and [iconv-lite](https://github.com/ashtuchkin/iconv-lite)

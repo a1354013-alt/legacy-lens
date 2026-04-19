@@ -173,7 +173,7 @@ export default function AnalysisResult() {
           <Badge variant={report?.status === "failed" ? "destructive" : report?.status === "completed" ? "default" : "secondary"}>
             Analysis: {analysisStatusLabels[report?.status ?? "pending"]}
           </Badge>
-          <Badge variant="outline">Language: {project.language.toUpperCase()}</Badge>
+          <Badge variant="outline">Focus: {project.language.toUpperCase()}</Badge>
           <Badge variant="outline">Source: {project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
         </div>
 

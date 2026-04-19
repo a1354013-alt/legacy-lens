@@ -65,6 +65,17 @@ function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
+function isSafeRelativePath(normalizedPath: string): boolean {
+  if (!normalizedPath) return false;
+  if (normalizedPath.includes("\0")) return false;
+
+  const segments = normalizedPath.split("/").filter(Boolean);
+  if (segments.length === 0) return false;
+  if (segments.some((segment) => segment === "." || segment === "..")) return false;
+
+  return true;
+}
+
 function shouldIgnoreFile(filePath: string): boolean {
   return IGNORED_PATTERNS.some((pattern) => pattern.test(filePath));
 }
@@ -135,7 +146,16 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       }
 
       const normalizedPath = normalizePath(rawPath);
-      if (!normalizedPath || shouldIgnoreFile(normalizedPath)) {
+      if (!isSafeRelativePath(normalizedPath)) {
+        warnings.push({
+          code: "IMPORT_UNSAFE_PATH",
+          message: "The file was skipped because its archive path is not a safe relative path.",
+          filePath: rawPath,
+        });
+        continue;
+      }
+
+      if (shouldIgnoreFile(normalizedPath)) {
         continue;
       }
 

@@ -245,7 +245,7 @@ describe("appRouter integration", () => {
 
     const created = await caller.projects.create({
       name: "integration-project",
-      language: "go",
+      focusLanguage: "go",
       sourceType: "upload",
     });
     expect(created.projectId).toBe(1);

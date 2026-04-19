@@ -6,9 +6,8 @@ const runtimeEnvSchema = z.object({
   JWT_SECRET: z.string().trim().min(1, "JWT_SECRET is required."),
   DATABASE_URL: z.string().trim().min(1, "DATABASE_URL is required."),
   OAUTH_SERVER_URL: z.string().trim().min(1, "OAUTH_SERVER_URL is required."),
-  OWNER_OPEN_ID: z.string().trim().min(1, "OWNER_OPEN_ID is required."),
-  BUILT_IN_FORGE_API_URL: z.string().trim().optional(),
-  BUILT_IN_FORGE_API_KEY: z.string().trim().optional(),
+  DEV_AUTH_BYPASS: z.string().trim().optional(),
+  DEV_AUTH_OPEN_ID: z.string().trim().optional(),
   NODE_ENV: z.string().trim().optional(),
 });
 
@@ -30,8 +29,19 @@ export const ENV = {
   cookieSecret: parsedEnv.success ? parsedEnv.data.JWT_SECRET : process.env.JWT_SECRET ?? "",
   databaseUrl: parsedEnv.success ? parsedEnv.data.DATABASE_URL : process.env.DATABASE_URL ?? "",
   oAuthServerUrl: parsedEnv.success ? parsedEnv.data.OAUTH_SERVER_URL : process.env.OAUTH_SERVER_URL ?? "",
-  ownerOpenId: parsedEnv.success ? parsedEnv.data.OWNER_OPEN_ID : process.env.OWNER_OPEN_ID ?? "",
   isProduction: process.env.NODE_ENV === "production",
-  forgeApiUrl: parsedEnv.success ? parsedEnv.data.BUILT_IN_FORGE_API_URL ?? "" : process.env.BUILT_IN_FORGE_API_URL ?? "",
-  forgeApiKey: parsedEnv.success ? parsedEnv.data.BUILT_IN_FORGE_API_KEY ?? "" : process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  devAuthBypass:
+    parsedEnv.success
+      ? parsedEnv.data.DEV_AUTH_BYPASS ?? ""
+      : process.env.DEV_AUTH_BYPASS ?? "",
+  devAuthOpenId:
+    parsedEnv.success
+      ? parsedEnv.data.DEV_AUTH_OPEN_ID ?? ""
+      : process.env.DEV_AUTH_OPEN_ID ?? "",
 } as const;
+
+export function isDevAuthBypassEnabled() {
+  if (ENV.isProduction) return false;
+  const value = ENV.devAuthBypass.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}

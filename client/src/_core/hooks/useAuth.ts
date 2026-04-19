@@ -49,7 +49,7 @@ export function useAuth(options?: UseAuthOptions) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem("manus-runtime-user-info", JSON.stringify(state.user));
+    window.localStorage.setItem("legacy-lens:user", JSON.stringify(state.user));
   }, [state.user]);
 
   useEffect(() => {

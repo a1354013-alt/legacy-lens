@@ -25,7 +25,7 @@ const projectIdSchema = z.number().int().positive();
 
 const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(255),
-  language: projectLanguageSchema,
+  focusLanguage: projectLanguageSchema,
   sourceType: projectSourceTypeSchema,
   description: z.string().trim().max(2_000).optional(),
 });
@@ -129,7 +129,12 @@ export const appRouter = router({
 
     create: protectedProcedure.input(createProjectSchema).mutation(async ({ ctx, input }) => {
       try {
-        const projectId = await createProjectForUser(ctx.user.id, input);
+        const projectId = await createProjectForUser(ctx.user.id, {
+          name: input.name,
+          focusLanguage: input.focusLanguage,
+          sourceType: input.sourceType,
+          description: input.description,
+        });
         return { success: true, projectId };
       } catch (error) {
         raiseAsTrpc(error);

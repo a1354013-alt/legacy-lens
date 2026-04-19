@@ -7,12 +7,12 @@ import { appRouter } from "../routers";
 import { validateDbConfig, closeDb } from "../db";
 import { createContext } from "./context";
 import { validateRuntimeConfig } from "./env";
+import { registerDevAuthRoutes } from "./devAuth";
 import { registerOAuthRoutes } from "./oauth";
 import { serveStatic, setupVite } from "./vite";
 import { logger } from "./logger";
 import { registerHealthEndpoint } from "./health";
 import { registerRateLimiters } from "./rateLimiter";
-import { globalJobQueue } from "./jobQueue";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -36,10 +36,7 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
 
 async function gracefulShutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down gracefully...`);
-  
-  // Stop job queue
-  globalJobQueue.stopWorker();
-  
+
   // Close database connections
   await closeDb();
   
@@ -75,6 +72,7 @@ async function startServer() {
     next();
   });
 
+  registerDevAuthRoutes(app);
   registerOAuthRoutes(app);
   app.use(
     "/api/trpc",

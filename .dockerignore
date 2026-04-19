@@ -1,7 +1,6 @@
 # Docker
 node_modules/
 dist/
-.manus-logs/
 
 # Environment
 .env

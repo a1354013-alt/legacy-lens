@@ -1,6 +1,5 @@
-// WebDev Auth TypeScript types
-// Auto-generated from protobuf definitions
-// Generated on: 2025-09-24T05:57:57.338Z
+// OAuth server API TypeScript types
+// Based on the upstream service contract used by `server/_core/sdk.ts`.
 
 export interface AuthorizeRequest {
   redirectUri: string;
@@ -43,6 +42,7 @@ export interface GetUserInfoResponse {
   email?: string | null;
   platform?: string | null;
   loginMethod?: string | null;
+  platforms?: unknown;
 }
 
 export interface CanAccessRequest {
@@ -66,4 +66,6 @@ export interface GetUserInfoWithJwtResponse {
   email?: string | null;
   platform?: string | null;
   loginMethod?: string | null;
+  platforms?: unknown;
 }
+

@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { getDb } from "../db";
+import { getAppVersion } from "./version";
 
 export interface HealthStatus {
   status: "healthy" | "unhealthy" | "degraded";
@@ -24,8 +25,6 @@ export interface HealthStatus {
     };
   };
 }
-
-const PACKAGE_VERSION = process.env.npm_package_version || "1.0.0";
 
 async function checkDatabase(): Promise<HealthStatus["checks"]["database"]> {
   const startTime = Date.now();
@@ -126,7 +125,7 @@ export async function getHealthStatus(): Promise<HealthStatus> {
   return {
     status,
     timestamp: new Date().toISOString(),
-    version: PACKAGE_VERSION,
+    version: getAppVersion(),
     checks,
   };
 }
@@ -152,7 +151,7 @@ export function registerHealthEndpoint(app: Express) {
       return res.status(500).json({
         status: "unhealthy",
         timestamp: new Date().toISOString(),
-        version: PACKAGE_VERSION,
+        version: getAppVersion(),
         error: error instanceof Error ? error.message : "Unknown error",
       });
     }

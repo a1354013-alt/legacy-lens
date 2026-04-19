@@ -72,7 +72,7 @@ async function fileToBase64(file: File) {
 export default function ImportProject() {
   const [, setLocation] = useLocation();
   const [sourceType, setSourceType] = useState<ProjectSourceType>("upload");
-  const [language, setLanguage] = useState<ProjectLanguage>("go");
+  const [focusLanguage, setFocusLanguage] = useState<ProjectLanguage>("go");
   const [projectName, setProjectName] = useState("");
   const [description, setDescription] = useState("");
   const [gitUrl, setGitUrl] = useState("");
@@ -124,7 +124,7 @@ export default function ImportProject() {
       const createResult = await createProjectMutation.mutateAsync({
         name: projectName.trim(),
         description: description.trim() || undefined,
-        language,
+        focusLanguage,
         sourceType,
       });
 
@@ -267,8 +267,8 @@ export default function ImportProject() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="project-language">Primary language</Label>
-                <Select value={language} onValueChange={(value) => setLanguage(value as ProjectLanguage)} disabled={isBusy}>
+                <Label htmlFor="project-language">Focus language</Label>
+                <Select value={focusLanguage} onValueChange={(value) => setFocusLanguage(value as ProjectLanguage)} disabled={isBusy}>
                   <SelectTrigger id="project-language">
                     <SelectValue />
                   </SelectTrigger>
@@ -280,6 +280,9 @@ export default function ImportProject() {
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-slate-500">
+                  Sets the default lens for navigation and summaries. Analysis still runs across all supported languages found in the import.
+                </p>
               </div>
             </CardContent>
           </Card>

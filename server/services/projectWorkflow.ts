@@ -108,14 +108,19 @@ async function transitionProjectState(
 
 export async function createProjectForUser(
   userId: number,
-  input: Pick<typeof projects.$inferInsert, "name" | "language" | "sourceType" | "description">
+  input: {
+    name: string;
+    focusLanguage: typeof projects.$inferInsert.language;
+    sourceType: typeof projects.$inferInsert.sourceType;
+    description?: string;
+  }
 ) {
   const db = await requireDb();
   const insertResult = await db.insert(projects).values({
     userId,
     name: input.name,
     description: input.description,
-    language: input.language,
+    language: input.focusLanguage,
     sourceType: input.sourceType,
     status: "draft",
     importProgress: 0,

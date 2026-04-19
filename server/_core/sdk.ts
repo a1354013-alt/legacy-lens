@@ -14,7 +14,7 @@ import type {
   GetUserInfoResponse,
   GetUserInfoWithJwtRequest,
   GetUserInfoWithJwtResponse,
-} from "./types/manusTypes";
+} from "./types/oauthTypes";
 
 export const sessionPayloadSchema = z.object({
   openId: z.string().trim().min(1),

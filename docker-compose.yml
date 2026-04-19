@@ -15,7 +15,6 @@ services:
       - VITE_APP_ID=${VITE_APP_ID:-your_app_id}
       - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL:-http://localhost:3001}
       - OAUTH_SERVER_URL=${OAUTH_SERVER_URL:-http://localhost:3001}
-      - OWNER_OPEN_ID=${OWNER_OPEN_ID:-your_owner_openid}
     depends_on:
       db:
         condition: service_healthy

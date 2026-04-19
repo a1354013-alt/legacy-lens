@@ -8,10 +8,9 @@ vi.mock("./env", () => ({
     cookieSecret: "oauth-secret",
     databaseUrl: "mysql://root:root@localhost:3306/legacy_lens",
     oAuthServerUrl: "https://oauth.example.com",
-    ownerOpenId: "owner",
     isProduction: false,
-    forgeApiUrl: "",
-    forgeApiKey: "",
+    devAuthBypass: "",
+    devAuthOpenId: "",
   },
 }));
 
