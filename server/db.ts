@@ -3,6 +3,7 @@ import mysql from "mysql2";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { logger } from "./_core/logger";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: mysql.Pool | null = null;
@@ -48,9 +49,13 @@ export async function getPool(): Promise<mysql.Pool> {
     const connection = await _pool.promise().getConnection();
     await connection.ping();
     connection.release();
-    console.log("[Database] Connection pool established successfully");
+    logger.info("Database connection pool established", { action: "db.pool.ready", status: "ok" });
   } catch (error) {
-    console.error("[Database] Failed to establish connection pool:", error);
+    logger.error("Database connection pool failed", {
+      action: "db.pool.ready",
+      status: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 
@@ -85,7 +90,7 @@ export async function closeDb() {
     _db = null;
   }
 
-  console.log("[Database] Connection pool closed");
+  logger.info("Database connection pool closed", { action: "db.pool.closed", status: "ok" });
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {

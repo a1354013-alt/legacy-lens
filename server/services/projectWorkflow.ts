@@ -21,6 +21,8 @@ import { getDb } from "../db";
 import { deleteProjectFiles, getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
 import { cleanupTempDir, cloneAndExtractFiles, isValidGitUrl } from "../utils/gitHandler";
 import { extractFilesFromZip, validateZipFile } from "../utils/zipHandler";
+import { logger } from "../_core/logger";
+import { getAppVersion } from "../_core/version";
 
 const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {
   draft: ["importing", "failed"],
@@ -170,6 +172,7 @@ async function replaceProjectFiles(
 
 export async function importProjectZip(projectId: number, userId: number, zipContent: string) {
   await getOwnedProject(projectId, userId);
+  logger.info("Import started", { projectId, action: "import.zip.start", status: "ok" });
 
   try {
     const isValid = await validateZipFile(zipContent);
@@ -180,6 +183,7 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
     const extractedFiles = await extractFilesFromZip(zipContent);
     const fileIds = await replaceProjectFiles(projectId, extractedFiles);
 
+    logger.info("Import completed", { projectId, action: "import.zip.complete", status: "ok", fileCount: extractedFiles.files.length, warningCount: extractedFiles.warnings.length });
     return {
       fileIds,
       files: extractedFiles.files.map((file) => ({
@@ -192,6 +196,7 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
     };
   } catch (error) {
     const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
+    logger.error("Import failed", { projectId, action: "import.zip.complete", status: "error", code: appError.code, message: appError.message });
     const db = await requireDb();
     await db
       .update(projects)
@@ -211,6 +216,7 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
     throw new AppError("INVALID_GIT_URL", "Repository URL is invalid or unsupported.");
   }
 
+  logger.info("Import started", { projectId, action: "import.git.start", status: "ok" });
   let tempDir = "";
   try {
     const { tmpdir } = await import("node:os");
@@ -219,6 +225,7 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
     const extractedFiles = await cloneAndExtractFiles(gitUrl, tempDir);
     const fileIds = await replaceProjectFiles(projectId, extractedFiles, gitUrl);
 
+    logger.info("Import completed", { projectId, action: "import.git.complete", status: "ok", fileCount: extractedFiles.files.length, warningCount: extractedFiles.warnings.length });
     return {
       fileIds,
       files: extractedFiles.files.map((file) => ({
@@ -231,6 +238,7 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
     };
   } catch (error) {
     const appError = toAppError(error, new AppError("GIT_CLONE_FAILED", "Git import failed."));
+    logger.error("Import failed", { projectId, action: "import.git.complete", status: "error", code: appError.code, message: appError.message });
     const db = await requireDb();
     await db
       .update(projects)
@@ -408,6 +416,7 @@ export async function analyzeProject(projectId: number, userId: number) {
     throw new AppError("INVALID_PROJECT_STATE", `Project is currently "${projectStatusLabels[project.status]}".`);
   }
 
+  logger.info("Analysis started", { projectId, action: "analysis.start", status: "ok", focusLanguage: project.language });
   const db = await requireDb();
   await db.transaction(async (tx) => {
     await transitionProjectState(tx, projectId, {
@@ -455,9 +464,11 @@ export async function analyzeProject(projectId: number, userId: number) {
       await writeSuccessfulAnalysis(tx, projectId, projectFiles, result);
     });
 
+    logger.info("Analysis completed", { projectId, action: "analysis.complete", status: "ok", resultStatus: result.status, metrics: result.metrics, warningCount: result.warnings?.length ?? 0 });
     return result;
   } catch (error) {
     const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Analysis failed."));
+    logger.error("Analysis failed", { projectId, action: "analysis.complete", status: "error", code: appError.code, message: appError.message });
     await db.transaction(async (tx) => {
       await writeFailedAnalysis(tx, projectId, appError);
     });
@@ -557,6 +568,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
 
 export async function buildReportArchive(projectId: number, userId: number): Promise<ReportArchivePayload> {
   await getOwnedProject(projectId, userId);
+  logger.info("Export started", { projectId, action: "export.zip.start", status: "ok" });
   const db = await requireDb();
   const [project, report] = await Promise.all([
     db.select().from(projects).where(eq(projects.id, projectId)).limit(1).then((rows) => rows[0] ?? null),
@@ -564,6 +576,7 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
   ]);
 
   if (!report || !report.flowMarkdown || !report.dataDependencyMarkdown || !report.risksMarkdown || !report.rulesYaml) {
+    logger.warn("Export not ready", { projectId, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
     throw new AppError("REPORT_NOT_READY", "Analysis report is not ready for download.");
   }
 
@@ -573,6 +586,21 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
   archive.file("DATA_DEPENDENCY.md", report.dataDependencyMarkdown, deterministicFileOptions);
   archive.file("RISKS.md", report.risksMarkdown, deterministicFileOptions);
   archive.file("RULES.yaml", report.rulesYaml, deterministicFileOptions);
+
+  const version = getAppVersion();
+  const metrics = report.summaryJson ?? null;
+  const createdAtSource = (report as any).createdAt ?? (report as any).updatedAt ?? new Date(0);
+  const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
+  const metadata = {
+    projectName: project?.name ?? "project",
+    analysisVersion: version,
+    createdAt: createdAtIso,
+    focusLanguage: project?.language ?? null,
+    fileCount: metrics?.fileCount ?? 0,
+    symbolCount: metrics?.symbolCount ?? 0,
+  } as const;
+
+  archive.file("metadata.json", JSON.stringify(metadata, null, 2), deterministicFileOptions);
   archive.file(
     "analysis-summary.json",
     JSON.stringify(
@@ -588,6 +616,7 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
     deterministicFileOptions
   );
 
+  logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: report.id });
   return {
     fileName: `${project?.name ?? "project"}-analysis-report.zip`,
     mimeType: "application/zip",

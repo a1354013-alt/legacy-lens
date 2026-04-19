@@ -1,4 +1,5 @@
 import type { CookieOptions, Request } from "express";
+import { logger } from "./logger";
 
 function isSecureRequest(req: Request) {
   if (req.protocol === "https") return true;
@@ -24,10 +25,10 @@ export function getSessionCookieOptions(
   // This prevents browsers from rejecting the cookie
   
   if (!isSecure) {
-    console.warn(
-      "[Cookie] Non-HTTPS request detected. Using sameSite=lax for compatibility. " +
-      "For production, ensure x-forwarded-proto header is set correctly or use HTTPS."
-    );
+    logger.warn("Non-HTTPS request detected; using sameSite=lax for compatibility", {
+      action: "cookie.options",
+      status: "ok",
+    });
   }
   
   return {

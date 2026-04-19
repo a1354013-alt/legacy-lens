@@ -5,6 +5,7 @@ import { z } from "zod";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
 import { ENV } from "./env";
+import { logger } from "./logger";
 import { sdk } from "./sdk";
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -89,7 +90,11 @@ export function registerOAuthRoutes(app: Express) {
 
       res.redirect(302, url.toString());
     } catch (error) {
-      console.error("[OAuth] Failed to start login flow", error);
+      logger.error("OAuth start failed", {
+        action: "oauth.start",
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json({ error: "OAuth login initialization failed" });
     }
   });
@@ -130,7 +135,11 @@ export function registerOAuthRoutes(app: Express) {
       res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
       res.redirect(302, state.redirectPath);
     } catch (error) {
-      console.error("[OAuth] Callback failed", error);
+      logger.error("OAuth callback failed", {
+        action: "oauth.callback",
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(400).json({ error: "OAuth callback validation failed" });
     }
   });

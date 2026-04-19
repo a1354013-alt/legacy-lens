@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { User } from "../../drizzle/schema";
 import * as db from "../db";
 import { ENV } from "./env";
+import { logger } from "./logger";
 import type {
   ExchangeTokenRequest,
   ExchangeTokenResponse,
@@ -209,7 +210,11 @@ class SDKServer {
         });
         user = await db.getUserByOpenId(userInfo.openId);
       } catch (error) {
-        console.error("[Auth] Failed to sync user from OAuth:", error);
+        logger.error("Auth sync from OAuth failed", {
+          action: "auth.syncUser",
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
         throw ForbiddenError("Failed to sync user info");
       }
     }

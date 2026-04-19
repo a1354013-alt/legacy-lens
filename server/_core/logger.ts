@@ -49,14 +49,22 @@ const formatLog = (
   message: string,
   context?: LogContext
 ): string | object => {
+  const forceJson =
+    Boolean(context) &&
+    typeof context === "object" &&
+    (Object.prototype.hasOwnProperty.call(context, "action") ||
+      Object.prototype.hasOwnProperty.call(context, "status") ||
+      Object.prototype.hasOwnProperty.call(context, "projectId"));
+
   const baseLog = {
     timestamp: formatTimestamp(),
     level,
     message,
-    ...(context && Object.keys(context).length > 0 ? { context } : {}),
+    ...(forceJson && context ? context : {}),
+    ...(!forceJson && context && Object.keys(context).length > 0 ? { context } : {}),
   };
 
-  if (process.env.NODE_ENV === "production" || process.env.LOG_FORMAT === "json") {
+  if (forceJson || process.env.NODE_ENV === "production" || process.env.LOG_FORMAT === "json") {
     return baseLog;
   }
 

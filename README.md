@@ -70,6 +70,16 @@ Analyzer
 Export ZIP
 ```
 
+## Example Output
+
+```text
+Example Report:
+Files analyzed: 1284
+Symbols detected: 14228
+Dependencies: 3912
+Warnings: 12
+```
+
 ## Quick Start (Local)
 
 ### Prerequisites

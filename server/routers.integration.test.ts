@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
+import JSZip from "jszip";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -267,5 +268,13 @@ describe("appRouter integration", () => {
       format: "zip",
     });
     expect(archive.mimeType).toBe("application/zip");
+
+    const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
+    const metadata = zip.file("metadata.json");
+    expect(metadata).toBeTruthy();
+    const metadataJson = JSON.parse(await metadata!.async("text")) as Record<string, unknown>;
+    expect(metadataJson.projectName).toBe("integration-project");
+    expect(metadataJson.focusLanguage).toBe("go");
+    expect(typeof metadataJson.analysisVersion).toBe("string");
   });
 });

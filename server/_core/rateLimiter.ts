@@ -1,4 +1,5 @@
 import type { Express, Request, Response, NextFunction } from "express";
+import { logger } from "./logger";
 
 // Dynamic import to avoid issues if package not installed
 let rateLimitModule: typeof import("express-rate-limit") | null = null;
@@ -8,7 +9,7 @@ async function getRateLimitModule() {
     try {
       rateLimitModule = await import("express-rate-limit");
     } catch {
-      console.warn("[RateLimiter] express-rate-limit not installed, rate limiting disabled");
+      logger.warn("Rate limiting disabled (module missing)", { action: "rateLimiter.init", status: "error" });
       return null;
     }
   }
