@@ -1,6 +1,9 @@
 # Legacy Lens - Docker Configuration
+# Multi-stage build for production-ready deployment
 
-# Build stage
+# ==============================================================================
+# Build Stage
+# ==============================================================================
 FROM node:20-alpine AS builder
 
 WORKDIR /app
@@ -8,19 +11,22 @@ WORKDIR /app
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10.4.1 --activate
 
-# Copy package files
+# Copy package files and patches (patches must be copied before install)
 COPY package.json pnpm-lock.yaml ./
+COPY patches/ ./patches/
 
-# Install dependencies
-RUN pnpm install --frozen-lockfile --prod
+# Install all dependencies (including devDependencies for build)
+RUN pnpm install --frozen-lockfile
 
 # Copy source code
 COPY . .
 
-# Build application
+# Build application (client + server)
 RUN pnpm build
 
-# Production stage
+# ==============================================================================
+# Production Stage
+# ==============================================================================
 FROM node:20-alpine AS production
 
 WORKDIR /app
@@ -28,11 +34,12 @@ WORKDIR /app
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10.4.1 --activate
 
-# Copy package files and install production dependencies
+# Copy package files and install production dependencies only
 COPY package.json pnpm-lock.yaml ./
+COPY patches/ ./patches/
 RUN pnpm install --frozen-lockfile --prod
 
-# Copy built assets from builder
+# Copy built assets from builder stage
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
 
