@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import mysql from "mysql2/promise";
+import mysql from "mysql2";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -7,7 +7,6 @@ import { ENV } from "./_core/env";
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: mysql.Pool | null = null;
 
-// Configuration constants moved from hardcoded values
 const DB_CONFIG = {
   connectionLimit: Number.parseInt(process.env.DB_CONNECTION_LIMIT || "10", 10),
   queueLimit: Number.parseInt(process.env.DB_QUEUE_LIMIT || "0", 10),
@@ -40,15 +39,13 @@ export async function getPool(): Promise<mysql.Pool> {
     uri: ENV.databaseUrl,
     connectionLimit: DB_CONFIG.connectionLimit,
     queueLimit: DB_CONFIG.queueLimit,
-    acquireTimeout: DB_CONFIG.acquireTimeoutMs,
     waitForConnections: DB_CONFIG.waitForConnections,
     enableKeepAlive: true,
-    keepAliveInitialDelay: 0,
+    keepAliveInitialDelay: 0
   });
 
-  // Test connection
   try {
-    const connection = await _pool.getConnection();
+    const connection = await _pool.promise().getConnection();
     await connection.ping();
     connection.release();
     console.log("[Database] Connection pool established successfully");
@@ -83,9 +80,11 @@ export async function closeDb() {
     await _pool.end();
     _pool = null;
   }
+
   if (_db) {
     _db = null;
   }
+
   console.log("[Database] Connection pool closed");
 }
 
@@ -100,8 +99,9 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
 
   const values: InsertUser = {
-    openId: user.openId,
+    openId: user.openId
   };
+
   const updateSet: Record<string, unknown> = {};
 
   const textFields = ["name", "email", "loginMethod"] as const;
@@ -110,6 +110,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   const assignNullable = (field: TextField) => {
     const value = user[field];
     if (value === undefined) return;
+
     const normalized = value ?? null;
     values[field] = normalized;
     updateSet[field] = normalized;
@@ -121,6 +122,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     values.lastSignedIn = user.lastSignedIn;
     updateSet.lastSignedIn = user.lastSignedIn;
   }
+
   if (user.role !== undefined) {
     values.role = user.role;
     updateSet.role = user.role;
@@ -138,7 +140,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
 
   await db.insert(users).values(values).onDuplicateKeyUpdate({
-    set: updateSet,
+    set: updateSet
   });
 }
 
@@ -148,6 +150,11 @@ export async function getUserByOpenId(openId: string) {
     return undefined;
   }
 
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.openId, openId))
+    .limit(1);
+
   return result.length > 0 ? result[0] : undefined;
 }

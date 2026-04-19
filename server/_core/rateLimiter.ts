@@ -1,5 +1,4 @@
 import type { Express, Request, Response, NextFunction } from "express";
-import type { RateLimitOptions } from "express-rate-limit";
 
 // Dynamic import to avoid issues if package not installed
 let rateLimitModule: typeof import("express-rate-limit") | null = null;
@@ -27,43 +26,39 @@ export interface RateLimiterConfig {
 }
 
 const defaultConfigs: Record<string, RateLimiterConfig> = {
-  // Strict limiter for authentication endpoints
   auth: {
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // 5 attempts per window
+    windowMs: 15 * 60 * 1000,
+    max: 5,
     message: "Too many authentication attempts, please try again later",
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false,
     skipFailedRequests: false,
   },
-  
-  // General API limiter
+
   api: {
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // 100 requests per window
+    windowMs: 15 * 60 * 1000,
+    max: 100,
     message: "Too many requests, please try again later",
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false,
     skipFailedRequests: false,
   },
-  
-  // Lenient limiter for read-only endpoints
+
   read: {
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 30, // 30 requests per minute
+    windowMs: 1 * 60 * 1000,
+    max: 30,
     message: "Too many requests, please slow down",
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false,
     skipFailedRequests: false,
   },
-  
-  // Very strict limiter for file uploads
+
   upload: {
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 10, // 10 uploads per hour
+    windowMs: 60 * 60 * 1000,
+    max: 10,
     message: "Too many upload requests, please try again later",
     standardHeaders: true,
     legacyHeaders: false,
@@ -72,46 +67,58 @@ const defaultConfigs: Record<string, RateLimiterConfig> = {
   },
 };
 
+function getClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return forwarded[0] ?? req.ip ?? "anonymous";
+  }
+
+  if (typeof forwarded === "string" && forwarded.trim() !== "") {
+    return forwarded.split(",")[0]?.trim() || req.ip || "anonymous";
+  }
+
+  return req.ip || "anonymous";
+}
+
 export function createRateLimiter(configName: keyof typeof defaultConfigs = "api") {
   const config = defaultConfigs[configName];
-  
+
   return async function rateLimiterMiddleware(req: Request, res: Response, next: NextFunction) {
     const module = await getRateLimitModule();
     if (!module) {
-      // Skip rate limiting if module not available
       return next();
     }
 
-    const { rateLimit } = module;
-    
-    const options: RateLimitOptions = {
+    const rateLimit = module.default ?? module;
+
+    const options = {
       windowMs: config.windowMs,
       max: config.max,
-      message: { 
+      message: {
         error: "Too Many Requests",
         message: config.message,
       },
       standardHeaders: config.standardHeaders,
       legacyHeaders: config.legacyHeaders,
-      handler: (req, res) => {
-        res.status(429).json({
+      handler: (_req: Request, response: Response) => {
+        response.status(429).json({
           error: "Too Many Requests",
           message: config.message,
         });
       },
-      keyGenerator: (req) => {
-        // Use IP address or fallback to anonymous identifier
-        return req.ip || req.headers["x-forwarded-for"] as string || "anonymous";
+      keyGenerator: (request: Request) => {
+        return getClientIp(request);
       },
-      skip: (req) => {
-        // Skip rate limiting in test environment
+      skip: (request: Request) => {
         if (process.env.NODE_ENV === "test") {
           return true;
         }
-        // Skip health check endpoints
-        if (req.path === "/health" || req.path === "/api/health") {
+
+        if (request.path === "/health" || request.path === "/api/health") {
           return true;
         }
+
         return false;
       },
     };
@@ -122,13 +129,8 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
 }
 
 export function registerRateLimiters(app: Express) {
-  // Apply auth rate limiter to OAuth endpoints
   app.use("/api/oauth", createRateLimiter("auth"));
-  
-  // Apply upload rate limiter to file upload endpoints
   app.use("/api/trpc/projects.uploadFiles", createRateLimiter("upload"));
-  
-  // General API rate limiter applied by default in index.ts
 }
 
 export { defaultConfigs };

@@ -1,14 +1,22 @@
 import { z } from "zod";
-import { db } from "../db";
+import { users } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { notifyOwner } from "./notification";
 import { adminProcedure, publicProcedure, router } from "./trpc";
 
 export const systemRouter = router({
   health: publicProcedure.query(async () => {
     let dbStatus = "unknown";
+
     try {
-      await db.select().from(db.schema.users).limit(1);
-      dbStatus = "connected";
+      const db = await getDb();
+
+      if (!db) {
+        dbStatus = "disconnected";
+      } else {
+        await db.select().from(users).limit(1);
+        dbStatus = "connected";
+      }
     } catch {
       dbStatus = "disconnected";
     }
@@ -31,6 +39,7 @@ export const systemRouter = router({
     )
     .mutation(async ({ input }) => {
       const delivered = await notifyOwner(input);
+
       return {
         success: delivered,
       } as const;

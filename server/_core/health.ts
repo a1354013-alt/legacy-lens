@@ -1,4 +1,4 @@
-import type { Express, Request, Response } from "express";
+import type { Express } from "express";
 import { getDb } from "../db";
 
 export interface HealthStatus {
@@ -29,25 +29,24 @@ const PACKAGE_VERSION = process.env.npm_package_version || "1.0.0";
 
 async function checkDatabase(): Promise<HealthStatus["checks"]["database"]> {
   const startTime = Date.now();
-  
+
   try {
     const db = await getDb();
     if (!db) {
       return { status: "down", error: "Database connection not initialized" };
     }
 
-    // Simple query to test connection
     await db.execute("SELECT 1");
-    
+
     const responseTime = Date.now() - startTime;
-    return { 
-      status: "up", 
-      responseTimeMs: responseTime 
+    return {
+      status: "up",
+      responseTimeMs: responseTime,
     };
   } catch (error) {
-    return { 
-      status: "down", 
-      error: error instanceof Error ? error.message : "Unknown database error" 
+    return {
+      status: "down",
+      error: error instanceof Error ? error.message : "Unknown database error",
     };
   }
 }
@@ -56,28 +55,26 @@ async function checkDisk(): Promise<HealthStatus["checks"]["disk"]> {
   try {
     const { statfs } = await import("node:fs/promises");
     const stats = await statfs("/");
-    
+
     const freeBytes = stats.bavail * stats.bsize;
-    const freeGB = freeBytes / (1024 ** 3);
-    
-    // Consider unhealthy if less than 1GB free
+    const freeGB = freeBytes / 1024 ** 3;
+
     if (freeGB < 1) {
-      return { 
-        status: "down", 
+      return {
+        status: "down",
         freeSpaceGB: Number(freeGB.toFixed(2)),
-        error: "Low disk space (< 1GB)" 
+        error: "Low disk space (< 1GB)",
       };
     }
-    
-    return { 
-      status: "up", 
-      freeSpaceGB: Number(freeGB.toFixed(2)) 
-    };
-  } catch (error) {
-    // Disk check is optional, don't fail health check if we can't check
-    return { 
+
+    return {
       status: "up",
-      error: "Disk check unavailable" 
+      freeSpaceGB: Number(freeGB.toFixed(2)),
+    };
+  } catch {
+    return {
+      status: "up",
+      error: "Disk check unavailable",
     };
   }
 }
@@ -87,18 +84,17 @@ function checkMemory(): HealthStatus["checks"]["memory"] {
   const usedMB = memUsage.heapUsed / (1024 * 1024);
   const totalMB = memUsage.heapTotal / (1024 * 1024);
   const usagePercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
-  
-  // Consider unhealthy if using more than 90% of heap
+
   if (usagePercent > 90) {
-    return { 
+    return {
       status: "down",
       usedMB: Number(usedMB.toFixed(2)),
       totalMB: Number(totalMB.toFixed(2)),
       usagePercent: Number(usagePercent.toFixed(2)),
     };
   }
-  
-  return { 
+
+  return {
     status: "up",
     usedMB: Number(usedMB.toFixed(2)),
     totalMB: Number(totalMB.toFixed(2)),
@@ -113,14 +109,17 @@ export async function getHealthStatus(): Promise<HealthStatus> {
     Promise.resolve(checkMemory()),
   ]);
 
-  const checks = { database, disk, memory };
-  
-  // Determine overall status
+  const checks: HealthStatus["checks"] = {
+    database,
+    disk,
+    memory,
+  };
+
   let status: HealthStatus["status"] = "healthy";
-  
-  if (database.status === "down") {
+
+  if (database?.status === "down") {
     status = "unhealthy";
-  } else if (memory.status === "down" || disk.status === "down") {
+  } else if (memory?.status === "down" || disk?.status === "down") {
     status = "degraded";
   }
 
@@ -133,26 +132,24 @@ export async function getHealthStatus(): Promise<HealthStatus> {
 }
 
 export function registerHealthEndpoint(app: Express) {
-  // Basic liveness probe (just checks if server is running)
   app.get("/health", (_req, res) => {
-    res.json({ 
-      status: "alive", 
-      timestamp: new Date().toISOString() 
+    res.json({
+      status: "alive",
+      timestamp: new Date().toISOString(),
     });
   });
 
-  // Full readiness probe with dependency checks
   app.get("/api/health", async (_req, res) => {
     try {
       const health = await getHealthStatus();
-      
+
       if (health.status === "unhealthy") {
         return res.status(503).json(health);
       }
-      
-      res.status(health.status === "degraded" ? 206 : 200).json(health);
+
+      return res.status(health.status === "degraded" ? 206 : 200).json(health);
     } catch (error) {
-      res.status(500).json({
+      return res.status(500).json({
         status: "unhealthy",
         timestamp: new Date().toISOString(),
         version: PACKAGE_VERSION,

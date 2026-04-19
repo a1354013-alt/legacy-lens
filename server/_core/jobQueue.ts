@@ -4,7 +4,6 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AppError } from "../appError";
 
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -21,7 +20,7 @@ export interface Job<T = unknown, R = unknown> {
   createdAt: Date;
   startedAt?: Date;
   completedAt?: Date;
-  progress?: number; // 0-100 percentage
+  progress?: number;
 }
 
 export interface JobHandler<T = unknown, R = unknown> {
@@ -33,18 +32,10 @@ interface JobOptions {
   maxAttempts?: number;
 }
 
-type JobEventMap = {
-  "job:created": Job;
-  "job:started": Job;
-  "job:completed": Job;
-  "job:failed": Job;
-  "job:progress": { job: Job; progress: number };
-};
-
-export class JobQueue extends EventEmitter<JobEventMap> {
+export class JobQueue extends EventEmitter {
   private jobs: Map<string, Job> = new Map();
   private handlers: Map<string, JobHandler> = new Map();
-  private processing: boolean = false;
+  private processing = false;
   private workerInterval: NodeJS.Timeout | null = null;
   private concurrentJobs: number;
   private activeJobs: Set<string> = new Set();
@@ -88,11 +79,9 @@ export class JobQueue extends EventEmitter<JobEventMap> {
     };
 
     this.jobs.set(job.id, job as Job);
-    this.emit("job:created", job as Job);
+    this.emit("job:created", job);
 
-    // Start worker if not already running
     this.startWorker();
-
     return job;
   }
 
@@ -109,7 +98,7 @@ export class JobQueue extends EventEmitter<JobEventMap> {
   getJobs(status?: JobStatus): Job[] {
     const jobs = Array.from(this.jobs.values());
     if (status) {
-      return jobs.filter(job => job.status === status);
+      return jobs.filter((job) => job.status === status);
     }
     return jobs;
   }
@@ -137,7 +126,9 @@ export class JobQueue extends EventEmitter<JobEventMap> {
     if (this.processing) return;
 
     this.processing = true;
-    this.workerInterval = setInterval(() => this.processNextJob(), 100);
+    this.workerInterval = setInterval(() => {
+      void this.processNextJob();
+    }, 100);
   }
 
   /**
@@ -155,22 +146,26 @@ export class JobQueue extends EventEmitter<JobEventMap> {
    * Process the next available job
    */
   private async processNextJob() {
-    // Check if we have capacity
     if (this.activeJobs.size >= this.concurrentJobs) {
       return;
     }
 
-    // Find next pending job (highest priority first, then oldest)
     const pendingJobs = Array.from(this.jobs.values())
-      .filter(job => job.status === "pending" && !this.activeJobs.has(job.id))
+      .filter((job) => job.status === "pending" && !this.activeJobs.has(job.id))
       .sort((a, b) => {
         if (b.priority !== a.priority) return b.priority - a.priority;
         return a.createdAt.getTime() - b.createdAt.getTime();
       });
 
     if (pendingJobs.length === 0) {
-      // No pending jobs, check if we should stop worker
-      if (this.jobs.every(j => j.status === "completed" || j.status === "failed" || j.status === "cancelled")) {
+      const allFinished = Array.from(this.jobs.values()).every(
+        (j) =>
+          j.status === "completed" ||
+          j.status === "failed" ||
+          j.status === "cancelled"
+      );
+
+      if (allFinished) {
         this.stopWorker();
       }
       return;
@@ -215,7 +210,6 @@ export class JobQueue extends EventEmitter<JobEventMap> {
       const errorMessage = error instanceof Error ? error.message : String(error);
       job.error = errorMessage;
 
-      // Retry if attempts remain
       if (job.attempts < job.maxAttempts) {
         job.status = "pending";
         return;
@@ -234,9 +228,12 @@ export class JobQueue extends EventEmitter<JobEventMap> {
    */
   cleanup(maxAgeMs: number = 24 * 60 * 60 * 1000) {
     const cutoff = Date.now() - maxAgeMs;
+
     for (const [id, job] of this.jobs.entries()) {
       if (
-        (job.status === "completed" || job.status === "failed" || job.status === "cancelled") &&
+        (job.status === "completed" ||
+          job.status === "failed" ||
+          job.status === "cancelled") &&
         job.completedAt &&
         job.completedAt.getTime() < cutoff
       ) {
@@ -250,18 +247,18 @@ export class JobQueue extends EventEmitter<JobEventMap> {
    */
   getStats() {
     const jobs = Array.from(this.jobs.values());
+
     return {
       total: jobs.length,
-      pending: jobs.filter(j => j.status === "pending").length,
-      running: jobs.filter(j => j.status === "running").length,
-      completed: jobs.filter(j => j.status === "completed").length,
-      failed: jobs.filter(j => j.status === "failed").length,
-      cancelled: jobs.filter(j => j.status === "cancelled").length,
+      pending: jobs.filter((j) => j.status === "pending").length,
+      running: jobs.filter((j) => j.status === "running").length,
+      completed: jobs.filter((j) => j.status === "completed").length,
+      failed: jobs.filter((j) => j.status === "failed").length,
+      cancelled: jobs.filter((j) => j.status === "cancelled").length,
       activeWorkers: this.activeJobs.size,
       maxWorkers: this.concurrentJobs,
     };
   }
 }
 
-// Global job queue instance
 export const globalJobQueue = new JobQueue({ concurrentJobs: 2 });
