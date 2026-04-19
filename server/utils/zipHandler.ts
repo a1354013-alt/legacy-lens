@@ -61,19 +61,29 @@ export interface ExtractedSourceBundle {
   warnings: ImportWarning[];
 }
 
-function normalizePath(filePath: string): string {
+// Exported for tests (import safety must remain stable).
+export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
-function isSafeRelativePath(normalizedPath: string): boolean {
+// Exported for tests (import safety must remain stable).
+export function isSafeRelativePath(normalizedPath: string): boolean {
   if (!normalizedPath) return false;
   if (normalizedPath.includes("\0")) return false;
 
   const segments = normalizedPath.split("/").filter(Boolean);
   if (segments.length === 0) return false;
   if (segments.some((segment) => segment === "." || segment === "..")) return false;
+  if (/^[a-zA-Z]:$/.test(segments[0] ?? "")) return false;
 
   return true;
+}
+
+// Exported for tests (import safety must remain stable).
+export function isAbsoluteArchivePath(rawPath: string): boolean {
+  if (!rawPath) return false;
+  if (rawPath.startsWith("/") || rawPath.startsWith("\\") || rawPath.startsWith("//")) return true;
+  return /^[a-zA-Z]:[\\/]/.test(rawPath);
 }
 
 function shouldIgnoreFile(filePath: string): boolean {
@@ -142,6 +152,15 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
 
     for (const [rawPath, entry] of entries) {
       if (entry.dir) {
+        continue;
+      }
+
+      if (isAbsoluteArchivePath(rawPath)) {
+        warnings.push({
+          code: "IMPORT_UNSAFE_PATH",
+          message: "The file was skipped because its path is not a safe relative path.",
+          filePath: rawPath,
+        });
         continue;
       }
 

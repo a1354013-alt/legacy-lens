@@ -568,10 +568,11 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
   }
 
   const archive = new JSZip();
-  archive.file("FLOW.md", report.flowMarkdown);
-  archive.file("DATA_DEPENDENCY.md", report.dataDependencyMarkdown);
-  archive.file("RISKS.md", report.risksMarkdown);
-  archive.file("RULES.yaml", report.rulesYaml);
+  const deterministicFileOptions = { date: new Date(0) };
+  archive.file("FLOW.md", report.flowMarkdown, deterministicFileOptions);
+  archive.file("DATA_DEPENDENCY.md", report.dataDependencyMarkdown, deterministicFileOptions);
+  archive.file("RISKS.md", report.risksMarkdown, deterministicFileOptions);
+  archive.file("RULES.yaml", report.rulesYaml, deterministicFileOptions);
   archive.file(
     "analysis-summary.json",
     JSON.stringify(
@@ -583,7 +584,8 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
       },
       null,
       2
-    )
+    ),
+    deterministicFileOptions
   );
 
   return {

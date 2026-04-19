@@ -205,7 +205,11 @@ export default function ImportProject() {
           <Alert>
             <AlertTitle>Some files were skipped during import</AlertTitle>
             <AlertDescription>
-              {importWarnings.slice(0, 5).map((warning) => warning.filePath ?? warning.message).join(" | ")}
+              {importWarnings
+                .slice(0, 5)
+                .map((warning) => `${warning.code}: ${warning.filePath ?? "(no file)"} - ${warning.message}`)
+                .join(" | ")}
+              {importWarnings.length > 5 ? " | (more warnings omitted)" : ""}
             </AlertDescription>
           </Alert>
         ) : null}

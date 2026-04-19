@@ -1,24 +1,17 @@
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
-import { extractFilesFromZip } from "./zipHandler";
+import { extractFilesFromZip, isAbsoluteArchivePath, isSafeRelativePath, normalizePath } from "./zipHandler";
 
 describe("zipHandler", () => {
-  it("skips unsafe paths and returns stable warnings", async () => {
-    const zip = new JSZip();
-    zip.file("../evil.go", "package main\nfunc main() {}\n");
-    zip.file("safe/main.go", "package main\nfunc main() {}\n");
+  it("normalizes and rejects unsafe import paths (stable safety contract)", () => {
+    expect(isSafeRelativePath(normalizePath("safe/main.go"))).toBe(true);
+    expect(isSafeRelativePath(normalizePath("../evil.go"))).toBe(false);
+    expect(isSafeRelativePath(normalizePath("safe/../evil.go"))).toBe(false);
+    expect(isSafeRelativePath(normalizePath("C:/windows/evil.go"))).toBe(false);
 
-    const base64 = await zip.generateAsync({ type: "base64" });
-    const result = await extractFilesFromZip(base64);
-
-    expect(result.files.map((file) => file.path)).toEqual(["safe/main.go"]);
-    expect(result.warnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: "IMPORT_UNSAFE_PATH",
-        filePath: "../evil.go",
-        message: "The file was skipped because its path is not a safe relative path.",
-      }),
-    ]));
+    expect(isAbsoluteArchivePath("/evil.go")).toBe(true);
+    expect(isAbsoluteArchivePath("\\evil.go")).toBe(true);
+    expect(isAbsoluteArchivePath("C:/windows/evil.go")).toBe(true);
   });
 
   it("returns explicit warnings for unsupported languages in mixed archives", async () => {

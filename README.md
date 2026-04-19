@@ -1,11 +1,11 @@
 # Legacy Lens
 
-Legacy Lens is a **legacy codebase ingestion + structural analysis workspace**. It imports Go / SQL / Delphi projects (ZIP upload or Git clone), runs deterministic server-side analysis, persists the results in MySQL, and lets you **export a reviewable ZIP report** generated from the same persisted snapshot.
+Legacy Lens is a **legacy modernization analysis workspace**. It imports Go / SQL / Delphi projects (ZIP upload or Git clone), runs deterministic server-side analysis, persists results in MySQL, and lets you **export a reviewable ZIP report** generated from the same persisted snapshot.
 
-This repo is intentionally opinionated about portfolio-grade, demo-ready deliverables:
-- Clear data contracts (import → persist → export)
-- Reproducible workflows (no "UI shows one thing, export shows another")
-- Honest limits (heuristic parsing, bounded imports)
+Positioning:
+- portfolio-grade
+- demo-ready
+- legacy modernization analysis workspace
 
 ## What It Does (Today)
 
@@ -18,6 +18,13 @@ This repo is intentionally opinionated about portfolio-grade, demo-ready deliver
   - risks + derived rules (heuristics)
   - documents (`FLOW.md`, `DATA_DEPENDENCY.md`, `RISKS.md`, `RULES.yaml`)
 - Export a ZIP report generated **only from persisted analysis**
+
+Highlights (why this repo is portfolio-worthy):
+- Delphi support (including limited-analysis import for `.dfm` / `.fmx` / `.dpk` / `.inc`)
+- SQL field read/write extraction (heuristic)
+- legacy encoding detection + stable import warnings
+- persisted snapshot as the single source of truth
+- deterministic, exportable review artifact (ZIP)
 
 ## Supported Languages (Import + Analysis)
 
@@ -49,6 +56,20 @@ MySQL (Drizzle ORM)
   -> analysisResults (documents + metrics + warnings)
 ```
 
+## Architecture Snapshot (Data Flow)
+
+```text
+ZIP / Git
+  v
+Normalizer
+  v
+Database (persisted snapshot)
+  v
+Analyzer
+  v
+Export ZIP
+```
+
 ## Quick Start (Local)
 
 ### Prerequisites
@@ -67,10 +88,8 @@ Minimum required variables (all modes):
 - `DATABASE_URL`
 - `JWT_SECRET`
 - `VITE_APP_ID`
-
-Required variables when **OAuth login is enabled** (DEV_AUTH_BYPASS is disabled):
-- `VITE_OAUTH_PORTAL_URL`
-- `OAUTH_SERVER_URL`
+- `VITE_OAUTH_PORTAL_URL` (placeholder OK when dev auth bypass is enabled)
+- `OAUTH_SERVER_URL` (placeholder OK when dev auth bypass is enabled)
 
 #### Local dev without OAuth (recommended for demos)
 
@@ -84,7 +103,18 @@ VITE_DEV_AUTH_BYPASS=1
 DEV_AUTH_OPEN_ID=local-dev-user
 ```
 
-When bypass is enabled, you can omit `VITE_OAUTH_PORTAL_URL` and `OAUTH_SERVER_URL` (OAuth routes exist, but the UI sign-in button will use `/api/dev/login` instead).
+Important notes:
+- Bypass does **not** remove the need for OAuth env variables. The server still validates `VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL` as required placeholders.
+- While bypass is enabled, the UI "Sign in" button uses `/api/dev/login` instead of starting an OAuth redirect.
+
+Dev login flow:
+- UI "Sign in" navigates to `/api/dev/login?next=/...` (controlled by `VITE_DEV_AUTH_BYPASS`)
+- Server sets the session cookie (`app_session_id`)
+- Default identity is `DEV_AUTH_OPEN_ID` (fallback: `local-dev-user`)
+
+Logout flow:
+- UI "Sign out" calls `POST /api/trpc/auth.logout` to clear the session cookie
+- In bypass mode, `/api/dev/logout?next=/` is also available
 
 ### 2) Install deps
 ```bash
@@ -105,7 +135,8 @@ Open `http://localhost:3000`. Click "Sign in".
 
 ## Quick Start (Docker)
 
-This repo ships a Dockerfile and a `docker-compose.yml` for running the app + MySQL locally (a production-like image).
+This repo ships a Dockerfile and a `docker-compose.yml` for running the app + MySQL locally (a production-like image intended for reproducible runs).
+
 Note: `DEV_AUTH_BYPASS` is disabled when `NODE_ENV=production`, so Docker runs require a real OAuth provider (or a compatible stub).
 
 ```bash
@@ -119,7 +150,7 @@ docker compose exec app pnpm db:migrate
 
 Open `http://localhost:3000`.
 
-## Usage Flow (Import → Analyze → Export)
+## Usage Flow (Import -> Analyze -> Export)
 
 1. Create a project
 2. Import source (ZIP or Git URL)
@@ -168,8 +199,8 @@ Version is sourced from `package.json` (with `npm_package_version` as a fast pat
 
 Import pipeline is intentionally bounded:
 - ZIP: max 2,000 entries, max 5MB per file, max 500MB expanded
-- Git: scanned import is bounded to the same file + size limits
-- Path traversal defense: unsafe paths (e.g. `../`) are skipped with warnings
+- Git: max 2,000 files, max 5MB per file, max 500MB total extracted
+- Path traversal defense: unsafe paths (e.g. `../`, absolute paths, or drive-letter paths) are skipped with warnings
 
 ## Limitations (Honest)
 

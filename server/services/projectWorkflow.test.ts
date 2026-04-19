@@ -200,7 +200,7 @@ describe("project workflow", () => {
     const projectId = await createProjectForUser(7, {
       name: "demo",
       description: "sample",
-      language: "go",
+      focusLanguage: "go",
       sourceType: "upload",
     });
 
