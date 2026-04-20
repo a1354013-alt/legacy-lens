@@ -63,7 +63,7 @@ export default function Home() {
               Import a legacy codebase, analyze structural dependencies, and export a reviewable report package.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-slate-600">
-              The current delivery path focuses on deterministic import, server-owned workflow state, persisted analysis artifacts, and reproducible report export.
+              Go / SQL / Delphi-focused ingestion with deterministic import, server-owned workflow state, persisted analysis artifacts, and reproducible report export.
             </p>
           </div>
 

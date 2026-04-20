@@ -54,6 +54,14 @@ function buildSymbolInsertKey(symbol: AnalyzedSymbol) {
   return symbol.stableKey;
 }
 
+function sanitizeExportBaseName(value: string) {
+  const normalized = String(value ?? "").trim();
+  const fallback = normalized.length > 0 ? normalized : "project";
+  const withoutReserved = fallback.replace(/[<>:"/\\|?*]/g, "_");
+  const collapsed = withoutReserved.replace(/\s+/g, " ").trim();
+  return collapsed.length > 80 ? collapsed.slice(0, 80).trim() : collapsed;
+}
+
 export async function requireDb() {
   const db = await getDb();
   if (!db) {
@@ -619,8 +627,9 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
   );
 
   logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: report.id });
+  const exportBaseName = sanitizeExportBaseName(project?.name ?? "project");
   return {
-    fileName: `${project?.name ?? "project"}-analysis-report.zip`,
+    fileName: `${exportBaseName}-analysis-report.zip`,
     mimeType: "application/zip",
     base64: await archive.generateAsync({ type: "base64" }),
   };

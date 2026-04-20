@@ -48,6 +48,11 @@ playwright-report/
 *.tgz
 *.tar.gz
 
+# local import/workflow residues
+.uploads/
+.extracted/
+.tmp/
+
 # temp
 tmp/
 temp/

@@ -73,11 +73,51 @@ Export Report ZIP
 ## Example Output
 
 ```text
-Example (from `analysis-summary.json` inside an exported report ZIP):
+Representative sample (from `analysis-summary.json` inside an exported report ZIP; values vary by project size):
 fileCount: 1284
 symbolCount: 14228
 dependencyCount: 3912
 warningCount: 12
+```
+
+## Report ZIP Contents (Persisted + Deterministic)
+
+The exported ZIP is generated **only** from the persisted server-side snapshot (DB), and the same snapshot yields the same ZIP output.
+
+Files at the ZIP root:
+- `metadata.json` (audit/replay metadata)
+- `analysis-summary.json` (metrics + warnings summary)
+- `FLOW.md`
+- `DATA_DEPENDENCY.md`
+- `RISKS.md`
+- `RULES.yaml`
+
+Minimal excerpt (shape) of `metadata.json`:
+
+```json
+{
+  "projectName": "…",
+  "analysisVersion": "…",
+  "createdAt": "…",
+  "focusLanguage": "go|sql|delphi",
+  "fileCount": 0,
+  "symbolCount": 0,
+  "dependencyCount": 0,
+  "warningCount": 0
+}
+```
+
+## Example Import Warnings (Human-Readable + Stable)
+
+Import is intentionally bounded and produces stable warning codes/messages instead of stack traces.
+Common examples you may see in the UI:
+
+```text
+IMPORT_UNSAFE_PATH: ../evil.go - The file was skipped because its path is not a safe relative path.
+IMPORT_LANGUAGE_UNSUPPORTED: legacy.ts - The file was skipped because Legacy Lens currently supports import analysis only for Go, SQL, and Delphi.
+IMPORT_LIMITED_ANALYSIS: Form1.dfm - The file was imported, but only limited Delphi analysis is available for this file type.
+IMPORT_ENCODING_DETECTED: legacy.pas - Detected encoding: Big5 (confidence: 86%). Content decoded with big5. Legacy encoding may cause analysis issues.
+IMPORT_FILE_TOO_LARGE: big.sql - The file was skipped because it exceeds the maximum supported size (5MB).
 ```
 
 ## What Makes This Repo Strong

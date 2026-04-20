@@ -211,7 +211,7 @@ class SDKServer {
         user = await db.getUserByOpenId(userInfo.openId);
       } catch (error) {
         logger.error("Auth sync from OAuth failed", {
-          action: "auth.syncUser",
+          action: "auth.sync.user",
           status: "error",
           error: error instanceof Error ? error.message : String(error),
         });

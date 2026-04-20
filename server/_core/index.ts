@@ -35,12 +35,12 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
 }
 
 async function gracefulShutdown(signal: string) {
-  logger.info(`Received ${signal}, shutting down gracefully...`);
+  logger.info("Server shutdown requested", { action: "server.shutdown.start", status: "ok", signal });
 
   // Close database connections
   await closeDb();
   
-  logger.info("Graceful shutdown completed");
+  logger.info("Server shutdown completed", { action: "server.shutdown.complete", status: "ok", signal });
   process.exit(0);
 }
 
@@ -67,7 +67,14 @@ async function startServer() {
     const start = Date.now();
     res.on("finish", () => {
       const duration = Date.now() - start;
-      logger.debug(`${req.method} ${req.path} ${res.statusCode} - ${duration}ms`);
+      logger.debug("HTTP request completed", {
+        action: "http.request",
+        status: "ok",
+        method: req.method,
+        path: req.path,
+        statusCode: res.statusCode,
+        durationMs: duration,
+      });
     });
     next();
   });
@@ -101,14 +108,15 @@ async function startServer() {
   }
 
   server.listen(port, () => {
-    logger.info(`Server running on http://localhost:${port}/`, {
+    logger.info("Server started", {
+      action: "server.start",
+      status: "ok",
       port,
       env: process.env.NODE_ENV || "development",
     });
     
     // Log health endpoint availability
-    logger.info(`Health check available at http://localhost:${port}/health`);
-    logger.info(`Full health status at http://localhost:${port}/api/health`);
+    logger.info("Health endpoints ready", { action: "server.health", status: "ok", port });
   });
 
   // Graceful shutdown handlers
