@@ -1,20 +1,20 @@
 import { z } from "zod";
 
-export const projectLanguages = ["go", "delphi", "sql"] as const;
+export const focusLanguages = ["go", "delphi", "sql"] as const;
 export const projectSourceTypes = ["upload", "git"] as const;
 export const projectStatuses = ["draft", "importing", "ready", "analyzing", "completed", "failed"] as const;
 export const fileStatuses = ["stored", "failed"] as const;
 export const analysisStatuses = ["pending", "processing", "completed", "partial", "failed"] as const;
 export const reportFormats = ["zip"] as const;
 
-export const projectLanguageSchema = z.enum(projectLanguages);
+export const focusLanguageSchema = z.enum(focusLanguages);
 export const projectSourceTypeSchema = z.enum(projectSourceTypes);
 export const projectStatusSchema = z.enum(projectStatuses);
 export const fileStatusSchema = z.enum(fileStatuses);
 export const analysisStatusSchema = z.enum(analysisStatuses);
 export const reportFormatSchema = z.enum(reportFormats);
 
-export type ProjectLanguage = z.infer<typeof projectLanguageSchema>;
+export type FocusLanguage = z.infer<typeof focusLanguageSchema>;
 export type ProjectSourceType = z.infer<typeof projectSourceTypeSchema>;
 export type ProjectStatus = z.infer<typeof projectStatusSchema>;
 export type FileStatus = z.infer<typeof fileStatusSchema>;

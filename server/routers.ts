@@ -1,5 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
-import { projectLanguageSchema, projectSourceTypeSchema } from "@shared/contracts";
+import { focusLanguageSchema, projectSourceTypeSchema } from "@shared/contracts";
 import { TRPCError } from "@trpc/server";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -25,7 +25,7 @@ const projectIdSchema = z.number().int().positive();
 
 const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(255),
-  focusLanguage: projectLanguageSchema,
+  focusLanguage: focusLanguageSchema,
   sourceType: projectSourceTypeSchema,
   description: z.string().trim().max(2_000).optional(),
 });

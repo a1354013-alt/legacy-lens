@@ -1,1 +1,68 @@
-Nothing should be ignored since the changes only include source code files (.tsx, .ts) and not any build artifacts, dependencies, or temporary files.
+# dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# builds
+dist/
+build/
+coverage/
+.vite/
+.turbo/
+.next/
+out/
+
+# caches
+.cache/
+.eslintcache
+*.tsbuildinfo
+
+# env files (keep example)
+.env
+.env.*
+!.env.example
+
+# logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+
+# test artifacts
+test-results/
+playwright-report/
+
+# local artifacts / archives
+*.zip
+*.7z
+*.tgz
+*.tar.gz
+
+# temp
+tmp/
+temp/
+_tmp_*
+*.tmp
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# editor / IDE
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo

@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { ImportWarning, ProjectLanguage } from "../../shared/contracts";
+import type { FocusLanguage, ImportWarning } from "../../shared/contracts";
 import { simpleGit } from "simple-git";
 import { AppError } from "../appError";
 import { SUPPORTED_SOURCE_EXTENSIONS, UNSUPPORTED_CODE_EXTENSIONS, decodeTextContent } from "./zipHandler";
@@ -25,23 +25,26 @@ const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
 const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 const GIT_CLONE_TIMEOUT_MS = 120_000;
 
-function normalizePath(filePath: string): string {
+// Exported for tests (import safety must remain stable).
+export function normalizeRepoPath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
-function isSafeRelativePath(normalizedPath: string): boolean {
+// Exported for tests (import safety must remain stable).
+export function isSafeRelativePath(normalizedPath: string): boolean {
   if (!normalizedPath) return false;
   if (normalizedPath.includes("\0")) return false;
 
   const segments = normalizedPath.split("/").filter(Boolean);
   if (segments.length === 0) return false;
   if (segments.some((segment) => segment === "." || segment === "..")) return false;
+  if (/^[a-zA-Z]:$/.test(segments[0] ?? "")) return false;
 
   return true;
 }
 
-function detectLanguage(extension: string): ProjectLanguage | null {
-  const languageMap: Record<string, ProjectLanguage> = {
+function detectLanguage(extension: string): FocusLanguage | null {
+  const languageMap: Record<string, FocusLanguage> = {
     ".go": "go",
     ".sql": "sql",
     ".pas": "delphi",
@@ -96,7 +99,7 @@ export async function cloneAndExtractFiles(
   gitUrl: string,
   tempDir: string
 ): Promise<{
-  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number; encoding?: string; encodingWarning?: string }>;
+  files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
   const repoName = extractRepoName(gitUrl);
@@ -105,10 +108,11 @@ export async function cloneAndExtractFiles(
   try {
     await fs.mkdir(tempDir, { recursive: true });
     await simpleGit({ timeout: { block: GIT_CLONE_TIMEOUT_MS } }).clone(gitUrl, repoPath, ["--depth", "1", "--no-tags"]);
+    const realRepoPath = await fs.realpath(repoPath);
     const extracted = await scanDirectoryForCodeFiles(repoPath, undefined, {
       fileLimit: MAX_FILES_IN_REPO,
       maxTotalBytes: MAX_TOTAL_EXTRACTED_SIZE,
-    });
+    }, undefined, realRepoPath, new Map());
     if (extracted.files.length === 0) {
       throw new AppError("EMPTY_SOURCE", "The repository does not contain supported Go, SQL, or Delphi source files. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx");
     }
@@ -136,24 +140,49 @@ async function scanDirectoryForCodeFiles(
   directoryPath: string,
   baseDir: string = directoryPath,
   limits: { fileLimit: number; maxTotalBytes: number } = { fileLimit: MAX_FILES_IN_REPO, maxTotalBytes: MAX_TOTAL_EXTRACTED_SIZE },
-  state: { totalFiles: number; totalBytes: number } = { totalFiles: 0, totalBytes: 0 }
+  state: { totalFiles: number; totalBytes: number } = { totalFiles: 0, totalBytes: 0 },
+  realBaseDir: string = baseDir,
+  realpathCache: Map<string, string> = new Map()
 ): Promise<{
-  files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number; encoding?: string; encodingWarning?: string }>;
+  files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
-  const files: Array<{ path: string; fileName: string; content: string; language: ProjectLanguage; size: number; encoding?: string; encodingWarning?: string }> = [];
+  const files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }> = [];
   const warnings: ImportWarning[] = [];
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
 
   for (const entry of entries) {
     const fullPath = path.join(directoryPath, entry.name);
-    const relativePath = normalizePath(path.relative(baseDir, fullPath));
+    const relativePath = normalizeRepoPath(path.relative(baseDir, fullPath));
+
+    try {
+      const cached = realpathCache.get(fullPath);
+      const realFullPath = cached ?? (await fs.realpath(fullPath));
+      realpathCache.set(fullPath, realFullPath);
+
+      const relativeReal = path.relative(realBaseDir, realFullPath);
+      if (relativeReal.startsWith("..") || path.isAbsolute(relativeReal)) {
+        warnings.push({
+          code: "IMPORT_UNSAFE_PATH",
+          message: "The file was skipped because its path is not a safe relative path.",
+          filePath: relativePath || entry.name,
+        });
+        continue;
+      }
+    } catch {
+      warnings.push({
+        code: "IMPORT_UNSAFE_PATH",
+        message: "The file was skipped because its path is not a safe relative path.",
+        filePath: relativePath || entry.name,
+      });
+      continue;
+    }
 
     if (entry.isDirectory()) {
       if (IGNORED_DIRECTORIES.has(entry.name)) {
         continue;
       }
-      const nested = await scanDirectoryForCodeFiles(fullPath, baseDir, limits, state);
+      const nested = await scanDirectoryForCodeFiles(fullPath, baseDir, limits, state, realBaseDir, realpathCache);
       files.push(...nested.files);
       warnings.push(...nested.warnings);
       continue;
@@ -197,7 +226,7 @@ async function scanDirectoryForCodeFiles(
     if (size > MAX_SINGLE_FILE_SIZE) {
       warnings.push({
         code: "IMPORT_FILE_TOO_LARGE",
-        message: "The file was skipped because it exceeds the maximum supported size.",
+        message: `The file was skipped because it exceeds the maximum supported size (${Math.round(MAX_SINGLE_FILE_SIZE / (1024 * 1024))}MB).`,
         filePath: relativePath,
       });
       continue;
@@ -210,7 +239,7 @@ async function scanDirectoryForCodeFiles(
 
     state.totalBytes += size;
     if (state.totalBytes > limits.maxTotalBytes) {
-      throw new AppError("IMPORT_FAILED", "Repository import exceeds the allowed total size limit.");
+      throw new AppError("IMPORT_FAILED", `Repository import exceeds the allowed total size limit (${Math.round(limits.maxTotalBytes / (1024 * 1024))}MB).`);
     }
 
     const language = detectLanguage(extension);

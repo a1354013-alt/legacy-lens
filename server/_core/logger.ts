@@ -83,7 +83,7 @@ const logAtLevel = (level: LogLevel, message: string, context?: LogContext) => {
   const formatted = formatLog(level, message, context);
 
   if (level === "error") {
-    console.error(formatted);
+    console.error(typeof formatted === "string" ? formatted : JSON.stringify(formatted));
   } else if (level === "warn") {
     console.warn(typeof formatted === "string" ? formatted : JSON.stringify(formatted));
   } else {

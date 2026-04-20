@@ -49,6 +49,7 @@ test-results/
 .extracted/
 .tmp/
 tmp/
+_tmp_*
 release_test/
 *.zip
 

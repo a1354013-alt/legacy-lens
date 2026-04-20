@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, GitBranch, Loader2, Upload } from "lucide-react";
-import { projectLanguages, projectSourceTypes, type ProjectLanguage, type ProjectSourceType } from "@shared/contracts";
+import { focusLanguages, projectSourceTypes, type FocusLanguage, type ProjectSourceType } from "@shared/contracts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -72,7 +72,7 @@ async function fileToBase64(file: File) {
 export default function ImportProject() {
   const [, setLocation] = useLocation();
   const [sourceType, setSourceType] = useState<ProjectSourceType>("upload");
-  const [focusLanguage, setFocusLanguage] = useState<ProjectLanguage>("go");
+  const [focusLanguage, setFocusLanguage] = useState<FocusLanguage>("go");
   const [projectName, setProjectName] = useState("");
   const [description, setDescription] = useState("");
   const [gitUrl, setGitUrl] = useState("");
@@ -272,12 +272,12 @@ export default function ImportProject() {
 
               <div className="space-y-2">
                 <Label htmlFor="project-language">Focus language</Label>
-                <Select value={focusLanguage} onValueChange={(value) => setFocusLanguage(value as ProjectLanguage)} disabled={isBusy}>
+                <Select value={focusLanguage} onValueChange={(value) => setFocusLanguage(value as FocusLanguage)} disabled={isBusy}>
                   <SelectTrigger id="project-language">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {projectLanguages.map((value) => (
+                    {focusLanguages.map((value) => (
                       <SelectItem key={value} value={value}>
                         {value.toUpperCase()}
                       </SelectItem>

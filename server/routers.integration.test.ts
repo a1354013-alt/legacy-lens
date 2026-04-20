@@ -269,6 +269,12 @@ describe("appRouter integration", () => {
     });
     expect(archive.mimeType).toBe("application/zip");
 
+    const archiveAgain = await caller.analysis.downloadReport({
+      projectId: created.projectId,
+      format: "zip",
+    });
+    expect(archiveAgain.base64).toBe(archive.base64);
+
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
     const metadata = zip.file("metadata.json");
     expect(metadata).toBeTruthy();

@@ -1,4 +1,4 @@
-import type { ImportWarning, ProjectLanguage } from "../../shared/contracts";
+import type { FocusLanguage, ImportWarning } from "../../shared/contracts";
 import JSZip from "jszip";
 import { AppError } from "../appError";
 import iconvLite from "iconv-lite";
@@ -50,7 +50,7 @@ export interface ExtractedFile {
   path: string;
   fileName: string;
   content: string;
-  language: ProjectLanguage;
+  language: FocusLanguage;
   size: number;
   encoding?: string;
   encodingWarning?: string;
@@ -90,9 +90,9 @@ function shouldIgnoreFile(filePath: string): boolean {
   return IGNORED_PATTERNS.some((pattern) => pattern.test(filePath));
 }
 
-function detectLanguage(filePath: string): ProjectLanguage | null {
+function detectLanguage(filePath: string): FocusLanguage | null {
   const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
-  const languageMap: Record<string, ProjectLanguage> = {
+  const languageMap: Record<string, FocusLanguage> = {
     ".go": "go",
     ".sql": "sql",
     ".pas": "delphi",
@@ -147,7 +147,7 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
 
     const entries = Object.entries(zip.files);
     if (entries.length > MAX_FILES_IN_ZIP) {
-      throw new AppError("ZIP_INVALID", `Archive contains too many entries (${entries.length}).`);
+      throw new AppError("ZIP_INVALID", `Archive contains too many entries (${entries.length}). Limit: ${MAX_FILES_IN_ZIP}.`);
     }
 
     for (const [rawPath, entry] of entries) {
@@ -194,7 +194,7 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       if (fileSize > MAX_SINGLE_FILE_SIZE) {
         warnings.push({
           code: "IMPORT_FILE_TOO_LARGE",
-          message: "The file was skipped because it exceeds the maximum supported size.",
+          message: `The file was skipped because it exceeds the maximum supported size (${Math.round(MAX_SINGLE_FILE_SIZE / (1024 * 1024))}MB).`,
           filePath: normalizedPath,
         });
         continue;
@@ -202,7 +202,7 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
 
       totalExtractedSize += fileSize;
       if (totalExtractedSize > MAX_TOTAL_EXTRACTED_SIZE) {
-        throw new AppError("ZIP_INVALID", "Archive expands beyond the allowed size limit.");
+        throw new AppError("ZIP_INVALID", `Archive expands beyond the allowed size limit (${Math.round(MAX_TOTAL_EXTRACTED_SIZE / (1024 * 1024))}MB).`);
       }
 
       const language = detectLanguage(normalizedPath);

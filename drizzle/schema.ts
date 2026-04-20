@@ -1,5 +1,5 @@
 import type { AnalysisMetrics, AnalysisWarning } from "../shared/contracts";
-import { analysisStatuses, fileStatuses, projectLanguages, projectSourceTypes, projectStatuses } from "../shared/contracts";
+import { analysisStatuses, fileStatuses, focusLanguages, projectSourceTypes, projectStatuses } from "../shared/contracts";
 import { index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 export const users = mysqlTable("users", {
@@ -24,7 +24,7 @@ export const projects = mysqlTable(
     userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
-    language: mysqlEnum("language", projectLanguages).notNull(),
+    language: mysqlEnum("language", focusLanguages).notNull(),
     sourceType: mysqlEnum("sourceType", projectSourceTypes).notNull(),
     sourceUrl: text("sourceUrl"),
     status: mysqlEnum("status", projectStatuses).default("draft").notNull(),

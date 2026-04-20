@@ -105,8 +105,8 @@ Minimum required variables (all modes):
 - `DATABASE_URL`
 - `JWT_SECRET`
 - `VITE_APP_ID`
-- `VITE_OAUTH_PORTAL_URL` (placeholder OK when dev auth bypass is enabled)
-- `OAUTH_SERVER_URL` (placeholder OK when dev auth bypass is enabled)
+- `VITE_OAUTH_PORTAL_URL` (must be set; placeholder OK when dev auth bypass is enabled)
+- `OAUTH_SERVER_URL` (must be set; placeholder OK when dev auth bypass is enabled)
 
 #### Local dev without OAuth (recommended for demos)
 

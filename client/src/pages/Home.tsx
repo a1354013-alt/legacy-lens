@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import { analysisStatusLabels, projectStatusLabels, type AnalysisStatus, type ProjectLanguage, type ProjectSourceType, type ProjectStatus } from "@shared/contracts";
+import { analysisStatusLabels, projectStatusLabels, type AnalysisStatus, type FocusLanguage, type ProjectSourceType, type ProjectStatus } from "@shared/contracts";
 import { FileSearch, FileText, GitBranch, Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -15,7 +15,7 @@ type ProjectRow = {
   id: number;
   name: string;
   description: string | null;
-  language: ProjectLanguage;
+  language: FocusLanguage;
   sourceType: ProjectSourceType;
   status: ProjectStatus;
   importProgress: number;
