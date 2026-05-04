@@ -172,3 +172,22 @@ export interface AnalysisSnapshot {
     lineNumber: number | null;
   }>;
 }
+
+export const impactTargetTypes = ["auto", "symbol", "file", "sql_table", "sql_field", "risk", "rule"] as const;
+export const impactTargetTypeSchema = z.enum(impactTargetTypes);
+export type ImpactTargetType = z.infer<typeof impactTargetTypeSchema>;
+
+export interface ImpactAnalysisResult {
+  target: string;
+  targetType: ImpactTargetType;
+  confidence: number;
+  summary: string;
+  affectedFiles: string[];
+  affectedSymbols: Array<{ name: string; file: string; type: string }>;
+  affectedTables: string[];
+  affectedFields: Array<{ table: string; field: string }>;
+  affectedRules: string[];
+  affectedRisks: string[];
+  dependencyChains: string[][];
+  warnings: string[];
+}

@@ -19,7 +19,9 @@ import {
   getOwnedProject,
   importProjectGit,
   importProjectZip,
+  runImpactAnalysis,
 } from "./services/projectWorkflow";
+import { impactTargetTypeSchema } from "@shared/contracts";
 
 const projectIdSchema = z.number().int().positive();
 
@@ -240,6 +242,22 @@ export const appRouter = router({
       .query(async ({ ctx, input }) => {
         try {
           return await buildReportArchive(input.projectId, ctx.user.id);
+        } catch (error) {
+          raiseAsTrpc(error);
+        }
+      }),
+
+    getImpact: protectedProcedure
+      .input(
+        z.object({
+          projectId: projectIdSchema,
+          target: z.string().min(1),
+          type: impactTargetTypeSchema.default("auto"),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        try {
+          return await runImpactAnalysis(input.projectId, ctx.user.id, input.target, input.type);
         } catch (error) {
           raiseAsTrpc(error);
         }

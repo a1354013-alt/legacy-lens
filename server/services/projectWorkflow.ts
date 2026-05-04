@@ -595,6 +595,23 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
   archive.file("RISKS.md", report.risksMarkdown, deterministicFileOptions);
   archive.file("RULES.yaml", report.rulesYaml, deterministicFileOptions);
 
+  // Generate Impact Analysis Report for a default set of targets or a summary
+  const impactAnalyzer = new ImpactAnalyzer();
+  const impactSummary = await impactAnalyzer.analyze(projectId, "all", "auto");
+  
+  const impactMarkdown = `# Impact Analysis Report
+Generated on: ${new Date().toISOString()}
+
+## Summary
+${impactSummary.summary}
+
+## Scope
+This report provides a trace of potential impacts across the project. For specific target analysis, use the interactive Impact Analysis tool in the Legacy Lens dashboard.
+`;
+  
+  archive.file("IMPACT_ANALYSIS.md", impactMarkdown, deterministicFileOptions);
+  archive.file("impact-analysis.json", JSON.stringify(impactSummary, null, 2), deterministicFileOptions);
+
   const version = getAppVersion();
   const metrics = report.summaryJson ?? null;
   const createdAtSource = (report as any).createdAt ?? (report as any).updatedAt ?? new Date(0);
@@ -656,4 +673,13 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
     await tx.delete(files).where(eq(files.projectId, projectId));
     await tx.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
   });
+}
+
+import { ImpactAnalyzer } from "../analyzer/impactAnalyzer";
+import type { ImpactTargetType } from "../../shared/contracts";
+
+export async function runImpactAnalysis(projectId: number, userId: number, target: string, type: ImpactTargetType) {
+  await getOwnedProject(projectId, userId);
+  const analyzer = new ImpactAnalyzer();
+  return await analyzer.analyze(projectId, target, type);
 }

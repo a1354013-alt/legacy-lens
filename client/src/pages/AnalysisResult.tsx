@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ImpactAnalysisPanel } from "@/components/ImpactAnalysisPanel";
 import { useLocation, useRoute } from "wouter";
 import { ArrowLeft, Download, FileText, Loader2, RefreshCcw, ShieldAlert, TriangleAlert } from "lucide-react";
 import { analysisStatusLabels, projectStatusLabels } from "@shared/contracts";
@@ -240,10 +241,15 @@ export default function AnalysisResult() {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="impact">Impact Analysis</TabsTrigger>
             <TabsTrigger value="risks">Risks</TabsTrigger>
             <TabsTrigger value="symbols">Symbols</TabsTrigger>
             <TabsTrigger value="documents">Documents</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="impact" className="space-y-4">
+            <ImpactAnalysisPanel projectId={projectId} />
+          </TabsContent>
 
           <TabsContent value="overview" className="space-y-4">
             <Card>

@@ -16,7 +16,8 @@ Positioning:
   - dependencies (calls/reads/writes/references)
   - field references (read/write/calculate)
   - risks + derived rules (heuristics)
-  - documents (`FLOW.md`, `DATA_DEPENDENCY.md`, `RISKS.md`, `RULES.yaml`)
+  - documents (`FLOW.md`, `DATA_DEPENDENCY.md`, `RISKS.md`, `RULES.yaml`, `IMPACT_ANALYSIS.md`)
+- **Impact Analysis**: Trace potential breaking changes across symbols, SQL tables, fields, risks, and rules.
 - Export a ZIP report generated **only from persisted analysis**
 
 Highlights (why this repo is portfolio-worthy):
@@ -91,6 +92,8 @@ Files at the ZIP root:
 - `DATA_DEPENDENCY.md`
 - `RISKS.md`
 - `RULES.yaml`
+- `IMPACT_ANALYSIS.md`
+- `impact-analysis.json`
 
 Minimal excerpt (shape) of `metadata.json`:
 
@@ -269,6 +272,21 @@ Import pipeline is intentionally bounded:
 - Cross-file Delphi resolution is best-effort.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
 - Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
+
+## Impact Analysis
+
+Impact Analysis helps developers understand what may break before changing legacy code. It connects symbols, SQL fields, tables, business rules, and risks into a traceable dependency view, reducing modernization risk.
+
+### Features
+- **Auto-detection**: Automatically resolve target type (symbol, file, table, etc.).
+- **Impact Tree**: Visual representation of affected components.
+- **Dependency Chains**: Trace the path from change to impact.
+- **Exportable**: Impact summaries are included in the generated report ZIP.
+
+### API Example
+```bash
+GET /api/trpc/analysis.getImpact?batch=1&input={"0":{"projectId":1,"target":"EB_SPECI","type":"auto"}}
+```
 
 ## Roadmap (Not Implemented Yet)
 
