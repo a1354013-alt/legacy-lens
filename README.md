@@ -221,6 +221,15 @@ If you want to run migrations manually without starting the app:
 docker compose run --rm migrate
 ```
 
+If you want to verify the full demo container flow end-to-end (build -> migrate -> app health -> dev login redirect):
+```bash
+pnpm docker:smoke
+```
+
+Port notes:
+- `docker compose` defaults to `3000` for the app and `3306` for MySQL.
+- You can override host ports with `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT`, which is what the smoke test does in CI to avoid collisions.
+
 Open `http://localhost:3000`.
 
 Operational notes:
@@ -276,6 +285,7 @@ Version is sourced from `package.json` (with `npm_package_version` as a fast pat
 Docker equivalents:
 - `docker compose up --build` -> start `db`, run `migrate`, then start `app`
 - `docker compose run --rm migrate` -> run migrations only
+- `pnpm docker:smoke` -> build the compose stack, verify `/health`, `/api/health`, and demo dev-login redirect, then tear it down
 
 ## Import Safety Boundaries
 

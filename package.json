@@ -14,6 +14,7 @@
     "format": "pnpm exec prettier --write .",
     "test": "pnpm exec vitest run",
     "test:watch": "pnpm exec vitest",
+    "docker:smoke": "node ./scripts/docker-smoke.mjs",
     "db:generate": "pnpm exec drizzle-kit generate",
     "db:migrate": "pnpm exec drizzle-kit migrate",
     "db:push": "pnpm db:generate && pnpm db:migrate"

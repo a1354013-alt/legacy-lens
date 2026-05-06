@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getAffectedComponentCount } from "./impactAnalysisSummary";
+import { buildImpactSections, DEFAULT_IMPACT_SECTION_LIMIT } from "./impactAnalysisSections";
 import type { ImpactTargetType } from "@shared/contracts";
 
 interface ImpactAnalysisPanelProps {
@@ -32,6 +33,16 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
 
     setSearchTarget(nextTarget);
     setSearchType(type);
+  };
+
+  const impactSections = impactQuery.data ? buildImpactSections(impactQuery.data, DEFAULT_IMPACT_SECTION_LIMIT) : [];
+
+  const toneClassNames: Record<NonNullable<ReturnType<typeof buildImpactSections>[number]["items"][number]["tone"]>, string> = {
+    default: "text-slate-700",
+    symbol: "font-mono text-blue-600",
+    field: "font-mono text-emerald-600",
+    rule: "font-mono text-amber-700",
+    risk: "font-mono text-rose-700",
   };
 
   return (
@@ -134,7 +145,14 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
           <Alert>
             <Info className="h-4 w-4" />
             <AlertTitle>Summary</AlertTitle>
-            <AlertDescription>{impactQuery.data.summary}</AlertDescription>
+            <AlertDescription className="space-y-2">
+              <p>{impactQuery.data.summary}</p>
+              {impactSections.some((section) => section.hiddenCount > 0) ? (
+                <p className="text-xs text-slate-500">
+                  Large-project view is capped at {DEFAULT_IMPACT_SECTION_LIMIT} items per section to keep the UI readable.
+                </p>
+              ) : null}
+            </AlertDescription>
           </Alert>
 
           {impactQuery.data.warnings.length > 0 ? (
@@ -156,63 +174,39 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <TreePine className="h-5 w-5 text-slate-500" />
-                  Impact Tree
+                  Affected Components
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   <div className="font-medium text-slate-900">{impactQuery.data.target}</div>
-                  <div className="space-y-3 border-l-2 border-slate-100 pl-4">
-                    {impactQuery.data.affectedSymbols.length > 0 ? (
-                      <div>
-                        <div className="mb-2 text-xs font-semibold uppercase text-slate-500">Used by Symbols</div>
-                        <div className="space-y-1">
-                          {impactQuery.data.affectedSymbols.map((symbol) => (
-                            <div key={`${symbol.file}:${symbol.name}:${symbol.type}`} className="flex items-center gap-2 text-sm">
-                              <span className="text-slate-400">-&gt;</span>
-                              <span className="font-mono text-blue-600">{symbol.name}</span>
-                              <span className="text-xs text-slate-400">({symbol.file})</span>
-                            </div>
-                          ))}
+                  <div className="space-y-4 border-l-2 border-slate-100 pl-4">
+                    {impactSections.length > 0 ? (
+                      impactSections.map((section) => (
+                        <div key={section.id}>
+                          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
+                            <span>{section.title}</span>
+                            <Badge variant="outline">{section.count}</Badge>
+                            {section.hiddenCount > 0 ? (
+                              <span className="text-[11px] normal-case text-slate-400">showing {section.items.length}, +{section.hiddenCount} more</span>
+                            ) : null}
+                          </div>
+                          <div className="space-y-1">
+                            {section.items.map((item) => (
+                              <div key={item.key} className="flex items-start gap-2 text-sm">
+                                <span className="mt-0.5 text-slate-400">-&gt;</span>
+                                <div className="min-w-0">
+                                  <div className={toneClassNames[item.tone ?? "default"]}>{item.label}</div>
+                                  {item.meta ? <div className="truncate text-xs text-slate-400">{item.meta}</div> : null}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ) : null}
-
-                    {impactQuery.data.affectedFields.length > 0 ? (
-                      <div>
-                        <div className="mb-2 text-xs font-semibold uppercase text-slate-500">Related Fields</div>
-                        <div className="space-y-1">
-                          {impactQuery.data.affectedFields.map((field) => (
-                            <div key={`${field.table}.${field.field}`} className="flex items-center gap-2 text-sm">
-                              <span className="text-slate-400">-&gt;</span>
-                              <span className="font-mono text-emerald-600">
-                                {field.table}.{field.field}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {impactQuery.data.affectedFiles.length > 0 && impactQuery.data.affectedSymbols.length === 0 ? (
-                      <div>
-                        <div className="mb-2 text-xs font-semibold uppercase text-slate-500">Affected Files</div>
-                        <div className="space-y-1">
-                          {impactQuery.data.affectedFiles.map((file) => (
-                            <div key={file} className="flex items-center gap-2 text-sm">
-                              <span className="text-slate-400">-&gt;</span>
-                              <span className="text-slate-700">{file}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {impactQuery.data.affectedSymbols.length === 0 &&
-                    impactQuery.data.affectedFields.length === 0 &&
-                    impactQuery.data.affectedFiles.length === 0 ? (
+                      ))
+                    ) : (
                       <div className="text-sm italic text-slate-400">No direct impacts found.</div>
-                    ) : null}
+                    )}
                   </div>
                 </div>
               </CardContent>

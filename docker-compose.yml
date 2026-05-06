@@ -23,7 +23,7 @@ services:
         # Build-time: embedded into the client bundle for the "Sign in" button routing.
         VITE_DEV_AUTH_BYPASS: "1"
     ports:
-      - "3000:3000"
+      - "${LEGACY_LENS_PORT:-3000}:3000"
     environment:
       # Demo/local default: keep static serving (NODE_ENV=production) but explicitly allow dev auth bypass.
       - NODE_ENV=production
@@ -54,7 +54,7 @@ services:
   db:
     image: mysql:8.0
     ports:
-      - "3306:3306"
+      - "${LEGACY_LENS_DB_PORT:-3306}:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=password
       - MYSQL_DATABASE=legacy_lens
