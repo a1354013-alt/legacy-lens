@@ -214,12 +214,19 @@ By default, `docker-compose.yml` runs in **demo mode**:
 docker compose up --build
 ```
 
-Then run migrations once (in another terminal):
+`docker compose up --build` now brings up MySQL, waits for the one-shot `migrate` service to finish, and only then starts `app`.
+
+If you want to run migrations manually without starting the app:
 ```bash
-docker compose exec app pnpm db:migrate
+docker compose run --rm migrate
 ```
 
 Open `http://localhost:3000`.
+
+Operational notes:
+- `app` does not run migrations.
+- `migrate` is the only container that runs `pnpm db:migrate`.
+- The production app image keeps production dependencies only; it is not expected to contain `drizzle-kit`.
 
 ## Usage Flow (Import -> Analyze -> Export)
 
@@ -266,9 +273,15 @@ Version is sourced from `package.json` (with `npm_package_version` as a fast pat
 | `pnpm test` | Vitest |
 | `pnpm db:migrate` | Apply Drizzle migrations |
 
+Docker equivalents:
+- `docker compose up --build` -> start `db`, run `migrate`, then start `app`
+- `docker compose run --rm migrate` -> run migrations only
+
 ## Import Safety Boundaries
 
 Import pipeline is intentionally bounded:
+- Frontend ZIP upload preflight: max 30MB per `.zip` before base64 encoding
+- HTTP request body limit: 50MB JSON payload to leave room for base64 overhead
 - ZIP: max 2,000 entries, max 5MB per file, max 500MB expanded
 - Git: max 2,000 files, max 5MB per file, max 500MB total extracted
 - Path traversal defense: unsafe paths (e.g. `../`, absolute paths, or drive-letter paths) are skipped with warnings

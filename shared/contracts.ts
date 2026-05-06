@@ -183,6 +183,7 @@ export interface ImpactAnalysisResult {
   target: string;
   targetType: ImpactTargetType;
   confidence: number;
+  affectedCount: number;
   summary: string;
   affectedFiles: string[];
   affectedSymbols: Array<{ name: string; file: string; type: string }>;

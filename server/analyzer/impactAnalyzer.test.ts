@@ -145,6 +145,7 @@ describe("ImpactAnalyzer", () => {
     const result = await analyzer.analyze(1, "Shared.pas", "file");
 
     expect(result.targetType).toBe("file");
+    expect(result.affectedCount).toBe(6);
     expect(result.affectedFiles).toEqual(["src/Shared.pas"]);
     expect(result.affectedRules).toEqual(["SharedRule"]);
     expect(result.affectedRisks).toEqual(["Shared risk"]);

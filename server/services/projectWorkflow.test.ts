@@ -245,6 +245,61 @@ describe("project workflow", () => {
     });
   });
 
+  it("clears stale analysis records before replacing imported files", async () => {
+    const { buildReportArchive, importProjectZip } = await import("./projectWorkflow");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "reimport-project",
+      language: "go",
+      sourceType: "upload",
+      status: "completed",
+      importProgress: 100,
+      analysisProgress: 100,
+      errorMessage: null,
+      lastErrorCode: null,
+    });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "old.go", fileName: "old.go", fileType: ".go", content: "package old", lineCount: 1, status: "stored" });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "OldSymbol", type: "function", startLine: 1, endLine: 1 });
+    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "legacy", targetKind: "unresolved", dependencyType: "references", lineNumber: 1 });
+    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount" });
+    fakeDb.store.fieldDependencies.push({ id: 1, projectId: 1, fieldId: 1, symbolId: 1, operationType: "read", lineNumber: 1, context: "orders.amount" });
+    fakeDb.store.risks.push({ id: 1, projectId: 1, title: "Legacy risk", severity: "high", sourceFile: "old.go", lineNumber: 1 });
+    fakeDb.store.rules.push({ id: 1, projectId: 1, name: "LegacyRule", ruleType: "validation", sourceFile: "old.go", lineNumber: 1 });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      status: "completed",
+      flowMarkdown: "# OLD",
+      dataDependencyMarkdown: "# OLD",
+      risksMarkdown: "# OLD",
+      rulesYaml: "rules: []",
+      summaryJson: { fileCount: 1 },
+      warningsJson: [],
+      errorMessage: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    zipFiles = [{ path: "new.go", fileName: "new.go", content: "package main", language: "go", size: 12 }];
+
+    await importProjectZip(1, 7, "encoded");
+
+    expect(fakeDb.store.analysisResults).toHaveLength(0);
+    expect(fakeDb.store.symbols).toHaveLength(0);
+    expect(fakeDb.store.dependencies).toHaveLength(0);
+    expect(fakeDb.store.fields).toHaveLength(0);
+    expect(fakeDb.store.fieldDependencies).toHaveLength(0);
+    expect(fakeDb.store.risks).toHaveLength(0);
+    expect(fakeDb.store.rules).toHaveLength(0);
+    expect(fakeDb.store.files).toEqual([
+      expect.objectContaining({
+        projectId: 1,
+        filePath: "new.go",
+      }),
+    ]);
+    await expect(buildReportArchive(1, 7)).rejects.toMatchObject({ code: "REPORT_NOT_READY" });
+  });
+
   it("imports files from git and persists the source URL", async () => {
     const { importProjectGit } = await import("./projectWorkflow");
     fakeDb.store.projects.push({
@@ -424,6 +479,8 @@ describe("project workflow", () => {
     const archive = await buildReportArchive(1, 7);
     const archiveAgain = await buildReportArchive(1, 7);
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
+    const zipAgain = await JSZip.loadAsync(Buffer.from(archiveAgain.base64, "base64"));
+    const zipFileNames = Object.keys(zip.files).sort((left, right) => left.localeCompare(right));
 
     expect(archive.mimeType).toBe("application/zip");
     expect(archive.base64).toBe(archiveAgain.base64);
@@ -431,6 +488,15 @@ describe("project workflow", () => {
     expect(zip.file("analysis-summary.json")).toBeTruthy();
     expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
+    await Promise.all(
+      zipFileNames.map(async (fileName) => {
+        const [firstContent, secondContent] = await Promise.all([
+          zip.file(fileName)!.async("text"),
+          zipAgain.file(fileName)!.async("text"),
+        ]);
+        expect(firstContent).toBe(secondContent);
+      })
+    );
   });
 
   it("deletes the full project graph", async () => {

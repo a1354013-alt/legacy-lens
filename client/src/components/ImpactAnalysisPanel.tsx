@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getAffectedComponentCount } from "./impactAnalysisSummary";
 import type { ImpactTargetType } from "@shared/contracts";
 
 interface ImpactAnalysisPanelProps {
@@ -113,12 +114,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
                 <CardTitle className="text-sm font-medium text-slate-500">Affected Components</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">
-                  {impactQuery.data.affectedFiles.length +
-                    impactQuery.data.affectedSymbols.length +
-                    impactQuery.data.affectedTables.length +
-                    impactQuery.data.affectedFields.length}
-                </div>
+                <div className="text-2xl font-bold">{getAffectedComponentCount(impactQuery.data)}</div>
                 <p className="mt-1 text-xs text-slate-500">
                   Across {impactQuery.data.affectedFiles.length} files
                 </p>

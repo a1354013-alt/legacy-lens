@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { AnalysisSnapshot, ReportArchivePayload } from "../../shared/contracts";
 import type { ProjectStatus } from "../../shared/contracts";
 import { projectStatusLabels } from "../../shared/contracts";
@@ -60,6 +60,106 @@ function sanitizeExportBaseName(value: string) {
   const withoutReserved = fallback.replace(/[<>:"/\\|?*]/g, "_");
   const collapsed = withoutReserved.replace(/\s+/g, " ").trim();
   return collapsed.length > 80 ? collapsed.slice(0, 80).trim() : collapsed;
+}
+
+function compareStrings(left: string | null | undefined, right: string | null | undefined) {
+  return (left ?? "").localeCompare(right ?? "");
+}
+
+function compareNumbers(left: number | null | undefined, right: number | null | undefined) {
+  return (left ?? 0) - (right ?? 0);
+}
+
+function sortProjectFiles<T extends { id?: number; filePath?: string | null; fileName?: string | null }>(rows: T[]) {
+  return [...rows].sort(
+    (left, right) =>
+      compareStrings(left.filePath, right.filePath) ||
+      compareStrings(left.fileName, right.fileName) ||
+      compareNumbers(left.id, right.id)
+  );
+}
+
+function sortProjectSymbols<T extends { id?: number; name?: string | null; fileId?: number | null; startLine?: number | null }>(rows: T[]) {
+  return [...rows].sort(
+    (left, right) =>
+      compareStrings(left.name, right.name) ||
+      compareNumbers(left.fileId, right.fileId) ||
+      compareNumbers(left.startLine, right.startLine) ||
+      compareNumbers(left.id, right.id)
+  );
+}
+
+function sortProjectDependencies<
+  T extends { id?: number; sourceSymbolId?: number | null; targetSymbolId?: number | null; lineNumber?: number | null }
+>(rows: T[]) {
+  return [...rows].sort(
+    (left, right) =>
+      compareNumbers(left.sourceSymbolId, right.sourceSymbolId) ||
+      compareNumbers(left.targetSymbolId, right.targetSymbolId) ||
+      compareNumbers(left.lineNumber, right.lineNumber) ||
+      compareNumbers(left.id, right.id)
+  );
+}
+
+function sortProjectFields<T extends { id?: number; tableName?: string | null; fieldName?: string | null }>(rows: T[]) {
+  return [...rows].sort(
+    (left, right) =>
+      compareStrings(left.tableName, right.tableName) ||
+      compareStrings(left.fieldName, right.fieldName) ||
+      compareNumbers(left.id, right.id)
+  );
+}
+
+function sortProjectRisks<
+  T extends { id?: number; severity?: string | null; title?: string | null; sourceFile?: string | null; lineNumber?: number | null }
+>(rows: T[]) {
+  return [...rows].sort(
+    (left, right) =>
+      severityRank(right.severity) - severityRank(left.severity) ||
+      compareStrings(left.title, right.title) ||
+      compareStrings(left.sourceFile, right.sourceFile) ||
+      compareNumbers(left.lineNumber, right.lineNumber) ||
+      compareNumbers(left.id, right.id)
+  );
+}
+
+function sortProjectRules<
+  T extends { id?: number; ruleType?: string | null; name?: string | null; sourceFile?: string | null; lineNumber?: number | null }
+>(rows: T[]) {
+  return [...rows].sort(
+    (left, right) =>
+      compareStrings(left.ruleType, right.ruleType) ||
+      compareStrings(left.name, right.name) ||
+      compareStrings(left.sourceFile, right.sourceFile) ||
+      compareNumbers(left.lineNumber, right.lineNumber) ||
+      compareNumbers(left.id, right.id)
+  );
+}
+
+function sortFieldDependencies<
+  T extends { id?: number; fieldId?: number | null; symbolId?: number | null; lineNumber?: number | null }
+>(rows: T[]) {
+  return [...rows].sort(
+    (left, right) =>
+      compareNumbers(left.fieldId, right.fieldId) ||
+      compareNumbers(left.symbolId, right.symbolId) ||
+      compareNumbers(left.lineNumber, right.lineNumber) ||
+      compareNumbers(left.id, right.id)
+  );
+}
+
+async function clearProjectAnalysisGraph(db: DbHandle, projectId: number, includeFiles = false) {
+  await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
+  await db.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
+  await db.delete(dependencies).where(eq(dependencies.projectId, projectId));
+  await db.delete(risks).where(eq(risks.projectId, projectId));
+  await db.delete(rules).where(eq(rules.projectId, projectId));
+  await db.delete(fields).where(eq(fields.projectId, projectId));
+  await db.delete(symbols).where(eq(symbols.projectId, projectId));
+
+  if (includeFiles) {
+    await deleteProjectFiles(projectId, db);
+  }
 }
 
 export async function requireDb() {
@@ -163,7 +263,7 @@ async function replaceProjectFiles(
       lastErrorCode: null,
     });
 
-    await deleteProjectFiles(projectId, tx);
+    await clearProjectAnalysisGraph(tx, projectId, true);
     const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);
 
     await transitionProjectState(tx, projectId, {
@@ -295,12 +395,7 @@ function resolveInsertedTargetSymbolId(
 }
 
 async function writeSuccessfulAnalysis(tx: DbHandle, projectId: number, projectFiles: Awaited<ReturnType<typeof getProjectFiles>>, result: ProjectAnalysisResult) {
-  await tx.delete(dependencies).where(eq(dependencies.projectId, projectId));
-  await tx.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
-  await tx.delete(fields).where(eq(fields.projectId, projectId));
-  await tx.delete(risks).where(eq(risks.projectId, projectId));
-  await tx.delete(rules).where(eq(rules.projectId, projectId));
-  await tx.delete(symbols).where(eq(symbols.projectId, projectId));
+  await clearProjectAnalysisGraph(tx, projectId);
 
   await replaceAnalysisResult(tx, projectId, {
     status: result.status,
@@ -421,12 +516,7 @@ async function writeSuccessfulAnalysis(tx: DbHandle, projectId: number, projectF
 }
 
 async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: AppError) {
-  await tx.delete(dependencies).where(eq(dependencies.projectId, projectId));
-  await tx.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
-  await tx.delete(fields).where(eq(fields.projectId, projectId));
-  await tx.delete(risks).where(eq(risks.projectId, projectId));
-  await tx.delete(rules).where(eq(rules.projectId, projectId));
-  await tx.delete(symbols).where(eq(symbols.projectId, projectId));
+  await clearProjectAnalysisGraph(tx, projectId);
   await replaceAnalysisResult(tx, projectId, {
     status: "failed",
     flowMarkdown: null,
@@ -532,13 +622,19 @@ function severityRank(severity: string | null | undefined) {
 }
 
 async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requireDb>>, projectId: number) {
-  const [projectFiles, projectSymbols, projectDependencies, projectRisks, projectRules] = await Promise.all([
+  const [rawProjectFiles, rawProjectSymbols, rawProjectDependencies, rawProjectRisks, rawProjectRules] = await Promise.all([
     db.select().from(files).where(eq(files.projectId, projectId)),
     db.select().from(symbols).where(eq(symbols.projectId, projectId)),
     db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
     db.select().from(risks).where(eq(risks.projectId, projectId)),
     db.select().from(rules).where(eq(rules.projectId, projectId)),
   ]);
+
+  const projectFiles = sortProjectFiles(rawProjectFiles);
+  const projectSymbols = sortProjectSymbols(rawProjectSymbols);
+  const projectDependencies = sortProjectDependencies(rawProjectDependencies);
+  const projectRisks = sortProjectRisks(rawProjectRisks);
+  const projectRules = sortProjectRules(rawProjectRules);
 
   const fileById = new Map(projectFiles.map((file) => [file.id, file.filePath]));
   const symbolById = new Map(projectSymbols.map((symbol) => [symbol.id, symbol]));
@@ -575,7 +671,6 @@ async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requir
 
   const highRiskItems = projectRisks
     .filter((risk) => severityRank(risk.severity) >= severityRank("high"))
-    .sort((left, right) => severityRank(right.severity) - severityRank(left.severity) || left.title.localeCompare(right.title))
     .slice(0, 10)
     .map((risk) => ({
       title: risk.title,
@@ -584,11 +679,13 @@ async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requir
       lineNumber: risk.lineNumber,
     }));
 
-  const rulesByType = projectRules.reduce<Record<string, number>>((accumulator, rule) => {
-    const nextCounts = accumulator;
-    nextCounts[rule.ruleType] = (nextCounts[rule.ruleType] ?? 0) + 1;
-    return nextCounts;
-  }, {});
+  const ruleTypeCounts = new Map<string, number>();
+  for (const rule of projectRules) {
+    ruleTypeCounts.set(rule.ruleType, (ruleTypeCounts.get(rule.ruleType) ?? 0) + 1);
+  }
+  const rulesByType = Object.fromEntries(
+    Array.from(ruleTypeCounts.entries()).sort((left, right) => left[0].localeCompare(right[0]))
+  );
 
   const businessRules = projectRules
     .map((rule) => ({
@@ -596,8 +693,7 @@ async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requir
       ruleType: rule.ruleType,
       sourceFile: rule.sourceFile,
       lineNumber: rule.lineNumber,
-    }))
-    .sort((left, right) => left.name.localeCompare(right.name));
+    }));
 
   return {
     totals: {
@@ -686,13 +782,20 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
 
   const report = await getProjectAnalysisRecord(db, projectId);
   const [symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
-    db.select().from(symbols).where(eq(symbols.projectId, projectId)).orderBy(symbols.startLine),
+    db.select().from(symbols).where(eq(symbols.projectId, projectId)),
     db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
     db.select().from(fields).where(eq(fields.projectId, projectId)),
     db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, projectId)),
-    db.select().from(risks).where(eq(risks.projectId, projectId)).orderBy(desc(risks.id)),
-    db.select().from(rules).where(eq(rules.projectId, projectId)).orderBy(desc(rules.id)),
+    db.select().from(risks).where(eq(risks.projectId, projectId)),
+    db.select().from(rules).where(eq(rules.projectId, projectId)),
   ]);
+
+  const sortedSymbolRows = sortProjectSymbols(symbolRows);
+  const sortedDependencyRows = sortProjectDependencies(dependencyRows);
+  const sortedFieldRows = sortProjectFields(fieldRows);
+  const sortedFieldDependencyRows = sortFieldDependencies(fieldDependencyRows);
+  const sortedRiskRows = sortProjectRisks(riskRows);
+  const sortedRuleRows = sortProjectRules(ruleRows);
 
   return {
     report: report
@@ -711,7 +814,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
           updatedAt: report.updatedAt,
         }
       : null,
-    symbols: symbolRows.map((row) => ({
+    symbols: sortedSymbolRows.map((row) => ({
       id: row.id,
       name: row.name,
       type: row.type,
@@ -721,7 +824,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
       signature: row.signature,
       description: row.description,
     })),
-    dependencies: dependencyRows.map((row) => ({
+    dependencies: sortedDependencyRows.map((row) => ({
       id: row.id,
       sourceSymbolId: row.sourceSymbolId,
       targetSymbolId: row.targetSymbolId,
@@ -730,14 +833,14 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
       dependencyType: row.dependencyType,
       lineNumber: row.lineNumber,
     })),
-    fields: fieldRows.map((row) => ({
+    fields: sortedFieldRows.map((row) => ({
       id: row.id,
       tableName: row.tableName,
       fieldName: row.fieldName,
       fieldType: row.fieldType,
       description: row.description,
     })),
-    fieldDependencies: fieldDependencyRows.map((row) => ({
+    fieldDependencies: sortedFieldDependencyRows.map((row) => ({
       id: row.id,
       fieldId: row.fieldId,
       symbolId: row.symbolId,
@@ -745,7 +848,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
       lineNumber: row.lineNumber,
       context: row.context,
     })),
-    risks: riskRows.map((row) => ({
+    risks: sortedRiskRows.map((row) => ({
       id: row.id,
       riskType: row.riskType,
       severity: row.severity,
@@ -755,7 +858,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
       lineNumber: row.lineNumber,
       recommendation: row.recommendation,
     })),
-    rules: ruleRows.map((row) => ({
+    rules: sortedRuleRows.map((row) => ({
       id: row.id,
       ruleType: row.ruleType,
       name: row.name,
@@ -845,14 +948,7 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
   const db = await requireDb();
 
   await db.transaction(async (tx) => {
-    await tx.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
-    await tx.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
-    await tx.delete(fields).where(eq(fields.projectId, projectId));
-    await tx.delete(dependencies).where(eq(dependencies.projectId, projectId));
-    await tx.delete(symbols).where(eq(symbols.projectId, projectId));
-    await tx.delete(risks).where(eq(risks.projectId, projectId));
-    await tx.delete(rules).where(eq(rules.projectId, projectId));
-    await tx.delete(files).where(eq(files.projectId, projectId));
+    await clearProjectAnalysisGraph(tx, projectId, true);
     await tx.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
   });
 }

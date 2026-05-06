@@ -102,6 +102,7 @@ function buildBaseResult(target: string, targetType: ImpactTargetType, confidenc
     target,
     targetType,
     confidence,
+    affectedCount: 0,
     summary: "",
     affectedFiles: [],
     affectedSymbols: [],
@@ -530,13 +531,16 @@ export class ImpactAnalyzer {
     const affectedCount =
       result.affectedFiles.length +
       result.affectedSymbols.length +
+      result.affectedTables.length +
       result.affectedFields.length +
       result.affectedRules.length +
       result.affectedRisks.length;
 
+    result.affectedCount = affectedCount;
+
     result.summary =
-      affectedCount > 0
-        ? `Modifying ${target} (${result.targetType}) affects ${affectedCount} scoped items inside project ${projectId}.`
+      result.affectedCount > 0
+        ? `Modifying ${target} (${result.targetType}) affects ${result.affectedCount} scoped items inside project ${projectId}.`
         : `No additional impacts were found for ${target} inside project ${projectId}.`;
 
     return result;

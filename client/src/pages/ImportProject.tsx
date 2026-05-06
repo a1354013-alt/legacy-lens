@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
 
 type WorkflowPhase = "idle" | "creating" | "importing" | "analyzing" | "redirecting";
 
@@ -314,9 +315,27 @@ export default function ImportProject() {
                   className="hidden"
                   onChange={(event) => {
                     const nextFile = event.target.files?.[0] ?? null;
+                    if (!nextFile) {
+                      setUploadedFile(null);
+                      return;
+                    }
+
+                    const uploadError = validateUploadedZip(nextFile);
+                    if (uploadError) {
+                      event.target.value = "";
+                      setUploadedFile(null);
+                      setError(uploadError);
+                      toast.error(uploadError);
+                      return;
+                    }
+
+                    setError(null);
                     setUploadedFile(nextFile);
                   }}
                 />
+                <p className="text-xs text-slate-500">
+                  ZIP uploads are limited to {(MAX_UPLOAD_ZIP_SIZE / (1024 * 1024)).toFixed(0)}MB before base64 encoding.
+                </p>
               </CardContent>
             </Card>
           ) : (
