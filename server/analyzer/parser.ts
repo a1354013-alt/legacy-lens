@@ -65,6 +65,7 @@ function createSymbol(input: {
     startLine: input.startLine,
     endLine: input.endLine,
     signature: input.signature,
+    description: input.description,
   } satisfies AnalyzedSymbol;
 }
 
@@ -331,7 +332,7 @@ export class GoParser implements FileParser {
         symbols.push(
           createSymbol({
             name: structMatch[1],
-            type: "table",
+            type: "class",
             file: this.file,
             startLine: index + 1,
             endLine: index + 1,
@@ -749,6 +750,21 @@ export class DelphiParser implements FileParser {
     const symbols: AnalyzedSymbol[] = [];
     let section: "interface" | "implementation" | "other" = "other";
 
+    if (this.unitInfo) {
+      symbols.push(
+        createSymbol({
+          name: this.unitInfo.unitName,
+          qualifiedName: this.unitInfo.unitName,
+          type: "class",
+          file: this.file,
+          startLine: 1,
+          endLine: lines.length,
+          signature: `unit ${this.unitInfo.unitName}`,
+          description: "Delphi unit declaration",
+        })
+      );
+    }
+
     lines.forEach((line, index) => {
       const trimmed = line.trim();
       if (/^\s*interface\b/i.test(trimmed)) {
@@ -917,7 +933,7 @@ export class UnsupportedParser implements FileParser {
 export class ParserFactory {
   static isLanguageSupported(language: string) {
     const normalized = language.replace(/^\./, "").toLowerCase();
-    return normalized === "go" || normalized === "sql" || normalized === "pas" || normalized === "dpr" || normalized === "delphi";
+    return ["go", "sql", "pas", "dpr", "delphi", "dfm", "inc", "dpk", "fmx"].includes(normalized);
   }
 
   static createParser(language: string, content: string, file: string): FileParser {
@@ -936,7 +952,7 @@ export class ParserFactory {
       return new DfmParser(content, file);
     }
 
-    if (normalized === "pas" || normalized === "dpr" || normalized === "delphi") {
+    if (normalized === "pas" || normalized === "dpr" || normalized === "delphi" || extension === ".inc" || extension === ".dpk" || extension === ".fmx") {
       return new DelphiParser(content, file, [".inc", ".dpk", ".fmx"].includes(extension));
     }
 

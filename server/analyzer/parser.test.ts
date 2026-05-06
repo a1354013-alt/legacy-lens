@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DelphiParser, DfmParser, extractDelphiUnitInfo, parseDfmContent } from "./parser";
+import { DelphiParser, DfmParser, GoParser, ParserFactory, extractDelphiUnitInfo, parseDfmContent } from "./parser";
 
 describe("DelphiParser", () => {
   it("captures common method declarations with qualified names", () => {
@@ -66,6 +66,25 @@ describe("DelphiParser", () => {
       interfaceSymbols: ["TInvoice", "ProcessRecord"],
       implementationSymbols: ["TInvoice.ProcessRecord"],
     });
+
+    const parser = new DelphiParser(content, "Invoice.pas");
+    const symbols = parser.parseSymbols();
+    const dependencies = parser.parseDependencies(symbols);
+
+    expect(dependencies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fromName: "Invoice",
+          toName: "System.SysUtils",
+          type: "references",
+        }),
+        expect.objectContaining({
+          fromName: "Invoice",
+          toName: "Data.DB",
+          type: "references",
+        }),
+      ])
+    );
   });
 
   it("extracts DFM object metadata and event handlers", () => {
@@ -101,8 +120,42 @@ describe("DelphiParser", () => {
           name: "Button1Click",
           qualifiedName: "Button1.Button1Click",
           type: "method",
+          description: "DFM event handler for Button1",
         }),
       ])
     );
+  });
+
+  it("parses Go structs as classes and preserves descriptions on created symbols", () => {
+    const parser = new GoParser(
+      [
+        "type User struct {",
+        "  Name string",
+        "}",
+        "",
+        "func BuildUser() {}",
+      ].join("\n"),
+      "user.go"
+    );
+
+    const symbols = parser.parseSymbols();
+
+    expect(symbols).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "User",
+          type: "class",
+        }),
+      ])
+    );
+  });
+
+  it("keeps ParserFactory support aligned with imported Delphi-related extensions", () => {
+    expect(ParserFactory.isLanguageSupported("dfm")).toBe(true);
+    expect(ParserFactory.isLanguageSupported("inc")).toBe(true);
+    expect(ParserFactory.isLanguageSupported("dpk")).toBe(true);
+    expect(ParserFactory.isLanguageSupported("fmx")).toBe(true);
+    expect(ParserFactory.createParser("inc", "const Foo = 1;", "types.inc")).toBeInstanceOf(DelphiParser);
+    expect(ParserFactory.createParser("fmx", "object Form1: TForm1", "Form1.fmx")).toBeInstanceOf(DelphiParser);
   });
 });

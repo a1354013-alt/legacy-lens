@@ -1,6 +1,12 @@
 import type { AnalysisMetrics, AnalysisWarning } from "../shared/contracts";
 import { analysisStatuses, fileStatuses, focusLanguages, projectSourceTypes, projectStatuses } from "../shared/contracts";
-import { index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { customType, index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+
+const mediumtext = customType<{ data: string }>({
+  dataType() {
+    return "mediumtext";
+  },
+});
 
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
@@ -52,7 +58,7 @@ export const files = mysqlTable(
     fileName: varchar("fileName", { length: 255 }).notNull(),
     fileType: varchar("fileType", { length: 50 }),
     status: mysqlEnum("status", fileStatuses).default("stored").notNull(),
-    content: text("content"),
+    content: mediumtext("content"),
     lineCount: int("lineCount"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -94,7 +100,9 @@ export const dependencies = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     sourceSymbolId: int("sourceSymbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    targetSymbolId: int("targetSymbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    targetSymbolId: int("targetSymbolId").references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    targetExternalName: varchar("targetExternalName", { length: 255 }),
+    targetKind: mysqlEnum("targetKind", ["internal", "external", "unresolved"]).default("internal").notNull(),
     dependencyType: mysqlEnum("dependencyType", ["calls", "reads", "writes", "references"]).notNull(),
     lineNumber: int("lineNumber"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

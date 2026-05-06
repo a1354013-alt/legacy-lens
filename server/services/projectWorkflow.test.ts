@@ -377,24 +377,35 @@ describe("project workflow", () => {
       summaryJson: { fileCount: 1 },
       warningsJson: [],
       errorMessage: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
     fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 3, signature: "func main()", description: null });
     fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount", fieldType: null, description: null });
+    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "external", targetKind: "unresolved", dependencyType: "references", lineNumber: 2 });
     fakeDb.store.fieldDependencies.push({ id: 1, projectId: 1, fieldId: 1, symbolId: 1, operationType: "read", lineNumber: 2, context: "SELECT amount FROM orders" });
 
     const snapshot = await getAnalysisSnapshot(1, 7);
 
     expect(snapshot.report?.status).toBe("completed");
     expect(snapshot.symbols).toHaveLength(1);
+    expect(snapshot.dependencies[0]).toMatchObject({
+      targetSymbolId: null,
+      targetExternalName: "external",
+      targetKind: "unresolved",
+    });
     expect(snapshot.fields).toHaveLength(1);
     expect(snapshot.fieldDependencies[0]?.fieldId).toBe(1);
   });
 
   it("builds a downloadable report archive with the expected files", async () => {
     const { buildReportArchive } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({ id: 1, userId: 7, name: "report-project", status: "completed" });
+    fakeDb.store.projects.push({ id: 1, userId: 7, name: "report-project", language: "go", status: "completed" });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 1, signature: "func main()", description: null });
+    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "external.Dependency", targetKind: "unresolved", dependencyType: "references", lineNumber: 1 });
+    fakeDb.store.risks.push({ id: 1, projectId: 1, title: "Critical risk", severity: "high", sourceFile: "main.go", lineNumber: 1 });
+    fakeDb.store.rules.push({ id: 1, projectId: 1, name: "MainRule", ruleType: "validation", sourceFile: "main.go", lineNumber: 1 });
     fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
@@ -406,16 +417,20 @@ describe("project workflow", () => {
       summaryJson: { fileCount: 1 },
       warningsJson: [],
       errorMessage: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
 
     const archive = await buildReportArchive(1, 7);
+    const archiveAgain = await buildReportArchive(1, 7);
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
 
     expect(archive.mimeType).toBe("application/zip");
+    expect(archive.base64).toBe(archiveAgain.base64);
     expect(zip.file("FLOW.md")).toBeTruthy();
     expect(zip.file("analysis-summary.json")).toBeTruthy();
+    expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
+    await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
   });
 
   it("deletes the full project graph", async () => {

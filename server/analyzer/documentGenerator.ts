@@ -28,7 +28,10 @@ export class DocumentGenerator {
 
       const downstream = dependencies
         .filter((dependency) => dependency.from === symbol.stableKey)
-        .map((dependency) => symbolByKey.get(dependency.to)?.qualifiedName ?? symbolByKey.get(dependency.to)?.name ?? dependency.toName);
+        .map((dependency) => {
+          const target = dependency.to ? symbolByKey.get(dependency.to) : undefined;
+          return target?.qualifiedName ?? target?.name ?? dependency.toName;
+        });
 
       lines.push(`- Downstream calls: ${downstream.length > 0 ? unique(downstream).join(", ") : "None detected"}`);
       lines.push("");

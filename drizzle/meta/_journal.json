@@ -36,6 +36,20 @@
       "when": 1775799319698,
       "tag": "0004_flippant_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1778038878244,
+      "tag": "0005_class_symbol_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1778040692465,
+      "tag": "0006_opposite_ultimates",
+      "breakpoints": true
     }
   ]
 }

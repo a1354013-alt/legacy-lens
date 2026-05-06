@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   dependencies,
   fieldDependencies,
@@ -11,222 +11,534 @@ import {
 import type { ImpactAnalysisResult, ImpactTargetType } from "../../shared/contracts";
 import { getDb } from "../db";
 
+type ProjectSymbol = typeof symbols.$inferSelect;
+type ProjectFile = typeof files.$inferSelect;
+type ProjectField = typeof fields.$inferSelect;
+type ProjectDependency = typeof dependencies.$inferSelect;
+type ProjectFieldDependency = typeof fieldDependencies.$inferSelect;
+type ProjectRisk = typeof risks.$inferSelect;
+type ProjectRule = typeof rules.$inferSelect;
+
+type ProjectIndex = {
+  projectId: number;
+  symbols: ProjectSymbol[];
+  files: ProjectFile[];
+  fields: ProjectField[];
+  dependencies: ProjectDependency[];
+  fieldDependencies: ProjectFieldDependency[];
+  risks: ProjectRisk[];
+  rules: ProjectRule[];
+  symbolById: Map<number, ProjectSymbol>;
+  fileById: Map<number, ProjectFile>;
+  fieldById: Map<number, ProjectField>;
+};
+
+type ResolvedTarget =
+  | { type: "symbol"; symbols: ProjectSymbol[]; confidence: number }
+  | { type: "file"; files: ProjectFile[]; confidence: number }
+  | { type: "sql_table"; fields: ProjectField[]; confidence: number }
+  | { type: "sql_field"; fields: ProjectField[]; confidence: number }
+  | { type: "risk"; risks: ProjectRisk[]; confidence: number }
+  | { type: "rule"; rules: ProjectRule[]; confidence: number }
+  | { type: "auto"; confidence: 0 };
+
+function normalize(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function getShortSymbolName(symbol: ProjectSymbol) {
+  return symbol.name.split(".").at(-1) ?? symbol.name;
+}
+
+function getFileIdentity(file: ProjectFile) {
+  return [file.fileName, file.filePath].map((value) => normalize(value));
+}
+
+function uniqueSorted(values: Iterable<string>) {
+  return Array.from(new Set(values)).sort((left, right) => left.localeCompare(right));
+}
+
+function addSymbolImpact(
+  result: ImpactAnalysisResult,
+  fileSet: Set<string>,
+  symbolMap: Map<string, { name: string; file: string; type: string }>,
+  symbol: ProjectSymbol,
+  index: ProjectIndex
+) {
+  const filePath = index.fileById.get(symbol.fileId)?.filePath;
+  if (!filePath) {
+    return;
+  }
+
+  fileSet.add(filePath);
+  symbolMap.set(`${filePath}:${symbol.name}:${symbol.type}`, {
+    name: symbol.name,
+    file: filePath,
+    type: symbol.type,
+  });
+}
+
+function addRuleImpact(ruleSet: Set<string>, rule: ProjectRule) {
+  ruleSet.add(rule.name);
+}
+
+function addRiskImpact(riskSet: Set<string>, risk: ProjectRisk) {
+  riskSet.add(risk.title);
+}
+
+function addFieldImpact(fieldSet: Map<string, { table: string; field: string }>, field: ProjectField) {
+  fieldSet.set(`${field.tableName}.${field.fieldName}`, {
+    table: field.tableName,
+    field: field.fieldName,
+  });
+}
+
+function addDependencyChain(result: ImpactAnalysisResult, chain: string[]) {
+  result.dependencyChains.push(chain);
+}
+
+function buildBaseResult(target: string, targetType: ImpactTargetType, confidence: number): ImpactAnalysisResult {
+  return {
+    target,
+    targetType,
+    confidence,
+    summary: "",
+    affectedFiles: [],
+    affectedSymbols: [],
+    affectedTables: [],
+    affectedFields: [],
+    affectedRules: [],
+    affectedRisks: [],
+    dependencyChains: [],
+    warnings: [],
+  };
+}
+
+function findMatchingSymbols(projectSymbols: ProjectSymbol[], target: string) {
+  const normalizedTarget = normalize(target);
+  return projectSymbols.filter((symbol) => {
+    const candidates = [symbol.name, getShortSymbolName(symbol)];
+    return candidates.some((candidate) => normalize(candidate) === normalizedTarget);
+  });
+}
+
+function findMatchingFiles(projectFiles: ProjectFile[], target: string) {
+  const normalizedTarget = normalize(target);
+  return projectFiles.filter((file) => getFileIdentity(file).includes(normalizedTarget));
+}
+
+function findMatchingRules(projectRules: ProjectRule[], target: string) {
+  const normalizedTarget = normalize(target);
+  return projectRules.filter((rule) => {
+    const candidates = [rule.name, rule.description ?? "", rule.condition ?? ""];
+    return candidates.some((candidate) => normalize(candidate) === normalizedTarget);
+  });
+}
+
+function findMatchingRisks(projectRisks: ProjectRisk[], target: string) {
+  const normalizedTarget = normalize(target);
+  return projectRisks.filter((risk) => normalize(risk.title) === normalizedTarget);
+}
+
+function findMatchingSqlFields(projectFields: ProjectField[], target: string) {
+  const normalizedTarget = normalize(target);
+  const [tableName, fieldName] = normalizedTarget.split(".");
+  if (!tableName || !fieldName) {
+    return [];
+  }
+
+  return projectFields.filter(
+    (field) => normalize(field.tableName) === tableName && normalize(field.fieldName) === fieldName
+  );
+}
+
+function findMatchingSqlTable(projectFields: ProjectField[], target: string) {
+  const normalizedTarget = normalize(target);
+  return projectFields.filter((field) => normalize(field.tableName) === normalizedTarget);
+}
+
+function findSymbolsForFile(fileId: number, projectSymbols: ProjectSymbol[]) {
+  return projectSymbols.filter((symbol) => symbol.fileId === fileId);
+}
+
+function findRulesForFile(filePath: string, projectRules: ProjectRule[]) {
+  const normalizedPath = normalize(filePath);
+  return projectRules.filter((rule) => normalize(rule.sourceFile ?? "") === normalizedPath);
+}
+
+function findRisksForFile(filePath: string, projectRisks: ProjectRisk[]) {
+  const normalizedPath = normalize(filePath);
+  return projectRisks.filter((risk) => normalize(risk.sourceFile ?? "") === normalizedPath);
+}
+
+function findDependenciesForSymbolIds(symbolIds: number[], projectDependencies: ProjectDependency[]) {
+  const symbolIdSet = new Set(symbolIds);
+  return projectDependencies.filter(
+    (dependency) =>
+      symbolIdSet.has(dependency.sourceSymbolId) ||
+      (dependency.targetSymbolId !== null && symbolIdSet.has(dependency.targetSymbolId))
+  );
+}
+
+function findSymbolsForFieldIds(fieldIds: number[], projectFieldDependencies: ProjectFieldDependency[]) {
+  const fieldIdSet = new Set(fieldIds);
+  return projectFieldDependencies.filter((dependency) => fieldIdSet.has(dependency.fieldId));
+}
+
+function findSymbolsNearRule(rule: ProjectRule, index: ProjectIndex) {
+  if (!rule.sourceFile) {
+    return [];
+  }
+
+  const file = index.files.find((candidate) => candidate.filePath === rule.sourceFile);
+  if (!file) {
+    return [];
+  }
+
+  const fileSymbols = findSymbolsForFile(file.id, index.symbols);
+  if (!rule.lineNumber) {
+    return fileSymbols;
+  }
+
+  const lineMatches = fileSymbols.filter((symbol) => symbol.startLine <= rule.lineNumber! && symbol.endLine >= rule.lineNumber!);
+  return lineMatches.length > 0 ? lineMatches : fileSymbols;
+}
+
 export class ImpactAnalyzer {
-  async analyze(projectId: number, target: string, type: ImpactTargetType = "auto"): Promise<ImpactAnalysisResult> {
+  private async loadProjectIndex(projectId: number): Promise<ProjectIndex> {
     const db = await getDb();
     if (!db) {
       throw new Error("Database not available");
     }
 
-    let resolvedType = type;
-    let targetId: number | null = null;
-    const warnings: string[] = [];
+    const [projectSymbols, projectFiles, projectFields, projectDependencies, projectFieldDependencies, projectRisks, projectRules] =
+      await Promise.all([
+        db.select().from(symbols).where(eq(symbols.projectId, projectId)),
+        db.select().from(files).where(eq(files.projectId, projectId)),
+        db.select().from(fields).where(eq(fields.projectId, projectId)),
+        db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
+        db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, projectId)),
+        db.select().from(risks).where(eq(risks.projectId, projectId)),
+        db.select().from(rules).where(eq(rules.projectId, projectId)),
+      ]);
 
-    // 1. Resolve Target Type and ID
-    if (type === "auto") {
-      // Try symbol
-      const [symbolMatch] = await db.select().from(symbols).where(eq(symbols.name, target)).limit(1);
-      if (symbolMatch) {
-        resolvedType = "symbol";
-        targetId = symbolMatch.id;
-      } else {
-        // Try SQL table
-        const [fieldMatch] = await db.select().from(fields).where(eq(fields.tableName, target)).limit(1);
-        if (fieldMatch) {
-          resolvedType = "sql_table";
-        } else {
-          // Try file
-          const [fileMatch] = await db.select().from(files).where(eq(files.fileName, target)).limit(1);
-          if (fileMatch) {
-            resolvedType = "file";
-            targetId = fileMatch.id;
-          } else {
-            // Try risk
-            const [riskMatch] = await db.select().from(risks).where(eq(risks.title, target)).limit(1);
-            if (riskMatch) {
-              resolvedType = "risk";
-              targetId = riskMatch.id;
-            } else {
-              // Try rule
-              const [ruleMatch] = await db.select().from(rules).where(eq(rules.name, target)).limit(1);
-              if (ruleMatch) {
-                resolvedType = "rule";
-                targetId = ruleMatch.id;
-              }
-            }
-          }
-        }
-      }
+    return {
+      projectId,
+      symbols: projectSymbols,
+      files: projectFiles,
+      fields: projectFields,
+      dependencies: projectDependencies,
+      fieldDependencies: projectFieldDependencies,
+      risks: projectRisks,
+      rules: projectRules,
+      symbolById: new Map(projectSymbols.map((symbol) => [symbol.id, symbol])),
+      fileById: new Map(projectFiles.map((file) => [file.id, file])),
+      fieldById: new Map(projectFields.map((field) => [field.id, field])),
+    };
+  }
+
+  private resolveTarget(index: ProjectIndex, target: string, type: ImpactTargetType): ResolvedTarget {
+    if (type === "sql_field") {
+      const matchedFields = findMatchingSqlFields(index.fields, target);
+      return matchedFields.length > 0 ? { type, fields: matchedFields, confidence: 1 } : { type: "auto", confidence: 0 };
     }
 
-    const result: ImpactAnalysisResult = {
-      target,
-      targetType: resolvedType,
-      confidence: targetId || resolvedType !== "auto" ? 1.0 : 0,
-      summary: "",
-      affectedFiles: [],
-      affectedSymbols: [],
-      affectedTables: [],
-      affectedFields: [],
-      affectedRules: [],
-      affectedRisks: [],
-      dependencyChains: [],
-      warnings: [],
-    };
+    if (type === "symbol") {
+      const matchedSymbols = findMatchingSymbols(index.symbols, target);
+      return matchedSymbols.length > 0 ? { type, symbols: matchedSymbols, confidence: 1 } : { type: "auto", confidence: 0 };
+    }
 
-    if (resolvedType === "auto" && !targetId) {
+    if (type === "file") {
+      const matchedFiles = findMatchingFiles(index.files, target);
+      return matchedFiles.length > 0 ? { type, files: matchedFiles, confidence: 1 } : { type: "auto", confidence: 0 };
+    }
+
+    if (type === "sql_table") {
+      const matchedFields = findMatchingSqlTable(index.fields, target);
+      return matchedFields.length > 0 ? { type, fields: matchedFields, confidence: 1 } : { type: "auto", confidence: 0 };
+    }
+
+    if (type === "risk") {
+      const matchedRisks = findMatchingRisks(index.risks, target);
+      return matchedRisks.length > 0 ? { type, risks: matchedRisks, confidence: 1 } : { type: "auto", confidence: 0 };
+    }
+
+    if (type === "rule") {
+      const matchedRules = findMatchingRules(index.rules, target);
+      return matchedRules.length > 0 ? { type, rules: matchedRules, confidence: 1 } : { type: "auto", confidence: 0 };
+    }
+
+    const fieldTarget = findMatchingSqlFields(index.fields, target);
+    if (fieldTarget.length > 0) {
+      return { type: "sql_field", fields: fieldTarget, confidence: 1 };
+    }
+
+    const symbolTarget = findMatchingSymbols(index.symbols, target);
+    if (symbolTarget.length > 0) {
+      return { type: "symbol", symbols: symbolTarget, confidence: 1 };
+    }
+
+    const fileTarget = findMatchingFiles(index.files, target);
+    if (fileTarget.length > 0) {
+      return { type: "file", files: fileTarget, confidence: 1 };
+    }
+
+    const tableTarget = findMatchingSqlTable(index.fields, target);
+    if (tableTarget.length > 0) {
+      return { type: "sql_table", fields: tableTarget, confidence: 1 };
+    }
+
+    const riskTarget = findMatchingRisks(index.risks, target);
+    if (riskTarget.length > 0) {
+      return { type: "risk", risks: riskTarget, confidence: 1 };
+    }
+
+    const ruleTarget = findMatchingRules(index.rules, target);
+    if (ruleTarget.length > 0) {
+      return { type: "rule", rules: ruleTarget, confidence: 1 };
+    }
+
+    return { type: "auto", confidence: 0 };
+  }
+
+  private analyzeSymbolTarget(index: ProjectIndex, result: ImpactAnalysisResult, matchedSymbols: ProjectSymbol[]) {
+    const fileSet = new Set<string>();
+    const symbolMap = new Map<string, { name: string; file: string; type: string }>();
+    const tableSet = new Set<string>();
+    const fieldMap = new Map<string, { table: string; field: string }>();
+    const ruleSet = new Set<string>();
+    const riskSet = new Set<string>();
+
+    for (const symbol of matchedSymbols) {
+      addSymbolImpact(result, fileSet, symbolMap, symbol, index);
+
+      const relatedFieldDependencies = index.fieldDependencies.filter((dependency) => dependency.symbolId === symbol.id);
+      relatedFieldDependencies.forEach((dependency) => {
+        const field = index.fieldById.get(dependency.fieldId);
+        if (!field) return;
+        tableSet.add(field.tableName);
+        addFieldImpact(fieldMap, field);
+        addDependencyChain(result, [symbol.name, `${field.tableName}.${field.fieldName}`]);
+      });
+
+      const relatedDependencies = findDependenciesForSymbolIds([symbol.id], index.dependencies);
+      relatedDependencies.forEach((dependency) => {
+        const sourceSymbol = index.symbolById.get(dependency.sourceSymbolId);
+        const targetSymbol = dependency.targetSymbolId ? index.symbolById.get(dependency.targetSymbolId) : undefined;
+        if (sourceSymbol) {
+          addSymbolImpact(result, fileSet, symbolMap, sourceSymbol, index);
+        }
+        if (targetSymbol) {
+          addSymbolImpact(result, fileSet, symbolMap, targetSymbol, index);
+        }
+        addDependencyChain(result, [
+          sourceSymbol?.name ?? `symbol:${dependency.sourceSymbolId}`,
+          targetSymbol?.name ?? dependency.targetExternalName ?? "unresolved",
+        ]);
+      });
+
+      const filePath = index.fileById.get(symbol.fileId)?.filePath;
+      if (!filePath) continue;
+
+      findRulesForFile(filePath, index.rules).forEach((rule) => addRuleImpact(ruleSet, rule));
+      findRisksForFile(filePath, index.risks).forEach((risk) => addRiskImpact(riskSet, risk));
+    }
+
+    result.affectedFiles = uniqueSorted(fileSet);
+    result.affectedSymbols = Array.from(symbolMap.values()).sort((left, right) => left.file.localeCompare(right.file) || left.name.localeCompare(right.name));
+    result.affectedTables = uniqueSorted(tableSet);
+    result.affectedFields = Array.from(fieldMap.values()).sort((left, right) => left.table.localeCompare(right.table) || left.field.localeCompare(right.field));
+    result.affectedRules = uniqueSorted(ruleSet);
+    result.affectedRisks = uniqueSorted(riskSet);
+  }
+
+  private analyzeFileTarget(index: ProjectIndex, result: ImpactAnalysisResult, matchedFiles: ProjectFile[]) {
+    const fileSet = new Set<string>();
+    const symbolMap = new Map<string, { name: string; file: string; type: string }>();
+    const ruleSet = new Set<string>();
+    const riskSet = new Set<string>();
+
+    for (const file of matchedFiles) {
+      fileSet.add(file.filePath);
+
+      const fileSymbols = findSymbolsForFile(file.id, index.symbols);
+      fileSymbols.forEach((symbol) => addSymbolImpact(result, fileSet, symbolMap, symbol, index));
+
+      findRulesForFile(file.filePath, index.rules).forEach((rule) => {
+        addRuleImpact(ruleSet, rule);
+        addDependencyChain(result, [file.fileName, rule.name]);
+      });
+
+      findRisksForFile(file.filePath, index.risks).forEach((risk) => {
+        addRiskImpact(riskSet, risk);
+        addDependencyChain(result, [file.fileName, risk.title]);
+      });
+
+      const fileDependencies = findDependenciesForSymbolIds(fileSymbols.map((symbol) => symbol.id), index.dependencies);
+      fileDependencies.forEach((dependency) => {
+        const sourceSymbol = index.symbolById.get(dependency.sourceSymbolId);
+        const targetSymbol = dependency.targetSymbolId ? index.symbolById.get(dependency.targetSymbolId) : undefined;
+        if (sourceSymbol) {
+          addSymbolImpact(result, fileSet, symbolMap, sourceSymbol, index);
+        }
+        if (targetSymbol) {
+          addSymbolImpact(result, fileSet, symbolMap, targetSymbol, index);
+        }
+        addDependencyChain(result, [
+          sourceSymbol?.name ?? `symbol:${dependency.sourceSymbolId}`,
+          targetSymbol?.name ?? dependency.targetExternalName ?? "unresolved",
+        ]);
+      });
+    }
+
+    result.affectedFiles = uniqueSorted(fileSet);
+    result.affectedSymbols = Array.from(symbolMap.values()).sort((left, right) => left.file.localeCompare(right.file) || left.name.localeCompare(right.name));
+    result.affectedRules = uniqueSorted(ruleSet);
+    result.affectedRisks = uniqueSorted(riskSet);
+  }
+
+  private analyzeSqlTarget(index: ProjectIndex, result: ImpactAnalysisResult, matchedFields: ProjectField[]) {
+    const fileSet = new Set<string>();
+    const symbolMap = new Map<string, { name: string; file: string; type: string }>();
+    const tableSet = new Set<string>();
+    const fieldMap = new Map<string, { table: string; field: string }>();
+    const ruleSet = new Set<string>();
+
+    matchedFields.forEach((field) => {
+      tableSet.add(field.tableName);
+      addFieldImpact(fieldMap, field);
+    });
+
+    const usages = findSymbolsForFieldIds(
+      matchedFields.map((field) => field.id),
+      index.fieldDependencies
+    );
+
+    usages.forEach((usage) => {
+      const symbol = index.symbolById.get(usage.symbolId);
+      if (!symbol) return;
+      addSymbolImpact(result, fileSet, symbolMap, symbol, index);
+
+      const field = index.fieldById.get(usage.fieldId);
+      if (field) {
+        addDependencyChain(result, [symbol.name, `${field.tableName}.${field.fieldName}`]);
+      }
+    });
+
+    const matchedFieldKeys = new Set(matchedFields.map((field) => `${normalize(field.tableName)}.${normalize(field.fieldName)}`));
+    index.rules.forEach((rule) => {
+      const haystack = [rule.name, rule.description ?? "", rule.condition ?? "", rule.sourceFile ?? ""]
+        .map((value) => normalize(value))
+        .join(" ");
+
+      if (Array.from(matchedFieldKeys).some((key) => haystack.includes(key))) {
+        addRuleImpact(ruleSet, rule);
+      }
+    });
+
+    result.affectedFiles = uniqueSorted(fileSet);
+    result.affectedSymbols = Array.from(symbolMap.values()).sort((left, right) => left.file.localeCompare(right.file) || left.name.localeCompare(right.name));
+    result.affectedTables = uniqueSorted(tableSet);
+    result.affectedFields = Array.from(fieldMap.values()).sort((left, right) => left.table.localeCompare(right.table) || left.field.localeCompare(right.field));
+    result.affectedRules = uniqueSorted(ruleSet);
+  }
+
+  private analyzeRiskTarget(index: ProjectIndex, result: ImpactAnalysisResult, matchedRisks: ProjectRisk[]) {
+    const fileSet = new Set<string>();
+    const symbolMap = new Map<string, { name: string; file: string; type: string }>();
+    const riskSet = new Set<string>();
+
+    matchedRisks.forEach((risk) => {
+      addRiskImpact(riskSet, risk);
+      if (risk.sourceFile) {
+        fileSet.add(risk.sourceFile);
+        const file = index.files.find((candidate) => candidate.filePath === risk.sourceFile);
+        if (file) {
+          const fileSymbols = findSymbolsForFile(file.id, index.symbols).filter((symbol) =>
+            risk.lineNumber ? symbol.startLine <= risk.lineNumber && symbol.endLine >= risk.lineNumber : true
+          );
+          fileSymbols.forEach((symbol) => addSymbolImpact(result, fileSet, symbolMap, symbol, index));
+        }
+      }
+    });
+
+    result.affectedFiles = uniqueSorted(fileSet);
+    result.affectedSymbols = Array.from(symbolMap.values()).sort((left, right) => left.file.localeCompare(right.file) || left.name.localeCompare(right.name));
+    result.affectedRisks = uniqueSorted(riskSet);
+  }
+
+  private analyzeRuleTarget(index: ProjectIndex, result: ImpactAnalysisResult, matchedRules: ProjectRule[]) {
+    const fileSet = new Set<string>();
+    const symbolMap = new Map<string, { name: string; file: string; type: string }>();
+    const ruleSet = new Set<string>();
+    const riskSet = new Set<string>();
+
+    matchedRules.forEach((rule) => {
+      addRuleImpact(ruleSet, rule);
+      if (rule.sourceFile) {
+        fileSet.add(rule.sourceFile);
+      }
+
+      const relatedSymbols = findSymbolsNearRule(rule, index);
+      relatedSymbols.forEach((symbol) => addSymbolImpact(result, fileSet, symbolMap, symbol, index));
+
+      relatedSymbols.forEach((symbol) => {
+        findDependenciesForSymbolIds([symbol.id], index.dependencies).forEach((dependency) => {
+          const sourceSymbol = index.symbolById.get(dependency.sourceSymbolId);
+          const targetSymbol = dependency.targetSymbolId ? index.symbolById.get(dependency.targetSymbolId) : undefined;
+          addDependencyChain(result, [
+            sourceSymbol?.name ?? `symbol:${dependency.sourceSymbolId}`,
+            targetSymbol?.name ?? dependency.targetExternalName ?? "unresolved",
+          ]);
+        });
+      });
+
+      if (rule.sourceFile) {
+        findRisksForFile(rule.sourceFile, index.risks).forEach((risk) => addRiskImpact(riskSet, risk));
+      }
+    });
+
+    result.affectedFiles = uniqueSorted(fileSet);
+    result.affectedSymbols = Array.from(symbolMap.values()).sort((left, right) => left.file.localeCompare(right.file) || left.name.localeCompare(right.name));
+    result.affectedRules = uniqueSorted(ruleSet);
+    result.affectedRisks = uniqueSorted(riskSet);
+  }
+
+  async analyze(projectId: number, target: string, type: ImpactTargetType = "auto"): Promise<ImpactAnalysisResult> {
+    const index = await this.loadProjectIndex(projectId);
+    const resolved = this.resolveTarget(index, target, type);
+    const result = buildBaseResult(target, resolved.type === "auto" ? type : resolved.type, resolved.confidence);
+
+    if (resolved.type === "auto") {
       result.warnings.push(`Could not resolve target type for "${target}"`);
-      result.summary = "No impact found as the target could not be identified.";
+      result.summary = "No impact found as the target could not be identified inside the current project.";
       return result;
     }
 
-    // 2. Perform Deterministic Analysis based on resolvedType
-    const affectedFileSet = new Set<string>();
-    const affectedSymbolMap = new Map<string, { name: string; file: string; type: string }>();
-    const affectedTableSet = new Set<string>();
-    const affectedFieldMap = new Map<string, { table: string; field: string }>();
-    const affectedRuleSet = new Set<string>();
-    const affectedRiskSet = new Set<string>();
-
-    if (resolvedType === "symbol" || type === "symbol") {
-      const targetSymbols = await db.select().from(symbols).where(eq(symbols.name, target)).execute();
-      for (const sym of targetSymbols) {
-        // Dependencies (who calls this symbol)
-        const callers = await db
-          .select({
-            callerId: dependencies.sourceSymbolId,
-            callerName: symbols.name,
-            callerFile: files.filePath,
-            callerType: symbols.type,
-          })
-          .from(dependencies)
-          .innerJoin(symbols, eq(dependencies.sourceSymbolId, symbols.id))
-          .innerJoin(files, eq(symbols.fileId, files.id))
-          .where(eq(dependencies.targetSymbolId, sym.id))
-          .execute();
-
-        for (const caller of callers) {
-          affectedFileSet.add(caller.callerFile);
-          affectedSymbolMap.set(`${caller.callerFile}:${caller.callerName}`, {
-            name: caller.callerName,
-            file: caller.callerFile,
-            type: caller.callerType,
-          });
-          result.dependencyChains.push([caller.callerName, sym.name]);
-        }
-
-        // Fields used by this symbol
-        const relatedFields = await db
-          .select({
-            tableName: fields.tableName,
-            fieldName: fields.fieldName,
-          })
-          .from(fieldDependencies)
-          .innerJoin(fields, eq(fieldDependencies.fieldId, fields.id))
-          .where(eq(fieldDependencies.symbolId, sym.id))
-          .execute();
-
-        for (const f of relatedFields) {
-          affectedTableSet.add(f.tableName);
-          affectedFieldMap.set(`${f.tableName}.${f.fieldName}`, {
-            table: f.tableName,
-            field: f.fieldName,
-          });
-        }
-      }
-    } else if (resolvedType === "sql_table" || resolvedType === "sql_field") {
-      let fieldQuery = db.select().from(fields);
-      if (resolvedType === "sql_table") {
-        fieldQuery = fieldQuery.where(eq(fields.tableName, target)) as any;
-      } else {
-        const [table, field] = target.split(".");
-        if (field) {
-          fieldQuery = fieldQuery.where(and(eq(fields.tableName, table), eq(fields.fieldName, field))) as any;
-        } else {
-          fieldQuery = fieldQuery.where(eq(fields.fieldName, target)) as any;
-        }
-      }
-
-      const targetFields = await fieldQuery;
-      if (targetFields.length > 0) {
-        const fieldIds = targetFields.map((f) => f.id);
-        const usages = await db
-          .select({
-            symbolName: symbols.name,
-            symbolFile: files.filePath,
-            symbolType: symbols.type,
-            tableName: fields.tableName,
-            fieldName: fields.fieldName,
-          })
-          .from(fieldDependencies)
-          .innerJoin(symbols, eq(fieldDependencies.symbolId, symbols.id))
-          .innerJoin(files, eq(symbols.fileId, files.id))
-          .innerJoin(fields, eq(fieldDependencies.fieldId, fields.id))
-          .where(inArray(fieldDependencies.fieldId, fieldIds))
-          .execute();
-
-        for (const usage of usages) {
-          affectedFileSet.add(usage.symbolFile);
-          affectedSymbolMap.set(`${usage.symbolFile}:${usage.symbolName}`, {
-            name: usage.symbolName,
-            file: usage.symbolFile,
-            type: usage.symbolType,
-          });
-          affectedTableSet.add(usage.tableName);
-          affectedFieldMap.set(`${usage.tableName}.${usage.fieldName}`, {
-            table: usage.tableName,
-            field: usage.fieldName,
-          });
-          result.dependencyChains.push([usage.symbolName, `${usage.tableName}.${usage.fieldName}`]);
-        }
-      }
-    } else if (resolvedType === "risk") {
-      const targetRisks = await db.select().from(risks).where(eq(risks.title, target)).execute();
-      for (const risk of targetRisks) {
-        if (risk.sourceFile) {
-          affectedFileSet.add(risk.sourceFile);
-          // Find symbols in that file at that line
-          const [relatedSymbol] = await db
-            .select({ name: symbols.name, type: symbols.type })
-            .from(symbols)
-            .innerJoin(files, eq(symbols.fileId, files.id))
-            .where(
-              and(
-                eq(files.filePath, risk.sourceFile),
-                lte(symbols.startLine, risk.lineNumber || 0),
-                gte(symbols.endLine, risk.lineNumber || 0)
-              )
-            )
-            .limit(1);
-          if (relatedSymbol) {
-            affectedSymbolMap.set(`${risk.sourceFile}:${relatedSymbol.name}`, {
-              name: relatedSymbol.name,
-              file: risk.sourceFile,
-              type: relatedSymbol.type,
-            });
-          }
-        }
-      }
+    if (resolved.type === "symbol") {
+      this.analyzeSymbolTarget(index, result, resolved.symbols);
+    } else if (resolved.type === "file") {
+      this.analyzeFileTarget(index, result, resolved.files);
+    } else if (resolved.type === "sql_table" || resolved.type === "sql_field") {
+      this.analyzeSqlTarget(index, result, resolved.fields);
+    } else if (resolved.type === "risk") {
+      this.analyzeRiskTarget(index, result, resolved.risks);
+    } else if (resolved.type === "rule") {
+      this.analyzeRuleTarget(index, result, resolved.rules);
     }
 
-    // Populate result arrays
-    result.affectedFiles = Array.from(affectedFileSet);
-    result.affectedSymbols = Array.from(affectedSymbolMap.values());
-    result.affectedTables = Array.from(affectedTableSet);
-    result.affectedFields = Array.from(affectedFieldMap.values());
-    result.affectedRules = Array.from(affectedRuleSet);
-    result.affectedRisks = Array.from(affectedRiskSet);
-
-    // Summary generation
-    const impactCount =
+    const affectedCount =
       result.affectedFiles.length +
       result.affectedSymbols.length +
-      result.affectedTables.length +
-      result.affectedFields.length;
-    result.summary = `Modifying ${target} (${resolvedType}) affects ${impactCount} components across ${result.affectedFiles.length} files.`;
+      result.affectedFields.length +
+      result.affectedRules.length +
+      result.affectedRisks.length;
+
+    result.summary =
+      affectedCount > 0
+        ? `Modifying ${target} (${result.targetType}) affects ${affectedCount} scoped items inside project ${projectId}.`
+        : `No additional impacts were found for ${target} inside project ${projectId}.`;
 
     return result;
   }
 }
-
-

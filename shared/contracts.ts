@@ -133,7 +133,9 @@ export interface AnalysisSnapshot {
   dependencies: Array<{
     id: number;
     sourceSymbolId: number;
-    targetSymbolId: number;
+    targetSymbolId: number | null;
+    targetExternalName: string | null;
+    targetKind: "internal" | "external" | "unresolved";
     dependencyType: string;
     lineNumber: number | null;
   }>;

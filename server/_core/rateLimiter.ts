@@ -84,47 +84,60 @@ function getClientIp(req: Request): string {
 
 export function createRateLimiter(configName: keyof typeof defaultConfigs = "api") {
   const config = defaultConfigs[configName];
+  let limiterPromise:
+    | Promise<((req: Request, res: Response, next: NextFunction) => void) | null>
+    | null = null;
+
+  const getLimiter = async () => {
+    if (!limiterPromise) {
+      limiterPromise = (async () => {
+        const module = await getRateLimitModule();
+        if (!module) {
+          return null;
+        }
+
+        const rateLimit = module.default ?? module;
+
+        return rateLimit({
+          windowMs: config.windowMs,
+          max: config.max,
+          message: {
+            error: "Too Many Requests",
+            message: config.message,
+          },
+          standardHeaders: config.standardHeaders,
+          legacyHeaders: config.legacyHeaders,
+          handler: (_req: Request, response: Response) => {
+            response.status(429).json({
+              error: "Too Many Requests",
+              message: config.message,
+            });
+          },
+          keyGenerator: (request: Request) => getClientIp(request),
+          skip: (request: Request) => {
+            if (process.env.NODE_ENV === "test") {
+              return true;
+            }
+
+            if (request.path === "/health" || request.path === "/api/health") {
+              return true;
+            }
+
+            return false;
+          },
+        });
+      })();
+    }
+
+    return limiterPromise;
+  };
 
   return async function rateLimiterMiddleware(req: Request, res: Response, next: NextFunction) {
-    const module = await getRateLimitModule();
-    if (!module) {
+    const limiter = await getLimiter();
+    if (!limiter) {
       return next();
     }
 
-    const rateLimit = module.default ?? module;
-
-    const options = {
-      windowMs: config.windowMs,
-      max: config.max,
-      message: {
-        error: "Too Many Requests",
-        message: config.message,
-      },
-      standardHeaders: config.standardHeaders,
-      legacyHeaders: config.legacyHeaders,
-      handler: (_req: Request, response: Response) => {
-        response.status(429).json({
-          error: "Too Many Requests",
-          message: config.message,
-        });
-      },
-      keyGenerator: (request: Request) => {
-        return getClientIp(request);
-      },
-      skip: (request: Request) => {
-        if (process.env.NODE_ENV === "test") {
-          return true;
-        }
-
-        if (request.path === "/health" || request.path === "/api/health") {
-          return true;
-        }
-
-        return false;
-      },
-    };
-
-    const limiter = rateLimit(options);
     return limiter(req, res, next);
   };
 }
@@ -132,6 +145,7 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
 export function registerRateLimiters(app: Express) {
   app.use("/api/oauth", createRateLimiter("auth"));
   app.use("/api/trpc/projects.uploadFiles", createRateLimiter("upload"));
+  app.use("/api/trpc", createRateLimiter("api"));
 }
 
 export { defaultConfigs };

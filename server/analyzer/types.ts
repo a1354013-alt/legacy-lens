@@ -22,7 +22,7 @@ export interface AnalyzedSymbol {
 
 export interface SymbolDependency {
   from: string;
-  to: string;
+  to?: string;
   fromName: string;
   toName: string;
   type: "calls" | "reads" | "writes" | "references";

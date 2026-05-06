@@ -95,6 +95,13 @@ Files at the ZIP root:
 - `IMPACT_ANALYSIS.md`
 - `impact-analysis.json`
 
+`IMPACT_ANALYSIS.md` and `impact-analysis.json` are generated from the persisted project snapshot and summarize:
+- total files / symbols / dependencies / risks / rules
+- top impacted files
+- top dependencies
+- high-risk items
+- business rules summary
+
 Minimal excerpt (shape) of `metadata.json`:
 
 ```json
@@ -265,6 +272,7 @@ Import pipeline is intentionally bounded:
 - ZIP: max 2,000 entries, max 5MB per file, max 500MB expanded
 - Git: max 2,000 files, max 5MB per file, max 500MB total extracted
 - Path traversal defense: unsafe paths (e.g. `../`, absolute paths, or drive-letter paths) are skipped with warnings
+- Imported source content is persisted in MySQL `MEDIUMTEXT`, which comfortably covers the 5MB per-file import ceiling
 
 ## Limitations (Honest)
 
@@ -272,6 +280,7 @@ Import pipeline is intentionally bounded:
 - Cross-file Delphi resolution is best-effort.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
 - Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
+- Import is capped at 5MB per file and 500MB total extracted content by design.
 
 ## Impact Analysis
 

@@ -270,6 +270,30 @@ function resolveOwningSymbol(symbolsForProject: AnalyzedSymbol[], file: string, 
   );
 }
 
+function resolveInsertedTargetSymbolId(
+  dependency: ProjectAnalysisResult["dependencies"][number],
+  symbolsForProject: AnalyzedSymbol[],
+  insertedSymbolIds: Map<string, number>
+) {
+  if (dependency.to) {
+    const targetByStableKey = insertedSymbolIds.get(dependency.to);
+    if (targetByStableKey) {
+      return targetByStableKey;
+    }
+  }
+
+  const targetSymbol = symbolsForProject.find((symbol) => {
+    const shortName = symbol.qualifiedName?.split(".").at(-1) ?? symbol.name;
+    return (
+      symbol.name === dependency.toName ||
+      symbol.qualifiedName === dependency.toName ||
+      shortName === dependency.toName
+    );
+  });
+
+  return targetSymbol ? insertedSymbolIds.get(buildSymbolInsertKey(targetSymbol)) : undefined;
+}
+
 async function writeSuccessfulAnalysis(tx: DbHandle, projectId: number, projectFiles: Awaited<ReturnType<typeof getProjectFiles>>, result: ProjectAnalysisResult) {
   await tx.delete(dependencies).where(eq(dependencies.projectId, projectId));
   await tx.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
@@ -348,12 +372,15 @@ async function writeSuccessfulAnalysis(tx: DbHandle, projectId: number, projectF
 
   for (const dependency of result.dependencies) {
     const sourceSymbolId = insertedSymbolIds.get(dependency.from);
-    const targetSymbolId = insertedSymbolIds.get(dependency.to);
-    if (!sourceSymbolId || !targetSymbolId) continue;
+    if (!sourceSymbolId) continue;
+
+    const targetSymbolId = resolveInsertedTargetSymbolId(dependency, result.symbols, insertedSymbolIds);
     await tx.insert(dependencies).values({
       projectId,
       sourceSymbolId,
-      targetSymbolId,
+      targetSymbolId: targetSymbolId ?? null,
+      targetExternalName: targetSymbolId ? null : dependency.toName,
+      targetKind: targetSymbolId ? "internal" : "unresolved",
       dependencyType: dependency.type,
       lineNumber: dependency.line,
     });
@@ -489,6 +516,170 @@ async function getProjectAnalysisRecord(db: DbHandle, projectId: number) {
   return report ?? null;
 }
 
+function severityRank(severity: string | null | undefined) {
+  switch (severity) {
+    case "critical":
+      return 4;
+    case "high":
+      return 3;
+    case "medium":
+      return 2;
+    case "low":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requireDb>>, projectId: number) {
+  const [projectFiles, projectSymbols, projectDependencies, projectRisks, projectRules] = await Promise.all([
+    db.select().from(files).where(eq(files.projectId, projectId)),
+    db.select().from(symbols).where(eq(symbols.projectId, projectId)),
+    db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
+    db.select().from(risks).where(eq(risks.projectId, projectId)),
+    db.select().from(rules).where(eq(rules.projectId, projectId)),
+  ]);
+
+  const fileById = new Map(projectFiles.map((file) => [file.id, file.filePath]));
+  const symbolById = new Map(projectSymbols.map((symbol) => [symbol.id, symbol]));
+  const fileImpactCounts = new Map<string, number>();
+
+  const incrementFileImpact = (filePath: string | null | undefined) => {
+    if (!filePath) return;
+    fileImpactCounts.set(filePath, (fileImpactCounts.get(filePath) ?? 0) + 1);
+  };
+
+  projectSymbols.forEach((symbol) => incrementFileImpact(fileById.get(symbol.fileId)));
+  projectRisks.forEach((risk) => incrementFileImpact(risk.sourceFile));
+  projectRules.forEach((rule) => incrementFileImpact(rule.sourceFile));
+  projectDependencies.forEach((dependency) => {
+    incrementFileImpact(fileById.get(symbolById.get(dependency.sourceSymbolId)?.fileId ?? -1));
+    incrementFileImpact(fileById.get(symbolById.get(dependency.targetSymbolId ?? -1)?.fileId ?? -1));
+  });
+
+  const dependencySummaries = projectDependencies
+    .map((dependency) => {
+      const source = symbolById.get(dependency.sourceSymbolId);
+      const target = dependency.targetSymbolId ? symbolById.get(dependency.targetSymbolId) : null;
+      const sourceName = source?.name ?? `symbol:${dependency.sourceSymbolId}`;
+      const targetName = target?.name ?? dependency.targetExternalName ?? "unresolved";
+      return `${sourceName} -> ${targetName} (${dependency.dependencyType})`;
+    })
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, 10);
+
+  const topImpactedFiles = Array.from(fileImpactCounts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 10)
+    .map(([filePath, impactCount]) => ({ filePath, impactCount }));
+
+  const highRiskItems = projectRisks
+    .filter((risk) => severityRank(risk.severity) >= severityRank("high"))
+    .sort((left, right) => severityRank(right.severity) - severityRank(left.severity) || left.title.localeCompare(right.title))
+    .slice(0, 10)
+    .map((risk) => ({
+      title: risk.title,
+      severity: risk.severity,
+      sourceFile: risk.sourceFile,
+      lineNumber: risk.lineNumber,
+    }));
+
+  const rulesByType = projectRules.reduce<Record<string, number>>((accumulator, rule) => {
+    const nextCounts = accumulator;
+    nextCounts[rule.ruleType] = (nextCounts[rule.ruleType] ?? 0) + 1;
+    return nextCounts;
+  }, {});
+
+  const businessRules = projectRules
+    .map((rule) => ({
+      name: rule.name,
+      ruleType: rule.ruleType,
+      sourceFile: rule.sourceFile,
+      lineNumber: rule.lineNumber,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+
+  return {
+    totals: {
+      files: projectFiles.length,
+      symbols: projectSymbols.length,
+      dependencies: projectDependencies.length,
+      risks: projectRisks.length,
+      rules: projectRules.length,
+    },
+    topImpactedFiles,
+    topDependencies: dependencySummaries,
+    highRiskItems,
+    businessRules: {
+      countsByType: rulesByType,
+      items: businessRules.slice(0, 10),
+    },
+  };
+}
+
+function renderProjectImpactSummaryMarkdown(
+  summary: Awaited<ReturnType<typeof generateProjectImpactSummary>>,
+  generatedAtIso: string
+) {
+  const lines = [
+    "# IMPACT_ANALYSIS",
+    "",
+    `Snapshot timestamp: ${generatedAtIso}`,
+    "",
+    "## Totals",
+    `- Files: ${summary.totals.files}`,
+    `- Symbols: ${summary.totals.symbols}`,
+    `- Dependencies: ${summary.totals.dependencies}`,
+    `- Risks: ${summary.totals.risks}`,
+    `- Rules: ${summary.totals.rules}`,
+    "",
+    "## Top Impacted Files",
+  ];
+
+  if (summary.topImpactedFiles.length === 0) {
+    lines.push("- No impacted files recorded.");
+  } else {
+    summary.topImpactedFiles.forEach((entry) => {
+      lines.push(`- ${entry.filePath}: ${entry.impactCount}`);
+    });
+  }
+
+  lines.push("", "## Top Dependencies");
+  if (summary.topDependencies.length === 0) {
+    lines.push("- No dependencies recorded.");
+  } else {
+    summary.topDependencies.forEach((entry) => lines.push(`- ${entry}`));
+  }
+
+  lines.push("", "## High Risk Items");
+  if (summary.highRiskItems.length === 0) {
+    lines.push("- No high-severity risks recorded.");
+  } else {
+    summary.highRiskItems.forEach((risk) => {
+      const location = risk.sourceFile ? `${risk.sourceFile}${risk.lineNumber ? `:${risk.lineNumber}` : ""}` : "unknown";
+      lines.push(`- [${risk.severity}] ${risk.title} (${location})`);
+    });
+  }
+
+  lines.push("", "## Business Rules Summary");
+  const ruleTypeEntries = Object.entries(summary.businessRules.countsByType).sort((left, right) => left[0].localeCompare(right[0]));
+  if (ruleTypeEntries.length === 0) {
+    lines.push("- No business rules recorded.");
+  } else {
+    ruleTypeEntries.forEach(([ruleType, count]) => lines.push(`- ${ruleType}: ${count}`));
+  }
+
+  if (summary.businessRules.items.length > 0) {
+    lines.push("", "## Sample Rules");
+    summary.businessRules.items.forEach((rule) => {
+      const location = rule.sourceFile ? `${rule.sourceFile}${rule.lineNumber ? `:${rule.lineNumber}` : ""}` : "no source file";
+      lines.push(`- ${rule.name} (${rule.ruleType}, ${location})`);
+    });
+  }
+
+  return lines.join("\n");
+}
+
 export async function getAnalysisSnapshot(projectId: number, userId: number): Promise<AnalysisSnapshot> {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
@@ -534,6 +725,8 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
       id: row.id,
       sourceSymbolId: row.sourceSymbolId,
       targetSymbolId: row.targetSymbolId,
+      targetExternalName: row.targetExternalName,
+      targetKind: row.targetKind,
       dependencyType: row.dependencyType,
       lineNumber: row.lineNumber,
     })),
@@ -595,27 +788,16 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
   archive.file("RISKS.md", report.risksMarkdown, deterministicFileOptions);
   archive.file("RULES.yaml", report.rulesYaml, deterministicFileOptions);
 
-  // Generate Impact Analysis Report for a default set of targets or a summary
-  const impactAnalyzer = new ImpactAnalyzer();
-  const impactSummary = await impactAnalyzer.analyze(projectId, "all", "auto");
-  
-  const impactMarkdown = `# Impact Analysis Report
-Generated on: ${new Date().toISOString()}
-
-## Summary
-${impactSummary.summary}
-
-## Scope
-This report provides a trace of potential impacts across the project. For specific target analysis, use the interactive Impact Analysis tool in the Legacy Lens dashboard.
-`;
-  
-  archive.file("IMPACT_ANALYSIS.md", impactMarkdown, deterministicFileOptions);
-  archive.file("impact-analysis.json", JSON.stringify(impactSummary, null, 2), deterministicFileOptions);
-
   const version = getAppVersion();
   const metrics = report.summaryJson ?? null;
   const createdAtSource = (report as any).createdAt ?? (report as any).updatedAt ?? new Date(0);
   const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
+  const impactSummary = await generateProjectImpactSummary(db, projectId);
+  const impactMarkdown = renderProjectImpactSummaryMarkdown(impactSummary, createdAtIso);
+
+  archive.file("IMPACT_ANALYSIS.md", impactMarkdown, deterministicFileOptions);
+  archive.file("impact-analysis.json", JSON.stringify(impactSummary, null, 2), deterministicFileOptions);
+
   const metadata = {
     projectName: project?.name ?? "project",
     analysisVersion: version,
