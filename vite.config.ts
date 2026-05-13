@@ -12,6 +12,8 @@ export default defineConfig({
       "@": path.resolve(import.meta.dirname, "client", "src"),
       "@shared": path.resolve(import.meta.dirname, "shared"),
       "@assets": path.resolve(import.meta.dirname, "attached_assets"),
+      "react/jsx-runtime": path.resolve(import.meta.dirname, "client", "src", "shims", "react-jsx-runtime.ts"),
+      "react/jsx-dev-runtime": path.resolve(import.meta.dirname, "client", "src", "shims", "react-jsx-dev-runtime.ts"),
     },
   },
   envDir: path.resolve(import.meta.dirname),

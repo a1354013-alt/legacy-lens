@@ -19,16 +19,34 @@ export type RuleFilter = {
   search: string;
 };
 
+export type AnalysisViewState = "idle" | "analyzing" | "completed" | "failed";
+
 function normalize(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
 }
 
 export function shouldPollProjectStatus(status: ProjectStatus | null | undefined, analysisStatus: AnalysisStatus | null | undefined) {
-  return status === "analyzing" || analysisStatus === "pending" || analysisStatus === "processing";
+  return status === "analyzing" || analysisStatus === "processing";
 }
 
 export function shouldPollSnapshot(status: ProjectStatus | null | undefined, analysisStatus: AnalysisStatus | null | undefined) {
   return shouldPollProjectStatus(status, analysisStatus);
+}
+
+export function getAnalysisViewState(status: ProjectStatus | null | undefined, analysisStatus: AnalysisStatus | null | undefined, hasReport: boolean) {
+  if (status === "failed" || analysisStatus === "failed") {
+    return "failed" satisfies AnalysisViewState;
+  }
+
+  if (status === "analyzing" || analysisStatus === "processing") {
+    return "analyzing" satisfies AnalysisViewState;
+  }
+
+  if (hasReport && (analysisStatus === "completed" || analysisStatus === "partial")) {
+    return "completed" satisfies AnalysisViewState;
+  }
+
+  return "idle" satisfies AnalysisViewState;
 }
 
 export function filterSymbols(snapshot: AnalysisSnapshot | undefined, filter: SymbolFilter) {

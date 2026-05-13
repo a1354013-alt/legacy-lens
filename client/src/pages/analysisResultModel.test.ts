@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisSnapshot } from "@shared/contracts";
-import { filterFields, filterRisks, filterRules, filterSymbols, shouldPollProjectStatus, shouldPollSnapshot } from "./analysisResultModel";
+import {
+  filterFields,
+  filterRisks,
+  filterRules,
+  filterSymbols,
+  getAnalysisViewState,
+  shouldPollProjectStatus,
+  shouldPollSnapshot,
+} from "./analysisResultModel";
 
 function createSnapshot(): AnalysisSnapshot {
   return {
@@ -18,7 +26,7 @@ function createSnapshot(): AnalysisSnapshot {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     },
-    symbols: Array.from({ length: 30 }, (_, index) => ({
+    symbols: Array.from({ length: 100 }, (_, index) => ({
       id: index + 1,
       name: index % 2 === 0 ? `LoadUser${index}` : `SaveOrder${index}`,
       type: index % 2 === 0 ? "procedure" : "method",
@@ -30,10 +38,16 @@ function createSnapshot(): AnalysisSnapshot {
       description: null,
     })),
     dependencies: [],
-    fields: [
-      { id: 1, tableName: "dbo.Users", fieldName: "Name", fieldType: null, description: null, readCount: 3, writeCount: 1, referenceCount: 4 },
-      { id: 2, tableName: "ERP.SIGNB", fieldName: "MARK_2", fieldType: null, description: null, readCount: 0, writeCount: 2, referenceCount: 2 },
-    ],
+    fields: Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      tableName: index < 50 ? "dbo.Users" : "ERP.SIGNB",
+      fieldName: index < 50 ? `Name_${index}` : `MARK_${index}`,
+      fieldType: null,
+      description: null,
+      readCount: index,
+      writeCount: index % 3,
+      referenceCount: index + 1,
+    })),
     fieldDependencies: [],
     risks: [
       { id: 1, riskType: "magic_value", severity: "high", title: "Shared risk", description: "message one", sourceFile: "src/users.pas", lineNumber: 10, recommendation: null },
@@ -50,20 +64,28 @@ describe("analysisResultModel", () => {
   it("does not truncate large symbol collections and can filter by search and kind", () => {
     const snapshot = createSnapshot();
 
-    expect(filterSymbols(snapshot, { search: "", kind: "all" })).toHaveLength(30);
-    expect(filterSymbols(snapshot, { search: "LoadUser", kind: "all" })).toHaveLength(15);
-    expect(filterSymbols(snapshot, { search: "", kind: "method" })).toHaveLength(15);
+    expect(filterSymbols(snapshot, { search: "", kind: "all" })).toHaveLength(100);
+    expect(filterSymbols(snapshot, { search: "loaduser", kind: "all" })).toHaveLength(50);
+    expect(filterSymbols(snapshot, { search: "", kind: "method" })).toHaveLength(50);
   });
 
   it("filters fields by table and field search while keeping reference counts available", () => {
     const snapshot = createSnapshot();
 
-    expect(filterFields(snapshot, { search: "mark", table: "all" })).toEqual([
-      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2", writeCount: 2 }),
+    expect(filterFields(snapshot, { search: "mark_7", table: "all" })).toEqual([
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_70" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_71" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_72" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_73" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_74" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_75" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_76" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_77" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_78" }),
+      expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_79" }),
     ]);
-    expect(filterFields(snapshot, { search: "", table: "dbo.Users" })).toEqual([
-      expect.objectContaining({ tableName: "dbo.Users", referenceCount: 4 }),
-    ]);
+    expect(filterFields(snapshot, { search: "", table: "dbo.Users" })).toHaveLength(50);
+    expect(filterFields(snapshot, { search: "", table: "all" })).toHaveLength(100);
   });
 
   it("filters risks by severity and search text", () => {
@@ -88,10 +110,28 @@ describe("analysisResultModel", () => {
     ]);
   });
 
-  it("stops polling when analysis reaches a terminal state", () => {
-    expect(shouldPollProjectStatus("analyzing", "processing")).toBe(true);
-    expect(shouldPollSnapshot("analyzing", "processing")).toBe(true);
+  it("polls only while analysis is actively running", () => {
+    expect(shouldPollProjectStatus("ready", "pending")).toBe(false);
+    expect(shouldPollSnapshot("ready", "pending")).toBe(false);
+    expect(shouldPollProjectStatus("analyzing", "pending")).toBe(true);
+    expect(shouldPollSnapshot("ready", "processing")).toBe(true);
     expect(shouldPollProjectStatus("completed", "completed")).toBe(false);
     expect(shouldPollSnapshot("failed", "failed")).toBe(false);
+  });
+
+  it("restores all results after clearing search filters", () => {
+    const snapshot = createSnapshot();
+
+    expect(filterSymbols(snapshot, { search: "loaduser0", kind: "all" })).toHaveLength(1);
+    expect(filterSymbols(snapshot, { search: "", kind: "all" })).toHaveLength(100);
+    expect(filterFields(snapshot, { search: "mark_9", table: "ERP.SIGNB" })).toHaveLength(10);
+    expect(filterFields(snapshot, { search: "", table: "all" })).toHaveLength(100);
+  });
+
+  it("derives view state for completed and failed UI branches", () => {
+    expect(getAnalysisViewState("ready", "pending", false)).toBe("idle");
+    expect(getAnalysisViewState("analyzing", "pending", false)).toBe("analyzing");
+    expect(getAnalysisViewState("completed", "completed", true)).toBe("completed");
+    expect(getAnalysisViewState("failed", "failed", false)).toBe("failed");
   });
 });

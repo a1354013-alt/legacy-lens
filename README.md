@@ -314,6 +314,7 @@ Import pipeline is intentionally bounded:
   - private / link-local IPs are blocked
   - production mode defaults to `github.com` and `gitlab.com`
   - override with `LEGACY_LENS_GIT_HOST_ALLOWLIST=github.com,gitlab.com,example.com`
+  - current validation is enforced at the URL host layer; if you publicly deploy Legacy Lens, pair this with network-layer egress policy because DNS resolution is not yet re-checked against private IP ranges after host allowlisting
 - Path traversal defense: unsafe paths (e.g. `../`, absolute paths, or drive-letter paths) are skipped with warnings
 - Imported source content is persisted in MySQL `MEDIUMTEXT`, which comfortably covers the 5MB per-file import ceiling
 
@@ -333,6 +334,7 @@ Import pipeline is intentionally bounded:
 - `DEV_AUTH_BYPASS` must not be enabled in production.
 - `JWT_SECRET` must be at least 32 characters in production and local runtime validation.
 - Production Git import should use `LEGACY_LENS_GIT_HOST_ALLOWLIST`.
+- Production network policy should restrict outbound Git egress even if host allowlisting is configured.
 - Production deployments should review network policy, DB credentials, OAuth settings, and container secrets separately from this demo setup.
 
 ## Acceptance Commands

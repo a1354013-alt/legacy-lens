@@ -1,7 +1,7 @@
 import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
 import { DocumentGenerator } from "./documentGenerator";
 import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
-import { ParserFactory } from "./parser";
+import { collectSqlStatements, ParserFactory } from "./parser";
 import { RiskDetector } from "./riskDetector";
 import type {
   AnalyzableFile,
@@ -50,29 +50,11 @@ function collectMagicValues(content: string, filePath: string): Parameters<RiskD
 }
 
 function collectSqlSnippets(content: string, filePath: string): Array<{ file: string; line: number; sql: string }> {
-  const snippets: Array<{ file: string; line: number; sql: string }> = [];
-  const lines = content.split(/\r?\n/);
-
-  lines.forEach((line, index) => {
-    if (/^\s*(SELECT|INSERT|UPDATE|DELETE)\b/i.test(line)) {
-      snippets.push({ file: filePath, line: index + 1, sql: line.trim() });
-    }
-
-    const fragmentMatches = line.match(/["'`](SELECT|INSERT|UPDATE|DELETE)[^"'`]+["'`]/gi);
-    if (!fragmentMatches) {
-      return;
-    }
-
-    for (const fragment of fragmentMatches) {
-      snippets.push({
-        file: filePath,
-        line: index + 1,
-        sql: fragment.slice(1, -1),
-      });
-    }
-  });
-
-  return snippets;
+  return collectSqlStatements(content).map((statement) => ({
+    file: filePath,
+    line: statement.line,
+    sql: statement.sql,
+  }));
 }
 
 function dedupeDependencies(dependencies: SymbolDependency[]): SymbolDependency[] {

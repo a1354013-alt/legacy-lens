@@ -133,14 +133,38 @@ function isSqlKeyword(value: string) {
   return /^(select|insert|update|delete)$/i.test(value);
 }
 
+function isSqlReservedIdentifier(value: string) {
+  return /^(and|or|not|in|like|is|null|exists|between|on|where|having|join|inner|left|right|full|outer|as|case|when|then|else|end)$/i.test(
+    value
+  );
+}
+
+function decodeQuotedSqlFragment(fragment: string, quote: string) {
+  if (quote === "'") {
+    return fragment.replace(/''/g, "'");
+  }
+
+  if (quote === '"') {
+    return fragment.replace(/\\"/g, '"');
+  }
+
+  return fragment.replace(/\\`/g, "`");
+}
+
 function extractQuotedSqlFragments(content: string): Array<{ line: number; sql: string }> {
   const fragments: Array<{ line: number; sql: string }> = [];
-  const stringPattern = /["'`]([^"'`]*(?:SELECT|INSERT|UPDATE|DELETE)[\s\S]*?)["'`]/gi;
+  const stringPattern = /'((?:''|[^'])*)'|"((?:\\"|[^"])*)"|`((?:\\`|[^`])*)`/g;
   let match: RegExpExecArray | null;
 
   while ((match = stringPattern.exec(content)) !== null) {
-    const rawSql = match[1]?.trim();
+    const rawFragment = match[1] ?? match[2] ?? match[3] ?? "";
+    const quote = match[1] !== undefined ? "'" : match[2] !== undefined ? '"' : "`";
+    const rawSql = decodeQuotedSqlFragment(rawFragment, quote).trim();
     if (!rawSql) {
+      continue;
+    }
+
+    if (!isSqlKeyword(rawSql.split(/\s+/)[0] ?? "")) {
       continue;
     }
 
@@ -151,12 +175,14 @@ function extractQuotedSqlFragments(content: string): Array<{ line: number; sql: 
 
     while (true) {
       const between = content.slice(cursor, Math.min(content.length, cursor + 120));
-      const joinMatch = between.match(/^\s*(?:\+|&|\|\|)\s*["'`]([^"'`]*)["'`]/);
+      const joinMatch = between.match(/^\s*(?:\+|&|\|\|)\s*(?:'((?:''|[^'])*)'|"((?:\\"|[^"])*)"|`((?:\\`|[^`])*)`)/);
       if (!joinMatch) {
         break;
       }
 
-      combinedSql += ` ${joinMatch[1]}`;
+      const joinedFragment = joinMatch[1] ?? joinMatch[2] ?? joinMatch[3] ?? "";
+      const joinedQuote = joinMatch[1] !== undefined ? "'" : joinMatch[2] !== undefined ? '"' : "`";
+      combinedSql += ` ${decodeQuotedSqlFragment(joinedFragment, joinedQuote)}`;
       cursor += joinMatch[0].length;
       stringPattern.lastIndex = cursor;
     }
@@ -224,6 +250,28 @@ function parseSqlStatements(content: string): Array<{ line: number; sql: string 
   return statements;
 }
 
+function normalizeSqlStatement(sql: string) {
+  return sql.replace(/\s+/g, " ").trim();
+}
+
+export function collectSqlStatements(content: string): Array<{ line: number; sql: string }> {
+  const deduped = new Map<string, { line: number; sql: string }>();
+
+  for (const statement of [...parseSqlStatements(content), ...parseSqlFragments(content)]) {
+    const normalizedSql = normalizeSqlStatement(statement.sql);
+    if (!normalizedSql) {
+      continue;
+    }
+
+    const key = `${statement.line}:${normalizedSql}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, { line: statement.line, sql: normalizedSql });
+    }
+  }
+
+  return Array.from(deduped.values()).sort((left, right) => left.line - right.line || left.sql.localeCompare(right.sql));
+}
+
 function extractSqlAliasMap(sql: string) {
   const aliasMap = new Map<string, string>();
   const tablePattern = /\b(?:FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)(?:\s+(?:AS\s+)?([A-Za-z_][\w$]*))?/gi;
@@ -271,18 +319,35 @@ function resolveSqlFieldTarget(rawField: string, primaryTable: string | undefine
 
 function extractSqlPredicateFields(sql: string, primaryTable: string | undefined, aliasMap: Map<string, string>) {
   const references: Array<{ table: string; field: string }> = [];
+  const seen = new Set<string>();
   const strippedSql = stripSqlStringLiterals(sql);
-  const predicatePattern = /\b([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)+|[A-Za-z_][\w$]*)\b(?=\s*(?:=|<>|!=|<|>|<=|>=|IN\b|LIKE\b))/gi;
-  let match: RegExpExecArray | null;
+  const predicateClauses = [
+    ...Array.from(strippedSql.matchAll(/\bON\s+(.+?)(?=\bJOIN\b|\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/gi), (match) => match[1] ?? ""),
+    ...Array.from(strippedSql.matchAll(/\bWHERE\s+(.+?)(?=\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/gi), (match) => match[1] ?? ""),
+    ...Array.from(strippedSql.matchAll(/\bHAVING\s+(.+?)(?=\bORDER\s+BY\b|\bLIMIT\b|$)/gi), (match) => match[1] ?? ""),
+  ];
 
-  while ((match = predicatePattern.exec(strippedSql)) !== null) {
-    const candidate = match[1];
-    if (!candidate || isSqlKeyword(candidate)) {
-      continue;
-    }
+  for (const clause of predicateClauses) {
+    const predicatePattern = /\b([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)+|[A-Za-z_][\w$]*)\b/g;
+    let match: RegExpExecArray | null;
 
-    const resolved = resolveSqlFieldTarget(candidate, primaryTable, aliasMap);
-    if (resolved && resolved.field !== "*") {
+    while ((match = predicatePattern.exec(clause)) !== null) {
+      const candidate = match[1];
+      if (!candidate || isSqlKeyword(candidate) || isSqlReservedIdentifier(candidate)) {
+        continue;
+      }
+
+      const resolved = resolveSqlFieldTarget(candidate, primaryTable, aliasMap);
+      if (!resolved || resolved.field === "*") {
+        continue;
+      }
+
+      const key = `${resolved.table}.${resolved.field}`;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
       references.push(resolved);
     }
   }
@@ -315,7 +380,7 @@ function detectSqlHeuristicWarnings(content: string, file: string): AnalysisWarn
 }
 
 function parseSqlReference(sql: string, line: number, file: string, owner?: AnalyzedSymbol): FieldReference[] {
-  const normalizedSql = sql.replace(/\s+/g, " ").trim();
+  const normalizedSql = normalizeSqlStatement(sql);
   const references: FieldReference[] = [];
   const aliasMap = extractSqlAliasMap(normalizedSql);
 
@@ -540,8 +605,9 @@ export class GoParser implements FileParser {
   }
 
   parseFieldReferences(symbols: AnalyzedSymbol[]) {
-    const fragments = parseSqlFragments(this.content);
-    return fragments.flatMap(({ line, sql }) => parseSqlReference(sql, line, this.file, findOwnerSymbol(symbols, line, this.file)));
+    return collectSqlStatements(this.content).flatMap(({ line, sql }) =>
+      parseSqlReference(sql, line, this.file, findOwnerSymbol(symbols, line, this.file))
+    );
   }
 
   collectWarnings() {
@@ -612,7 +678,7 @@ export class SQLParser implements FileParser {
   }
 
   parseFieldReferences(symbols: AnalyzedSymbol[]) {
-    return parseSqlStatements(this.content).flatMap(({ line, sql }) =>
+    return collectSqlStatements(this.content).flatMap(({ line, sql }) =>
       parseSqlReference(sql, line, this.file, findOwnerSymbol(symbols, line, this.file))
     );
   }
@@ -1021,6 +1087,7 @@ export class DelphiParser implements FileParser {
     const lines = this.content.split(/\r?\n/);
 
     for (const [index, line] of lines.entries()) {
+      const owner = findOwnerSymbol(symbols, index + 1, this.file);
       const fieldMatches = Array.from(line.matchAll(/FieldByName\(\s*['"]([^'"]+)['"]\s*\)/gi));
       for (const match of fieldMatches) {
         references.push({
@@ -1029,8 +1096,8 @@ export class DelphiParser implements FileParser {
           type: "read",
           file: this.file,
           line: index + 1,
-          symbolStableKey: findOwnerSymbol(symbols, index + 1, this.file)?.stableKey,
-          symbolName: findOwnerSymbol(symbols, index + 1, this.file)?.qualifiedName,
+          symbolStableKey: owner?.stableKey,
+          symbolName: owner?.qualifiedName ?? owner?.name,
           context: line.trim(),
         });
       }
@@ -1043,8 +1110,8 @@ export class DelphiParser implements FileParser {
           type: /:=|As(?:String|Integer|Float|Date|Time)|Value\s*[:=]/i.test(line) ? "write" : "read",
           file: this.file,
           line: index + 1,
-          symbolStableKey: findOwnerSymbol(symbols, index + 1, this.file)?.stableKey,
-          symbolName: findOwnerSymbol(symbols, index + 1, this.file)?.qualifiedName,
+          symbolStableKey: owner?.stableKey,
+          symbolName: owner?.qualifiedName ?? owner?.name,
           context: line.trim(),
         });
       }

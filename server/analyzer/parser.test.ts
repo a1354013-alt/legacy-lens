@@ -199,6 +199,36 @@ describe("DelphiParser", () => {
       ])
     );
   });
+
+  it("falls back to symbol name when a Delphi procedure lacks qualifiedName", () => {
+    const content = [
+      "unit InvoiceUnit;",
+      "interface",
+      "implementation",
+      "procedure LoadUsers;",
+      "begin",
+      "  Query.FieldByName('Name').AsString := '';",
+      "end;",
+      "end.",
+    ].join("\n");
+
+    const parser = new DelphiParser(content, "InvoiceUnit.pas");
+    const symbols = parser.parseSymbols().map((symbol) =>
+      symbol.name === "LoadUsers" ? { ...symbol, qualifiedName: undefined } : symbol
+    );
+    const references = parser.parseFieldReferences(symbols);
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "delphi",
+          field: "Name",
+          symbolName: "LoadUsers",
+          symbolStableKey: expect.stringContaining("LoadUsers"),
+        }),
+      ])
+    );
+  });
 });
 
 describe("SQLParser", () => {
@@ -223,10 +253,81 @@ describe("SQLParser", () => {
       expect.arrayContaining([
         expect.objectContaining({ table: "dbo.Users", field: "Name", type: "read" }),
         expect.objectContaining({ table: "dbo.Orders", field: "Amount", type: "read" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Id", type: "read" }),
+        expect.objectContaining({ table: "dbo.Orders", field: "UserId", type: "read" }),
         expect.objectContaining({ table: "dbo.Users", field: "Name", type: "write" }),
         expect.objectContaining({ table: "dbo.Users", field: "Email", type: "write" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Id", type: "read" }),
         expect.objectContaining({ table: "ERP.SIGNB", field: "MARK_2", type: "write" }),
         expect.objectContaining({ table: "dbo.Users", field: "*", type: "write" }),
+      ])
+    );
+  });
+
+  it("treats UPDATE SET columns as writes and WHERE or JOIN columns as reads only", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "UPDATE dbo.Users",
+        "SET Name = 'A', Email = 'B'",
+        "WHERE Id = 1;",
+        "",
+        "SELECT u.Name, o.Amount",
+        "FROM dbo.Users u",
+        "JOIN dbo.Orders o ON u.Id = o.UserId",
+        "WHERE o.Amount > 0;",
+      ].join("\n"),
+      "queries.sql"
+    );
+
+    const references = parser.parseFieldReferences(parser.parseSymbols());
+    const updateReads = references.filter(
+      (reference) => reference.type === "read" && reference.context?.startsWith("UPDATE dbo.Users")
+    );
+    const updateWrites = references.filter(
+      (reference) => reference.type === "write" && reference.context?.startsWith("UPDATE dbo.Users")
+    );
+
+    expect(updateWrites).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "Name" }),
+        expect.objectContaining({ field: "Email" }),
+      ])
+    );
+    expect(updateReads).toEqual([expect.objectContaining({ field: "Id" })]);
+    expect(updateReads.some((reference) => reference.field === "Name")).toBe(false);
+    expect(updateReads.some((reference) => reference.field === "Email")).toBe(false);
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "Name", type: "read" }),
+        expect.objectContaining({ table: "dbo.Orders", field: "Amount", type: "read" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Id", type: "read" }),
+        expect.objectContaining({ table: "dbo.Orders", field: "UserId", type: "read" }),
+      ])
+    );
+  });
+
+  it("keeps schema-qualified table names intact across SELECT, UPDATE, INSERT, and DELETE", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "SELECT amount FROM public.orders WHERE amount > 0;",
+        "UPDATE dbo.Users SET Name = 'A' WHERE Id = 1;",
+        "INSERT INTO ERP.SIGNB (MARK_2) VALUES ('Y');",
+        "DELETE FROM public.orders WHERE amount > 0;",
+      ].join("\n"),
+      "qualified.sql"
+    );
+
+    const references = parser.parseFieldReferences(parser.parseSymbols());
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "public.orders", field: "amount", type: "read" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Name", type: "write" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Id", type: "read" }),
+        expect.objectContaining({ table: "ERP.SIGNB", field: "MARK_2", type: "write" }),
+        expect.objectContaining({ table: "public.orders", field: "*", type: "write" }),
       ])
     );
   });

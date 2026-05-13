@@ -51,4 +51,65 @@ describe("Analyzer", () => {
     );
     expect(result.metrics.fieldCount).toBe(2);
   });
+
+  it("does not raise missing WHERE for complete multi-line SQL statements or Delphi SQL concatenation", async () => {
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "repo.sql",
+          language: "sql",
+          content: [
+            "UPDATE dbo.Users",
+            "SET Name = 'A'",
+            "WHERE Id = 1",
+          ].join("\n"),
+        },
+        {
+          path: "repo.pas",
+          language: "delphi",
+          content: [
+            "unit Repo;",
+            "interface",
+            "implementation",
+            "procedure Save;",
+            "begin",
+            "  Query.SQL.Text := 'UPDATE dbo.Users ' +",
+            "    'SET Name = ''A'' ' +",
+            "    'WHERE Id = 1';",
+            "end;",
+            "end.",
+          ].join("\n"),
+        },
+      ],
+      1
+    );
+
+    expect(result.risks.some((risk) => risk.category === "missing_condition")).toBe(false);
+  });
+
+  it("raises missing WHERE only when UPDATE or DELETE truly lack predicates", async () => {
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "repo.sql",
+          language: "sql",
+          content: [
+            "UPDATE dbo.Users",
+            "SET Name = 'A'",
+            "",
+            "DELETE FROM dbo.Users",
+          ].join("\n"),
+        },
+      ],
+      1
+    );
+
+    const missingWhereRisks = result.risks.filter((risk) => risk.category === "missing_condition");
+    expect(missingWhereRisks).toHaveLength(2);
+    expect(missingWhereRisks.map((risk) => risk.codeSnippet)).toEqual(
+      expect.arrayContaining(["UPDATE dbo.Users SET Name = 'A'", "DELETE FROM dbo.Users"])
+    );
+  });
 });
