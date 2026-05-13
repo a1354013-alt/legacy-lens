@@ -35,7 +35,7 @@ vi.mock("./utils/zipHandler", () => ({
 }));
 
 vi.mock("./utils/gitHandler", () => ({
-  isValidGitUrl: vi.fn(() => true),
+  assertSafeGitUrl: vi.fn(() => undefined),
   cloneAndExtractFiles: vi.fn(async () => ({ files: zipFiles, warnings: [] })),
   cleanupTempDir: vi.fn(async () => undefined),
 }));

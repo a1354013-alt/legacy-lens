@@ -35,7 +35,11 @@ vi.mock("../utils/zipHandler", () => ({
 }));
 
 vi.mock("../utils/gitHandler", () => ({
-  isValidGitUrl: vi.fn((url: string) => /^https:\/\/example\.com\/.+/.test(url)),
+  assertSafeGitUrl: vi.fn((url: string) => {
+    if (!/^https:\/\/example\.com\/.+/.test(url)) {
+      throw new Error("Repository URL is invalid or unsupported.");
+    }
+  }),
   cloneAndExtractFiles: vi.fn(async () => ({ files: gitFiles, warnings: importWarnings })),
   cleanupTempDir: vi.fn(async () => undefined),
 }));
@@ -416,6 +420,99 @@ describe("project workflow", () => {
       status: "completed",
       analysisProgress: 100,
     });
+  });
+
+  it("assigns field ownership to the most specific Delphi procedure and preserves schema-qualified field names", async () => {
+    const { analyzeProject, getAnalysisSnapshot, runImpactAnalysis } = await import("./projectWorkflow");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "delphi-analysis-project",
+      language: "delphi",
+      sourceType: "upload",
+      status: "ready",
+      importProgress: 100,
+      analysisProgress: 0,
+      errorMessage: null,
+      lastErrorCode: null,
+    });
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 1,
+      filePath: "InvoiceUnit.pas",
+      fileName: "InvoiceUnit.pas",
+      fileType: ".pas",
+      content: "unit InvoiceUnit;",
+      lineCount: 20,
+      status: "stored",
+    });
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "delphi",
+      symbols: [
+        { stableKey: "InvoiceUnit.pas::InvoiceUnit::1", name: "InvoiceUnit", qualifiedName: "InvoiceUnit", type: "class", file: "InvoiceUnit.pas", startLine: 1, endLine: 20, signature: "unit InvoiceUnit" },
+        { stableKey: "InvoiceUnit.pas::LoadUsers::4", name: "LoadUsers", type: "procedure", file: "InvoiceUnit.pas", startLine: 4, endLine: 8, signature: "procedure LoadUsers;" },
+        { stableKey: "InvoiceUnit.pas::SaveOrders::10", name: "SaveOrders", type: "procedure", file: "InvoiceUnit.pas", startLine: 10, endLine: 14, signature: "procedure SaveOrders;" },
+      ],
+      dependencies: [],
+      fieldReferences: [
+        { table: "dbo.Users", field: "Name", type: "read", file: "InvoiceUnit.pas", line: 6, context: "SELECT u.Name FROM dbo.Users u" },
+        { table: "ERP.SIGNB", field: "MARK_2", type: "write", file: "InvoiceUnit.pas", line: 12, context: "UPDATE ERP.SIGNB SET MARK_2 = :P1" },
+      ],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA_DEPENDENCY",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 1,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 3,
+        dependencyCount: 0,
+        fieldCount: 2,
+        fieldDependencyCount: 2,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    await analyzeProject(1, 7);
+    const snapshot = await getAnalysisSnapshot(1, 7);
+
+    expect(snapshot.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tableName: "dbo.Users", fieldName: "Name" }),
+        expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2" }),
+      ])
+    );
+
+    const symbolById = new Map(snapshot.symbols.map((symbol) => [symbol.id, symbol.name]));
+    const fieldById = new Map(snapshot.fields.map((field) => [field.id, `${field.tableName}.${field.fieldName}`]));
+
+    expect(
+      snapshot.fieldDependencies.map((dependency) => ({
+        field: fieldById.get(dependency.fieldId),
+        owner: symbolById.get(dependency.symbolId),
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        { field: "dbo.Users.Name", owner: "LoadUsers" },
+        { field: "ERP.SIGNB.MARK_2", owner: "SaveOrders" },
+      ])
+    );
+
+    const impact = await runImpactAnalysis(1, 7, "ERP.SIGNB.MARK_2", "sql_field");
+    expect(impact.affectedFields).toEqual([{ table: "ERP.SIGNB", field: "MARK_2" }]);
+    expect(impact.affectedSymbols.map((symbol) => symbol.name)).toEqual(["SaveOrders"]);
   });
 
   it("returns a complete analysis snapshot", async () => {

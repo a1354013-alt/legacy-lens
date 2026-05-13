@@ -7,9 +7,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import { filterFields, filterRisks, filterRules, filterSymbols, getFieldTables, getSymbolKinds, shouldPollProjectStatus, shouldPollSnapshot } from "./analysisResultModel";
 
 function downloadBase64File(base64: string, fileName: string, mimeType: string) {
   const binary = atob(base64);
@@ -40,21 +43,28 @@ export default function AnalysisResult() {
   const [, params] = useRoute("/projects/:id/analysis");
   const projectId = params?.id ? Number(params.id) : Number.NaN;
   const [activeTab, setActiveTab] = useState("overview");
+  const [symbolSearch, setSymbolSearch] = useState("");
+  const [symbolKind, setSymbolKind] = useState("all");
+  const [fieldSearch, setFieldSearch] = useState("");
+  const [fieldTable, setFieldTable] = useState("all");
+  const [riskSearch, setRiskSearch] = useState("");
+  const [riskSeverity, setRiskSeverity] = useState("all");
+  const [ruleSearch, setRuleSearch] = useState("");
   const utils = trpc.useUtils();
 
   const projectQuery = trpc.projects.getById.useQuery(projectId, {
     enabled: Number.isFinite(projectId),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return shouldPollProjectStatus(data?.status, data?.analysisStatus) ? 2000 : false;
+    },
     refetchOnWindowFocus: false,
   });
 
-  const pollEnabled =
-    projectQuery.data?.status === "analyzing" ||
-    projectQuery.data?.analysisStatus === "pending" ||
-    projectQuery.data?.analysisStatus === "processing";
-
   const snapshotQuery = trpc.analysis.getSnapshot.useQuery(projectId, {
     enabled: Number.isFinite(projectId),
-    refetchInterval: pollEnabled ? 2000 : false,
+    refetchInterval: (query) =>
+      shouldPollSnapshot(projectQuery.data?.status, query.state.data?.report?.status ?? projectQuery.data?.analysisStatus) ? 2000 : false,
     refetchOnWindowFocus: false,
   });
 
@@ -74,6 +84,24 @@ export default function AnalysisResult() {
   const snapshot = snapshotQuery.data;
   const report = snapshot?.report;
   const metrics = report?.summaryJson;
+  const symbolKinds = useMemo(() => getSymbolKinds(snapshot), [snapshot]);
+  const fieldTables = useMemo(() => getFieldTables(snapshot), [snapshot]);
+  const visibleSymbols = useMemo(
+    () => filterSymbols(snapshot, { search: symbolSearch, kind: symbolKind }),
+    [snapshot, symbolSearch, symbolKind]
+  );
+  const visibleFields = useMemo(
+    () => filterFields(snapshot, { search: fieldSearch, table: fieldTable }),
+    [snapshot, fieldSearch, fieldTable]
+  );
+  const visibleRisks = useMemo(
+    () => filterRisks(snapshot, { search: riskSearch, severity: riskSeverity }),
+    [snapshot, riskSearch, riskSeverity]
+  );
+  const visibleRules = useMemo(
+    () => filterRules(snapshot, { search: ruleSearch }),
+    [snapshot, ruleSearch]
+  );
 
   const criticalRisks = useMemo(
     () => snapshot?.risks.filter((risk) => risk.severity === "critical").length ?? 0,
@@ -114,9 +142,9 @@ export default function AnalysisResult() {
   if (!Number.isFinite(projectId)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
-        <Alert variant="destructive">
-          <AlertTitle>Invalid project identifier</AlertTitle>
-          <AlertDescription>The requested project id is not valid.</AlertDescription>
+          <Alert variant="destructive">
+          <AlertTitle>專案編號無效</AlertTitle>
+          <AlertDescription>目前網址中的專案編號格式不正確。</AlertDescription>
         </Alert>
       </div>
     );
@@ -134,8 +162,8 @@ export default function AnalysisResult() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
-          <AlertTitle>Project not available</AlertTitle>
-          <AlertDescription>{projectQuery.error?.message ?? "The project could not be loaded."}</AlertDescription>
+          <AlertTitle>無法載入專案</AlertTitle>
+          <AlertDescription>{projectQuery.error?.message ?? "目前無法讀取這個專案。"}</AlertDescription>
         </Alert>
       </div>
     );
@@ -148,21 +176,21 @@ export default function AnalysisResult() {
           <div className="flex items-center gap-4">
             <Button variant="ghost" onClick={() => setLocation("/")}>
               <ArrowLeft className="mr-2 size-4" />
-              Back to projects
+              返回專案列表
             </Button>
             <div>
               <h1 className="text-2xl font-semibold text-slate-950">{project.name}</h1>
-              <p className="text-sm text-slate-600">The report view and ZIP export both come from the same persisted analysis result row.</p>
+              <p className="text-sm text-slate-600">畫面瀏覽與 ZIP 匯出都來自同一份持久化分析快照。</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <Button variant="outline" onClick={() => snapshotQuery.refetch()} disabled={snapshotQuery.isFetching}>
               <RefreshCcw className="mr-2 size-4" />
-              Refresh
+              重新整理
             </Button>
             <Button onClick={handleDownloadReport} disabled={reportDownloadQuery.isFetching || !report || isAnalyzing}>
               {reportDownloadQuery.isFetching ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}
-              Download ZIP
+              下載 ZIP
             </Button>
           </div>
         </div>
@@ -179,20 +207,20 @@ export default function AnalysisResult() {
         </div>
 
         <Alert>
-          <AlertTitle>Heuristic analysis</AlertTitle>
-          <AlertDescription>Go, SQL, and Delphi parsing in this release is heuristic. Review output before treating it as compiler-grade semantic truth.</AlertDescription>
+          <AlertTitle>啟發式分析說明</AlertTitle>
+          <AlertDescription>Go、SQL、Delphi 目前都是 heuristic static analysis，適合 legacy 探索與初步 impact analysis，不應視為 compiler-grade semantic truth。</AlertDescription>
         </Alert>
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>Latest workflow error</AlertTitle>
+            <AlertTitle>最新工作流程錯誤</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
 
         {report?.status === "partial" ? (
           <Alert>
-            <AlertTitle>Completed with warnings</AlertTitle>
+            <AlertTitle>分析完成，但有警告</AlertTitle>
             <AlertDescription>
               {(report.warningsJson ?? []).map((warning) => warning.message).join(" | ") || "Some files were skipped or analyzed with reduced confidence."}
             </AlertDescription>
@@ -202,12 +230,12 @@ export default function AnalysisResult() {
         {isAnalyzing ? (
           <Card>
             <CardHeader>
-              <CardTitle>Analysis in progress</CardTitle>
-              <CardDescription>This page is polling the server every 2 seconds until the workflow reaches a terminal state.</CardDescription>
+              <CardTitle>分析進行中</CardTitle>
+              <CardDescription>分析期間會定期同步專案狀態與分析快照，完成或失敗後會自動停止輪詢。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-slate-600">
-              <p>Project workflow: {project.status}</p>
-              <p>Analysis row: {report?.status ?? "pending"}</p>
+              <p>專案工作流程：{project.status}</p>
+              <p>分析快照狀態：{report?.status ?? project.analysisStatus ?? "pending"}</p>
             </CardContent>
           </Card>
         ) : null}
@@ -215,17 +243,17 @@ export default function AnalysisResult() {
         {!report && !isAnalyzing ? (
           <Card>
             <CardHeader>
-              <CardTitle>No analysis result yet</CardTitle>
-              <CardDescription>Run analysis to generate persisted artifacts, UI snapshots, and downloadable report content.</CardDescription>
+              <CardTitle>尚無分析結果</CardTitle>
+              <CardDescription>請先執行分析，系統才會產生持久化快照、UI 瀏覽內容與可下載報告。</CardDescription>
             </CardHeader>
             <CardContent>
               {canRunAnalysis ? (
                 <Button onClick={handleRunAnalysis} disabled={triggerAnalysisMutation.isPending}>
                   {triggerAnalysisMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <TriangleAlert className="mr-2 size-4" />}
-                  Run analysis
+                  執行分析
                 </Button>
               ) : (
-                <p className="text-sm text-slate-600">The current project state does not allow analysis right now.</p>
+                <p className="text-sm text-slate-600">目前專案狀態暫時不能啟動分析。</p>
               )}
             </CardContent>
           </Card>
@@ -240,11 +268,12 @@ export default function AnalysisResult() {
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList>
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="impact">Impact Analysis</TabsTrigger>
-            <TabsTrigger value="risks">Risks</TabsTrigger>
-            <TabsTrigger value="symbols">Symbols</TabsTrigger>
-            <TabsTrigger value="documents">Documents</TabsTrigger>
+            <TabsTrigger value="overview">總覽</TabsTrigger>
+            <TabsTrigger value="impact">影響分析</TabsTrigger>
+            <TabsTrigger value="risks">風險</TabsTrigger>
+            <TabsTrigger value="symbols">符號與欄位</TabsTrigger>
+            <TabsTrigger value="rules">規則</TabsTrigger>
+            <TabsTrigger value="documents">文件</TabsTrigger>
           </TabsList>
 
           <TabsContent value="impact" className="space-y-4">
@@ -254,8 +283,8 @@ export default function AnalysisResult() {
           <TabsContent value="overview" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Analysis summary</CardTitle>
-                <CardDescription>These counts come from the persisted analysis result snapshot.</CardDescription>
+                <CardTitle>分析摘要</CardTitle>
+                <CardDescription>以下數字都來自資料庫中的持久化分析快照。</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-3 text-sm md:grid-cols-2">
                 <SummaryRow label="Project status" value={projectStatusLabels[project.status]} />
@@ -274,8 +303,8 @@ export default function AnalysisResult() {
             {(report?.warningsJson?.length ?? 0) > 0 ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Persisted warnings</CardTitle>
-                  <CardDescription>These warnings explain why the result is partial or heuristic.</CardDescription>
+                  <CardTitle>持久化警告</CardTitle>
+                  <CardDescription>這些警告說明為什麼目前結果是 partial 或 heuristic。</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm text-slate-700">
                   {(report?.warningsJson ?? []).map((warning, index) => (
@@ -292,13 +321,13 @@ export default function AnalysisResult() {
             {canRunAnalysis ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Re-run analysis</CardTitle>
-                  <CardDescription>Use this when imported files changed or when you want to regenerate the persisted analysis snapshot.</CardDescription>
+                  <CardTitle>重新分析</CardTitle>
+                  <CardDescription>匯入內容更新後，或想重新產生資料庫快照時，可以再次執行分析。</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <Button onClick={handleRunAnalysis} disabled={triggerAnalysisMutation.isPending}>
                     {triggerAnalysisMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <ShieldAlert className="mr-2 size-4" />}
-                    Run analysis
+                    執行分析
                   </Button>
                 </CardContent>
               </Card>
@@ -306,8 +335,30 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="risks" className="space-y-4">
-            {snapshot?.risks.length ? (
-              snapshot.risks.map((risk) => (
+            <Card>
+              <CardHeader>
+                <CardTitle>風險搜尋與篩選</CardTitle>
+                <CardDescription>可依 severity、訊息或檔案路徑篩選大量風險清單。</CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-3 md:grid-cols-[2fr_1fr]">
+                <Input placeholder="搜尋訊息或檔案路徑" value={riskSearch} onChange={(event) => setRiskSearch(event.target.value)} />
+                <Select value={riskSeverity} onValueChange={setRiskSeverity}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="全部等級" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部等級</SelectItem>
+                    <SelectItem value="critical">critical</SelectItem>
+                    <SelectItem value="high">high</SelectItem>
+                    <SelectItem value="medium">medium</SelectItem>
+                    <SelectItem value="low">low</SelectItem>
+                  </SelectContent>
+                </Select>
+              </CardContent>
+            </Card>
+
+            {visibleRisks.length ? (
+              visibleRisks.map((risk) => (
                 <Card key={risk.id}>
                   <CardHeader>
                     <div className="flex items-center justify-between gap-4">
@@ -320,13 +371,14 @@ export default function AnalysisResult() {
                   </CardHeader>
                   <CardContent className="space-y-2 text-sm text-slate-700">
                     <p>{risk.description ?? "No description provided."}</p>
+                    <p className="text-slate-500">信心等級：heuristic</p>
                     {risk.recommendation ? <p className="text-slate-600">Recommendation: {risk.recommendation}</p> : null}
                   </CardContent>
                 </Card>
               ))
             ) : (
               <Card>
-                <CardContent className="py-10 text-center text-sm text-slate-600">No persisted risks were found for this project.</CardContent>
+                <CardContent className="py-10 text-center text-sm text-slate-600">目前沒有符合條件的風險項目。</CardContent>
               </Card>
             )}
           </TabsContent>
@@ -334,33 +386,110 @@ export default function AnalysisResult() {
           <TabsContent value="symbols" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Symbols and fields</CardTitle>
-                <CardDescription>This view is sourced from the persisted database snapshot rather than recomputing in the browser.</CardDescription>
+                <CardTitle>符號搜尋與欄位瀏覽</CardTitle>
+                <CardDescription>這個區塊直接讀取持久化快照，不會在瀏覽器重新推導分析結果。</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2 rounded-lg border p-4">
-                  <h3 className="font-medium text-slate-950">Symbols</h3>
-                  <div className="space-y-2 text-sm">
-                    {(snapshot?.symbols.slice(0, 12) ?? []).map((symbol) => (
-                      <div key={symbol.id} className="flex items-center justify-between gap-3">
-                        <span className="truncate">{symbol.name}</span>
-                        <Badge variant="outline">{symbol.type}</Badge>
-                      </div>
-                    ))}
+                  <div className="space-y-3">
+                    <h3 className="font-medium text-slate-950">Symbols</h3>
+                    <Input placeholder="搜尋 symbol 名稱或檔案路徑" value={symbolSearch} onChange={(event) => setSymbolSearch(event.target.value)} />
+                    <Select value={symbolKind} onValueChange={setSymbolKind}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="全部種類" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部種類</SelectItem>
+                        {symbolKinds.map((kind) => (
+                          <SelectItem key={kind} value={kind}>
+                            {kind}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1 text-sm">
+                    {visibleSymbols.length ? (
+                      visibleSymbols.map((symbol) => (
+                        <div key={symbol.id} className="rounded-lg border px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate font-medium text-slate-950">{symbol.name}</span>
+                            <Badge variant="outline">{symbol.type}</Badge>
+                          </div>
+                          <p className="truncate text-slate-500">{symbol.filePath ?? "未知檔案"}</p>
+                          <p className="text-slate-500">行號 {symbol.startLine} - {symbol.endLine}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="py-6 text-center text-slate-500">沒有符合條件的 symbols。</p>
+                    )}
                   </div>
                 </div>
                 <div className="space-y-2 rounded-lg border p-4">
-                  <h3 className="font-medium text-slate-950">Fields</h3>
-                  <div className="space-y-2 text-sm">
-                    {(snapshot?.fields.slice(0, 12) ?? []).map((field) => (
-                      <div key={field.id} className="flex items-center justify-between gap-3">
-                        <span className="truncate">
-                          {field.tableName}.{field.fieldName}
-                        </span>
-                        <Badge variant="outline">{field.fieldType ?? "unknown"}</Badge>
-                      </div>
-                    ))}
+                  <div className="space-y-3">
+                    <h3 className="font-medium text-slate-950">Fields</h3>
+                    <Input placeholder="搜尋 table 或 field" value={fieldSearch} onChange={(event) => setFieldSearch(event.target.value)} />
+                    <Select value={fieldTable} onValueChange={setFieldTable}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="全部資料表" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部資料表</SelectItem>
+                        {fieldTables.map((tableName) => (
+                          <SelectItem key={tableName} value={tableName}>
+                            {tableName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
+                  <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1 text-sm">
+                    {visibleFields.length ? (
+                      visibleFields.map((field) => (
+                        <div key={field.id} className="rounded-lg border px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate font-medium text-slate-950">
+                              {field.tableName}.{field.fieldName}
+                            </span>
+                            <Badge variant="outline">{field.fieldType ?? "unknown"}</Badge>
+                          </div>
+                          <p className="text-slate-500">
+                            references {field.referenceCount} / reads {field.readCount} / writes {field.writeCount}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="py-6 text-center text-slate-500">沒有符合條件的欄位。</p>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="rules" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>規則搜尋</CardTitle>
+                <CardDescription>可依規則名稱或描述搜尋商業規則 / 驗證規則。</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Input placeholder="搜尋 rule 名稱或描述" value={ruleSearch} onChange={(event) => setRuleSearch(event.target.value)} />
+                <div className="max-h-[36rem] space-y-2 overflow-y-auto pr-1 text-sm">
+                  {visibleRules.length ? (
+                    visibleRules.map((rule) => (
+                      <div key={rule.id} className="rounded-lg border px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium text-slate-950">{rule.name}</span>
+                          <Badge variant="outline">{rule.ruleType}</Badge>
+                        </div>
+                        <p className="text-slate-600">{rule.description ?? "No description provided."}</p>
+                        <p className="text-slate-500">{rule.sourceFile ?? "未知來源"}{rule.lineNumber ? `:${rule.lineNumber}` : ""}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="py-6 text-center text-slate-500">目前沒有符合條件的規則。</p>
+                  )}
                 </div>
               </CardContent>
             </Card>

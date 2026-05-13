@@ -26,4 +26,29 @@ describe("Analyzer", () => {
       expect.arrayContaining(["SQL_STRING_MULTILINE", "SQL_DYNAMIC_STRING", "HEURISTIC_ANALYSIS"])
     );
   });
+
+  it("keeps schema-qualified table names intact in project analysis output", async () => {
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "repo.sql",
+          language: "sql",
+          content: [
+            "SELECT u.Name FROM dbo.Users u;",
+            "UPDATE ERP.SIGNB SET MARK_2 = 'Y' WHERE MARK_2 = 'N';",
+          ].join("\n"),
+        },
+      ],
+      1
+    );
+
+    expect(result.fieldReferences).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "Name" }),
+        expect.objectContaining({ table: "ERP.SIGNB", field: "MARK_2" }),
+      ])
+    );
+    expect(result.metrics.fieldCount).toBe(2);
+  });
 });

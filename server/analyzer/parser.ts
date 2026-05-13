@@ -1,4 +1,5 @@
 import type { AnalysisWarning } from "../../shared/contracts";
+import { resolveMostSpecificSymbol } from "./symbolOwner";
 import type { AnalyzedSymbol, FieldReference, SymbolDependency, SymbolType } from "./types";
 import { buildSymbolStableKey } from "./types";
 
@@ -86,32 +87,207 @@ function findBlockEnd(lines: string[], startIndex: number, openPattern: RegExp, 
 }
 
 function findOwnerSymbol(symbols: AnalyzedSymbol[], line: number, file?: string) {
-  return symbols.find((symbol) => {
-    if (file && normalizeFilePath(symbol.file) !== normalizeFilePath(file)) {
-      return false;
+  return resolveMostSpecificSymbol(symbols, line, file);
+}
+
+function splitSqlList(value: string) {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function splitQualifiedIdentifier(value: string) {
+  return value
+    .split(".")
+    .map((part) => normalizeName(part))
+    .filter(Boolean);
+}
+
+function normalizeSqlIdentifier(value: string) {
+  return normalizeName(value).replace(/^[[(]+|[\])]+$/g, "");
+}
+
+function normalizeSqlTableName(value: string) {
+  return splitQualifiedIdentifier(value).join(".");
+}
+
+function normalizeSqlFieldName(value: string) {
+  const withoutAlias = value
+    .replace(/\s+AS\s+.+$/i, "")
+    .replace(/\s+(?:ASC|DESC)\b.*$/i, "")
+    .trim();
+
+  if (withoutAlias === "*") {
+    return "*";
+  }
+
+  return normalizeSqlIdentifier(withoutAlias);
+}
+
+function stripSqlStringLiterals(sql: string) {
+  return sql.replace(/'[^']*'/g, " ");
+}
+
+function isSqlKeyword(value: string) {
+  return /^(select|insert|update|delete)$/i.test(value);
+}
+
+function extractQuotedSqlFragments(content: string): Array<{ line: number; sql: string }> {
+  const fragments: Array<{ line: number; sql: string }> = [];
+  const stringPattern = /["'`]([^"'`]*(?:SELECT|INSERT|UPDATE|DELETE)[\s\S]*?)["'`]/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = stringPattern.exec(content)) !== null) {
+    const rawSql = match[1]?.trim();
+    if (!rawSql) {
+      continue;
     }
-    return symbol.startLine <= line && symbol.endLine >= line;
-  });
+
+    const startIndex = match.index;
+    const line = content.slice(0, startIndex).split(/\r?\n/).length;
+    let combinedSql = rawSql;
+    let cursor = stringPattern.lastIndex;
+
+    while (true) {
+      const between = content.slice(cursor, Math.min(content.length, cursor + 120));
+      const joinMatch = between.match(/^\s*(?:\+|&|\|\|)\s*["'`]([^"'`]*)["'`]/);
+      if (!joinMatch) {
+        break;
+      }
+
+      combinedSql += ` ${joinMatch[1]}`;
+      cursor += joinMatch[0].length;
+      stringPattern.lastIndex = cursor;
+    }
+
+    fragments.push({
+      line,
+      sql: combinedSql,
+    });
+  }
+
+  return fragments;
 }
 
 function parseSqlFragments(content: string): Array<{ line: number; sql: string }> {
-  const fragments: Array<{ line: number; sql: string }> = [];
+  return extractQuotedSqlFragments(content).filter(({ sql }) => isSqlKeyword(sql.trim().split(/\s+/)[0] ?? ""));
+}
+
+function parseSqlStatements(content: string): Array<{ line: number; sql: string }> {
+  const statements: Array<{ line: number; sql: string }> = [];
   const lines = content.split(/\r?\n/);
-  const quotePattern = /["'`](SELECT|INSERT|UPDATE|DELETE)[\s\S]*?["'`]/gi;
+  let currentLine: number | null = null;
+  let currentParts: string[] = [];
 
-  lines.forEach((line, index) => {
-    const matches = line.match(quotePattern);
-    if (!matches) return;
-
-    for (const raw of matches) {
-      fragments.push({
-        line: index + 1,
-        sql: raw.slice(1, -1),
-      });
+  const flush = () => {
+    if (currentLine === null || currentParts.length === 0) {
+      currentLine = null;
+      currentParts = [];
+      return;
     }
-  });
 
-  return fragments;
+    statements.push({
+      line: currentLine,
+      sql: currentParts.join(" ").trim(),
+    });
+    currentLine = null;
+    currentParts = [];
+  };
+
+  for (const [index, rawLine] of lines.entries()) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      flush();
+      continue;
+    }
+
+    if (currentLine === null && isSqlKeyword(trimmed.split(/\s+/)[0] ?? "")) {
+      currentLine = index + 1;
+      currentParts.push(trimmed);
+      if (trimmed.includes(";")) {
+        flush();
+      }
+      continue;
+    }
+
+    if (currentLine !== null) {
+      currentParts.push(trimmed);
+      if (trimmed.includes(";")) {
+        flush();
+      }
+      continue;
+    }
+  }
+
+  flush();
+  return statements;
+}
+
+function extractSqlAliasMap(sql: string) {
+  const aliasMap = new Map<string, string>();
+  const tablePattern = /\b(?:FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)(?:\s+(?:AS\s+)?([A-Za-z_][\w$]*))?/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = tablePattern.exec(sql)) !== null) {
+    const tableName = normalizeSqlTableName(match[1]);
+    const alias = normalizeSqlIdentifier(match[2] ?? "");
+    if (tableName) {
+      aliasMap.set(tableName.toLowerCase(), tableName);
+    }
+    if (alias) {
+      aliasMap.set(alias.toLowerCase(), tableName);
+    }
+  }
+
+  return aliasMap;
+}
+
+function resolveSqlFieldTarget(rawField: string, primaryTable: string | undefined, aliasMap: Map<string, string>) {
+  const normalizedField = normalizeSqlFieldName(rawField);
+  if (!normalizedField) {
+    return null;
+  }
+
+  const parts = splitQualifiedIdentifier(normalizedField);
+  if (parts.length >= 2) {
+    const field = parts.at(-1);
+    const owner = parts.slice(0, -1).join(".");
+    const table = aliasMap.get(owner.toLowerCase()) ?? owner;
+    if (table && field) {
+      return { table, field };
+    }
+  }
+
+  if (!primaryTable || normalizedField === "*") {
+    return null;
+  }
+
+  return {
+    table: primaryTable,
+    field: normalizedField,
+  };
+}
+
+function extractSqlPredicateFields(sql: string, primaryTable: string | undefined, aliasMap: Map<string, string>) {
+  const references: Array<{ table: string; field: string }> = [];
+  const strippedSql = stripSqlStringLiterals(sql);
+  const predicatePattern = /\b([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)+|[A-Za-z_][\w$]*)\b(?=\s*(?:=|<>|!=|<|>|<=|>=|IN\b|LIKE\b))/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = predicatePattern.exec(strippedSql)) !== null) {
+    const candidate = match[1];
+    if (!candidate || isSqlKeyword(candidate)) {
+      continue;
+    }
+
+    const resolved = resolveSqlFieldTarget(candidate, primaryTable, aliasMap);
+    if (resolved && resolved.field !== "*") {
+      references.push(resolved);
+    }
+  }
+
+  return references;
 }
 
 function detectSqlHeuristicWarnings(content: string, file: string): AnalysisWarning[] {
@@ -141,6 +317,7 @@ function detectSqlHeuristicWarnings(content: string, file: string): AnalysisWarn
 function parseSqlReference(sql: string, line: number, file: string, owner?: AnalyzedSymbol): FieldReference[] {
   const normalizedSql = sql.replace(/\s+/g, " ").trim();
   const references: FieldReference[] = [];
+  const aliasMap = extractSqlAliasMap(normalizedSql);
 
   const base = {
     file,
@@ -150,10 +327,10 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
     context: normalizedSql,
   };
 
-  const insertMatch = normalizedSql.match(/INSERT\s+INTO\s+([a-zA-Z_][\w$]*)\s*\(([^)]+)\)/i);
+  const insertMatch = normalizedSql.match(/INSERT\s+INTO\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)\s*\(([^)]+)\)/i);
   if (insertMatch) {
-    const table = normalizeName(insertMatch[1]);
-    const fields = insertMatch[2].split(",").map((value) => normalizeName(value));
+    const table = normalizeSqlTableName(insertMatch[1]);
+    const fields = splitSqlList(insertMatch[2]).map((value) => normalizeSqlFieldName(value));
     for (const field of fields) {
       if (!field) continue;
       references.push({ table, field, type: "write", ...base });
@@ -161,37 +338,50 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
     return references;
   }
 
-  const updateMatch = normalizedSql.match(/UPDATE\s+([a-zA-Z_][\w$]*)\s+SET\s+(.+?)(?:\s+WHERE|$)/i);
+  const updateMatch = normalizedSql.match(/UPDATE\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)\s+SET\s+(.+?)(?:\s+WHERE|$)/i);
   if (updateMatch) {
-    const table = normalizeName(updateMatch[1]);
-    const assignments = updateMatch[2].split(",");
+    const table = normalizeSqlTableName(updateMatch[1]);
+    const assignments = splitSqlList(updateMatch[2]);
     for (const assignment of assignments) {
-      const field = normalizeName(assignment.split("=")[0] ?? "");
+      const field = normalizeSqlFieldName(assignment.split("=")[0] ?? "");
       if (!field) continue;
       references.push({ table, field, type: "write", ...base });
+    }
+
+    for (const predicate of extractSqlPredicateFields(normalizedSql, table, aliasMap)) {
+      references.push({ ...predicate, type: "read", ...base });
     }
     return references;
   }
 
-  const deleteMatch = normalizedSql.match(/DELETE\s+FROM\s+([a-zA-Z_][\w$]*)/i);
+  const deleteMatch = normalizedSql.match(/DELETE\s+FROM\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)/i);
   if (deleteMatch) {
+    const table = normalizeSqlTableName(deleteMatch[1]);
     references.push({
-      table: normalizeName(deleteMatch[1]),
+      table,
       field: "*",
       type: "write",
       ...base,
     });
+
+    for (const predicate of extractSqlPredicateFields(normalizedSql, table, aliasMap)) {
+      references.push({ ...predicate, type: "read", ...base });
+    }
     return references;
   }
 
-  const selectMatch = normalizedSql.match(/SELECT\s+(.+?)\s+FROM\s+([a-zA-Z_][\w$]*)/i);
+  const selectMatch = normalizedSql.match(/SELECT\s+(.+?)\s+FROM\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)/i);
   if (selectMatch) {
-    const fields = selectMatch[1].split(",");
-    const table = normalizeName(selectMatch[2]);
+    const fields = splitSqlList(selectMatch[1]);
+    const table = normalizeSqlTableName(selectMatch[2]);
     for (const rawField of fields) {
-      const field = normalizeName(rawField.split(/\s+AS\s+/i)[0] ?? rawField);
-      if (!field || field === "*") continue;
-      references.push({ table, field, type: "read", ...base });
+      const resolved = resolveSqlFieldTarget(rawField, table, aliasMap);
+      if (!resolved || resolved.field === "*") continue;
+      references.push({ ...resolved, type: "read", ...base });
+    }
+
+    for (const predicate of extractSqlPredicateFields(normalizedSql, table, aliasMap)) {
+      references.push({ ...predicate, type: "read", ...base });
     }
   }
 
@@ -422,8 +612,9 @@ export class SQLParser implements FileParser {
   }
 
   parseFieldReferences(symbols: AnalyzedSymbol[]) {
-    const lines = this.content.split(/\r?\n/);
-    return lines.flatMap((line, index) => parseSqlReference(line, index + 1, this.file, findOwnerSymbol(symbols, index + 1, this.file)));
+    return parseSqlStatements(this.content).flatMap(({ line, sql }) =>
+      parseSqlReference(sql, line, this.file, findOwnerSymbol(symbols, line, this.file))
+    );
   }
 
   collectWarnings() {

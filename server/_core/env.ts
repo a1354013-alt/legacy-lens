@@ -3,13 +3,17 @@ import { z } from "zod";
 const runtimeEnvSchema = z.object({
   VITE_APP_ID: z.string().trim().min(1, "VITE_APP_ID is required."),
   VITE_OAUTH_PORTAL_URL: z.string().trim().min(1, "VITE_OAUTH_PORTAL_URL is required."),
-  JWT_SECRET: z.string().trim().min(1, "JWT_SECRET is required."),
+  JWT_SECRET: z
+    .string()
+    .trim()
+    .min(32, "JWT_SECRET must be at least 32 characters."),
   DATABASE_URL: z.string().trim().min(1, "DATABASE_URL is required."),
   OAUTH_SERVER_URL: z.string().trim().min(1, "OAUTH_SERVER_URL is required."),
 
   DEV_AUTH_BYPASS: z.string().trim().optional(),
   DEV_AUTH_OPEN_ID: z.string().trim().optional(),
   DEV_AUTH_BYPASS_UNSAFE_ALLOW: z.string().trim().optional(),
+  LEGACY_LENS_GIT_HOST_ALLOWLIST: z.string().trim().optional(),
   NODE_ENV: z.string().trim().optional(),
 });
 

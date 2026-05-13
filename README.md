@@ -1,11 +1,25 @@
 # Legacy Lens
 
-Legacy Lens is a **legacy modernization analysis workspace**. It imports Go / SQL / Delphi projects (ZIP upload or Git clone), runs deterministic server-side analysis, persists results in MySQL, and lets you **export a reviewable ZIP report** generated from the same persisted snapshot.
+Legacy Lens is a **legacy static analyzer and project import workspace**. It imports Go / SQL / Delphi projects (ZIP upload or Git clone), runs deterministic server-side analysis, persists results in MySQL, and lets you **export a reviewable ZIP report** generated from the same persisted snapshot.
 
 Positioning:
 - portfolio-grade
 - demo-ready
 - legacy modernization analysis workspace
+
+## Product Positioning
+
+Legacy Lens is intentionally focused on:
+- legacy code analyzer
+- project import workspace (ZIP / Git)
+- static analysis and impact analysis assistant
+- report export tool for modernization review
+
+It is intentionally **not** positioned as:
+- chat bot
+- RAG knowledge base
+- runtime tracing platform
+- replacement for a compiler or DB query planner
 
 ## What It Does (Today)
 
@@ -204,11 +218,12 @@ Open `http://localhost:3000`. Click "Sign in".
 
 This repo ships a Dockerfile and a `docker-compose.yml` for running the app + MySQL locally in a reproducible way.
 
-By default, `docker-compose.yml` runs in **demo mode**:
+By default, `docker-compose.yml` runs in **local demo mode**:
 - `DEV_AUTH_BYPASS=1` (server enables `/api/dev/login`)
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1` (explicitly allows bypass even when the container runs with `NODE_ENV=production` for static serving)
 - `VITE_DEV_AUTH_BYPASS=1` (client builds the "Sign in" button to hit `/api/dev/login`)
 - OAuth URLs are still required as placeholders (`VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL`) because the server config schema is consistent across modes.
+- `JWT_SECRET` demo default is long enough for runtime validation, but you must replace it in any real deployment.
 
 ```bash
 docker compose up --build
@@ -294,16 +309,44 @@ Import pipeline is intentionally bounded:
 - HTTP request body limit: 50MB JSON payload to leave room for base64 overhead
 - ZIP: max 2,000 entries, max 5MB per file, max 500MB expanded
 - Git: max 2,000 files, max 5MB per file, max 500MB total extracted
+- Production Git host policy:
+  - loopback hosts are blocked (`localhost`, `127.0.0.1`, `0.0.0.0`, `::1`)
+  - private / link-local IPs are blocked
+  - production mode defaults to `github.com` and `gitlab.com`
+  - override with `LEGACY_LENS_GIT_HOST_ALLOWLIST=github.com,gitlab.com,example.com`
 - Path traversal defense: unsafe paths (e.g. `../`, absolute paths, or drive-letter paths) are skipped with warnings
 - Imported source content is persisted in MySQL `MEDIUMTEXT`, which comfortably covers the 5MB per-file import ceiling
 
 ## Limitations (Honest)
 
-- Parsing is **heuristic**, not compiler-grade.
+- Parsing is **heuristic static analysis**, not compiler-grade.
+- SQL / Delphi / Go extraction is meant to support legacy code exploration, initial dependency review, and first-pass impact analysis.
 - Cross-file Delphi resolution is best-effort.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
+- Results do **not** replace a compiler, runtime tracing, DB execution plan analysis, or a full SQL AST parser.
 - Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
 - Import is capped at 5MB per file and 500MB total extracted content by design.
+
+## Demo vs Production
+
+- `docker-compose.yml` is tuned for local demo convenience, not hardened production rollout.
+- `DEV_AUTH_BYPASS` must not be enabled in production.
+- `JWT_SECRET` must be at least 32 characters in production and local runtime validation.
+- Production Git import should use `LEGACY_LENS_GIT_HOST_ALLOWLIST`.
+- Production deployments should review network policy, DB credentials, OAuth settings, and container secrets separately from this demo setup.
+
+## Acceptance Commands
+
+Use these commands for local acceptance before shipping changes:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm check
+pnpm lint
+pnpm test
+pnpm build
+pnpm docker:smoke
+```
 
 ## Impact Analysis
 

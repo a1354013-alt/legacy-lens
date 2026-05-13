@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import mysql from "mysql2";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { users } from "../drizzle/schema";
+import type { InsertUserRecord } from "./dbTypes";
 import { ENV } from "./_core/env";
 import { logger } from "./_core/logger";
 
@@ -93,7 +94,7 @@ export async function closeDb() {
   logger.info("Database connection pool closed", { action: "db.pool.closed", status: "ok" });
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
+export async function upsertUser(user: InsertUserRecord): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
@@ -103,7 +104,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     throw new Error("[Database] Cannot upsert user because the database is unavailable.");
   }
 
-  const values: InsertUser = {
+  const values: InsertUserRecord = {
     openId: user.openId
   };
 

@@ -112,10 +112,12 @@ beforeEach(() => {
     ],
     fields: [
       { id: 201, projectId: 1, tableName: "orders", fieldName: "amount" },
+      { id: 203, projectId: 1, tableName: "ERP.SIGNB", fieldName: "MARK_2" },
       { id: 202, projectId: 2, tableName: "orders", fieldName: "amount" },
     ],
     fieldDependencies: [
       { id: 301, projectId: 1, fieldId: 201, symbolId: 12, operationType: "read", lineNumber: 15, context: "orders.amount" },
+      { id: 303, projectId: 1, fieldId: 203, symbolId: 13, operationType: "write", lineNumber: 33, context: "ERP.SIGNB.MARK_2" },
       { id: 302, projectId: 2, fieldId: 202, symbolId: 21, operationType: "read", lineNumber: 8, context: "orders.amount" },
     ],
     risks: [
@@ -177,5 +179,14 @@ describe("ImpactAnalyzer", () => {
 
     expect(result.targetType).toBe("sql_field");
     expect(result.affectedFiles).toEqual(["src/Shared.pas"]);
+  });
+
+  it("matches schema-qualified sql_field targets without splitting the table name incorrectly", async () => {
+    const analyzer = new ImpactAnalyzer();
+    const result = await analyzer.analyze(1, "ERP.SIGNB.MARK_2", "sql_field");
+
+    expect(result.targetType).toBe("sql_field");
+    expect(result.affectedFields).toEqual([{ table: "ERP.SIGNB", field: "MARK_2" }]);
+    expect(result.affectedSymbols.map((symbol) => symbol.name)).toEqual(["Caller"]);
   });
 });

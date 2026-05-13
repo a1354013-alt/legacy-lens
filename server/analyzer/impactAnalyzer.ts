@@ -9,6 +9,7 @@ import {
   symbols,
 } from "../../drizzle/schema";
 import type { ImpactAnalysisResult, ImpactTargetType } from "../../shared/contracts";
+import { buildFieldIdentityKey } from "./fieldIdentity";
 import { getDb } from "../db";
 
 type ProjectSymbol = typeof symbols.$inferSelect;
@@ -87,7 +88,7 @@ function addRiskImpact(riskSet: Set<string>, risk: ProjectRisk) {
 }
 
 function addFieldImpact(fieldSet: Map<string, { table: string; field: string }>, field: ProjectField) {
-  fieldSet.set(`${field.tableName}.${field.fieldName}`, {
+  fieldSet.set(buildFieldIdentityKey({ table: field.tableName, field: field.fieldName }), {
     table: field.tableName,
     field: field.fieldName,
   });
@@ -143,10 +144,13 @@ function findMatchingRisks(projectRisks: ProjectRisk[], target: string) {
 
 function findMatchingSqlFields(projectFields: ProjectField[], target: string) {
   const normalizedTarget = normalize(target);
-  const [tableName, fieldName] = normalizedTarget.split(".");
-  if (!tableName || !fieldName) {
+  const lastDotIndex = normalizedTarget.lastIndexOf(".");
+  if (lastDotIndex <= 0 || lastDotIndex >= normalizedTarget.length - 1) {
     return [];
   }
+
+  const tableName = normalizedTarget.slice(0, lastDotIndex);
+  const fieldName = normalizedTarget.slice(lastDotIndex + 1);
 
   return projectFields.filter(
     (field) => normalize(field.tableName) === tableName && normalize(field.fieldName) === fieldName

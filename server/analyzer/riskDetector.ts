@@ -1,4 +1,5 @@
 import type { DetectedRisk, FieldReference } from "./types";
+import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
 
 export interface MagicValueCandidate {
   value: string;
@@ -62,7 +63,7 @@ export class RiskDetector {
 
     for (const reference of fieldReferences) {
       if (reference.type !== "write") continue;
-      const key = `${reference.table}.${reference.field}`;
+      const key = buildFieldIdentityKey(reference);
       const bucket = writeMap.get(key) ?? [];
       bucket.push(reference);
       writeMap.set(key, bucket);
@@ -72,9 +73,11 @@ export class RiskDetector {
     for (const [fieldKey, references] of Array.from(writeMap.entries())) {
       if (references.length < 2) continue;
       const first = references[0];
+      const { table, field } = parseFieldIdentityKey(fieldKey);
+      const displayName = `${table}.${field}`;
       risks.push({
-        title: `Field ${fieldKey} is written from multiple locations`,
-        description: `${fieldKey} has ${references.length} write operations across the codebase, which raises drift risk.`,
+        title: `Field ${displayName} is written from multiple locations`,
+        description: `${displayName} has ${references.length} write operations across the codebase, which raises drift risk.`,
         severity: references.length >= 3 ? "high" : "medium",
         category: "multiple_writes",
         sourceFile: first.file,

@@ -125,6 +125,7 @@ export interface AnalysisSnapshot {
     name: string;
     type: string;
     fileId: number;
+    filePath: string | null;
     startLine: number;
     endLine: number;
     signature: string | null;
@@ -145,6 +146,9 @@ export interface AnalysisSnapshot {
     fieldName: string;
     fieldType: string | null;
     description: string | null;
+    readCount: number;
+    writeCount: number;
+    referenceCount: number;
   }>;
   fieldDependencies: Array<{
     id: number;

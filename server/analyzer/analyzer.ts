@@ -1,5 +1,6 @@
 import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
 import { DocumentGenerator } from "./documentGenerator";
+import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
 import { ParserFactory } from "./parser";
 import { RiskDetector } from "./riskDetector";
 import type {
@@ -116,7 +117,7 @@ function buildRules(fieldReferences: FieldReference[], risks: DetectedRisk[]): D
 
   for (const reference of fieldReferences) {
     if (reference.type === "write") {
-      const key = `${reference.table}.${reference.field}`;
+      const key = buildFieldIdentityKey(reference);
       writeCounts.set(key, (writeCounts.get(key) ?? 0) + 1);
     }
 
@@ -134,11 +135,14 @@ function buildRules(fieldReferences: FieldReference[], risks: DetectedRisk[]): D
 
   for (const [fieldKey, count] of Array.from(writeCounts.entries())) {
     if (count < 2) continue;
+    const identity = parseFieldIdentityKey(fieldKey);
+    const displayName = `${identity.table}.${identity.field}`;
+    const slug = `${identity.table}_${identity.field}`.replace(/[^\w]+/g, "_");
     rules.push({
       ruleType: "validation",
-      name: `validate_${fieldKey.replace(/[^\w]+/g, "_")}_single_owner`,
-      description: `Review write ownership for ${fieldKey}; multiple write sites were detected.`,
-      condition: `${fieldKey} should have a documented write owner`,
+      name: `validate_${slug}_single_owner`,
+      description: `Review write ownership for ${displayName}; multiple write sites were detected.`,
+      condition: `${displayName} should have a documented write owner`,
     });
   }
 
@@ -252,7 +256,7 @@ export class Analyzer {
       degradedFileCount,
       symbolCount: symbols.length,
       dependencyCount: combinedDependencies.length,
-      fieldCount: new Set(fieldReferences.map((reference) => `${reference.table}.${reference.field}`)).size,
+      fieldCount: new Set(fieldReferences.map((reference) => buildFieldIdentityKey(reference))).size,
       fieldDependencyCount: fieldReferences.length,
       riskCount: combinedRisks.length,
       ruleCount: rules.length,

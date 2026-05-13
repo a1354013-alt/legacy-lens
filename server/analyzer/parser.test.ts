@@ -158,4 +158,121 @@ describe("DelphiParser", () => {
     expect(ParserFactory.createParser("inc", "const Foo = 1;", "types.inc")).toBeInstanceOf(DelphiParser);
     expect(ParserFactory.createParser("fmx", "object Form1: TForm1", "Form1.fmx")).toBeInstanceOf(DelphiParser);
   });
+
+  it("assigns Delphi SQL and field access to the most specific procedure owner", () => {
+    const content = [
+      "unit InvoiceUnit;",
+      "interface",
+      "implementation",
+      "procedure LoadUsers;",
+      "begin",
+      "  Query.SQL.Text := 'SELECT u.Name FROM dbo.Users u WHERE u.Id = :Id';",
+      "  Query.FieldByName('Name').AsString := '';",
+      "end;",
+      "",
+      "procedure SaveOrders;",
+      "begin",
+      "  Query.SQL.Text := 'UPDATE ERP.SIGNB SET MARK_2 = :P1 WHERE MARK_2 = :P2';",
+      "  Query.ParamByName('MARK_2').AsString := 'Y';",
+      "end;",
+      "end.",
+    ].join("\n");
+
+    const parser = new DelphiParser(content, "InvoiceUnit.pas");
+    const symbols = parser.parseSymbols();
+    const references = parser.parseFieldReferences(symbols);
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "dbo.Users",
+          field: "Name",
+          symbolName: "LoadUsers",
+          symbolStableKey: expect.stringContaining("LoadUsers"),
+        }),
+        expect.objectContaining({
+          table: "ERP.SIGNB",
+          field: "MARK_2",
+          symbolName: "SaveOrders",
+          symbolStableKey: expect.stringContaining("SaveOrders"),
+        }),
+      ])
+    );
+  });
+});
+
+describe("SQLParser", () => {
+  it("supports schema-qualified SELECT, JOIN aliases, UPDATE, INSERT, and DELETE statements", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "SELECT u.Name, o.Amount",
+        "FROM dbo.Users u",
+        "JOIN dbo.Orders o ON u.Id = o.UserId;",
+        "UPDATE dbo.Users SET Name = 'A', Email = 'B' WHERE Id = 1;",
+        "INSERT INTO ERP.SIGNB (MARK_2, Name) VALUES ('Y', 'A');",
+        "DELETE FROM dbo.Users WHERE Id = 1;",
+      ].join("\n"),
+      "queries.sql"
+    );
+
+    const symbols = parser.parseSymbols();
+    const references = parser.parseFieldReferences(symbols);
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "Name", type: "read" }),
+        expect.objectContaining({ table: "dbo.Orders", field: "Amount", type: "read" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Name", type: "write" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Email", type: "write" }),
+        expect.objectContaining({ table: "ERP.SIGNB", field: "MARK_2", type: "write" }),
+        expect.objectContaining({ table: "dbo.Users", field: "*", type: "write" }),
+      ])
+    );
+  });
+
+  it("extracts SQL from multi-line and concatenated Go/Delphi strings", () => {
+    const goParser = new GoParser(
+      [
+        "func load() {",
+        '  query := "SELECT u.Name, o.Amount " +',
+        '    "FROM dbo.Users u JOIN dbo.Orders o ON u.Id = o.UserId"',
+        "}",
+      ].join("\n"),
+      "main.go"
+    );
+
+    const goSymbols = goParser.parseSymbols();
+    const goReferences = goParser.parseFieldReferences(goSymbols);
+    expect(goReferences).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "Name", symbolName: "load" }),
+        expect.objectContaining({ table: "dbo.Orders", field: "Amount", symbolName: "load" }),
+      ])
+    );
+
+    const delphiParser = new DelphiParser(
+      [
+        "unit Repo;",
+        "interface",
+        "implementation",
+        "procedure BuildQuery;",
+        "begin",
+        "  Query.SQL.Text := 'INSERT INTO dbo.Users (Name, Email) ' +",
+        "    'VALUES (:Name, :Email)';",
+        "end;",
+        "end.",
+      ].join("\n"),
+      "Repo.pas"
+    );
+
+    const delphiSymbols = delphiParser.parseSymbols();
+    const delphiReferences = delphiParser.parseFieldReferences(delphiSymbols);
+    expect(delphiReferences).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "Name", type: "write", symbolName: "BuildQuery" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Email", type: "write", symbolName: "BuildQuery" }),
+      ])
+    );
+  });
 });

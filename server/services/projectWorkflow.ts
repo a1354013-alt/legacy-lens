@@ -16,10 +16,13 @@ import {
 } from "../../drizzle/schema";
 import { AppError, toAppError } from "../appError";
 import { Analyzer } from "../analyzer/analyzer";
+import { buildFieldIdentityKey, parseFieldIdentityKey } from "../analyzer/fieldIdentity";
+import { resolveMostSpecificSymbol } from "../analyzer/symbolOwner";
 import type { AnalyzedSymbol, ProjectAnalysisResult } from "../analyzer/types";
 import { getDb } from "../db";
+import type { DatabaseClient, InsertProjectRecord } from "../dbTypes";
 import { deleteProjectFiles, getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
-import { cleanupTempDir, cloneAndExtractFiles, isValidGitUrl } from "../utils/gitHandler";
+import { assertSafeGitUrl, cleanupTempDir, cloneAndExtractFiles } from "../utils/gitHandler";
 import { extractFilesFromZip, validateZipFile } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
 import { getAppVersion } from "../_core/version";
@@ -33,12 +36,7 @@ const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {
   failed: ["importing", "analyzing"],
 };
 
-type DbHandle = {
-  select: (...args: any[]) => any;
-  insert: (...args: any[]) => any;
-  update: (...args: any[]) => any;
-  delete: (...args: any[]) => any;
-};
+type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 
 function assertProjectTransition(current: ProjectStatus, next: ProjectStatus) {
   if (current === next) {
@@ -196,7 +194,7 @@ async function replaceAnalysisResult(db: DbHandle, projectId: number, values: Om
 async function transitionProjectState(
   db: DbHandle,
   projectId: number,
-  updates: Partial<typeof projects.$inferInsert> & { status: ProjectStatus },
+  updates: Partial<InsertProjectRecord> & { status: ProjectStatus },
   userId?: number
 ) {
   const current = userId ? await getOwnedProject(projectId, userId) : (await db.select().from(projects).where(eq(projects.id, projectId)).limit(1))[0];
@@ -320,9 +318,7 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
 
 export async function importProjectGit(projectId: number, userId: number, gitUrl: string) {
   await getOwnedProject(projectId, userId);
-  if (!isValidGitUrl(gitUrl)) {
-    throw new AppError("INVALID_GIT_URL", "Repository URL is invalid or unsupported.");
-  }
+  assertSafeGitUrl(gitUrl);
 
   logger.info("Import started", { projectId, action: "import.git.start", status: "ok" });
   let tempDir = "";
@@ -365,9 +361,7 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
 }
 
 function resolveOwningSymbol(symbolsForProject: AnalyzedSymbol[], file: string, line: number) {
-  return symbolsForProject.find(
-    (symbol) => symbol.file === file.replace(/\\/g, "/") && symbol.startLine <= line && symbol.endLine >= line
-  );
+  return resolveMostSpecificSymbol(symbolsForProject, line, file);
 }
 
 function resolveInsertedTargetSymbolId(
@@ -437,9 +431,9 @@ async function writeSuccessfulAnalysis(tx: DbHandle, projectId: number, projectF
   }
 
   const fieldIds = new Map<string, number>();
-  const uniqueFieldKeys = Array.from(new Set(result.fieldReferences.map((reference) => `${reference.table}.${reference.field}`)));
+  const uniqueFieldKeys = Array.from(new Set(result.fieldReferences.map((reference) => buildFieldIdentityKey(reference))));
   for (const fieldKey of uniqueFieldKeys) {
-    const [tableName, fieldName] = fieldKey.split(".");
+    const { table: tableName, field: fieldName } = parseFieldIdentityKey(fieldKey);
     const insertResult = await tx.insert(fields).values({ projectId, tableName, fieldName });
     const fieldId = Number((insertResult as { insertId?: number }).insertId ?? 0);
     if (fieldId > 0) {
@@ -448,7 +442,7 @@ async function writeSuccessfulAnalysis(tx: DbHandle, projectId: number, projectF
   }
 
   for (const reference of result.fieldReferences) {
-    const fieldId = fieldIds.get(`${reference.table}.${reference.field}`);
+    const fieldId = fieldIds.get(buildFieldIdentityKey(reference));
     const ownerSymbol = reference.symbolStableKey
       ? result.symbols.find((symbol) => symbol.stableKey === reference.symbolStableKey)
       : resolveOwningSymbol(result.symbols, reference.file, reference.line);
@@ -781,7 +775,8 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
   const db = await requireDb();
 
   const report = await getProjectAnalysisRecord(db, projectId);
-  const [symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
+  const [fileRows, symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
+    db.select().from(files).where(eq(files.projectId, projectId)),
     db.select().from(symbols).where(eq(symbols.projectId, projectId)),
     db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
     db.select().from(fields).where(eq(fields.projectId, projectId)),
@@ -796,6 +791,25 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
   const sortedFieldDependencyRows = sortFieldDependencies(fieldDependencyRows);
   const sortedRiskRows = sortProjectRisks(riskRows);
   const sortedRuleRows = sortProjectRules(ruleRows);
+  const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
+  const fieldUsageById = new Map<number, { readCount: number; writeCount: number; referenceCount: number }>();
+
+  for (const dependency of sortedFieldDependencyRows) {
+    const current = fieldUsageById.get(dependency.fieldId) ?? {
+      readCount: 0,
+      writeCount: 0,
+      referenceCount: 0,
+    };
+
+    current.referenceCount += 1;
+    if (dependency.operationType === "read") {
+      current.readCount += 1;
+    }
+    if (dependency.operationType === "write") {
+      current.writeCount += 1;
+    }
+    fieldUsageById.set(dependency.fieldId, current);
+  }
 
   return {
     report: report
@@ -819,6 +833,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
       name: row.name,
       type: row.type,
       fileId: row.fileId,
+      filePath: filePathById.get(row.fileId) ?? null,
       startLine: row.startLine,
       endLine: row.endLine,
       signature: row.signature,
@@ -839,6 +854,9 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
       fieldName: row.fieldName,
       fieldType: row.fieldType,
       description: row.description,
+      readCount: fieldUsageById.get(row.id)?.readCount ?? 0,
+      writeCount: fieldUsageById.get(row.id)?.writeCount ?? 0,
+      referenceCount: fieldUsageById.get(row.id)?.referenceCount ?? 0,
     })),
     fieldDependencies: sortedFieldDependencyRows.map((row) => ({
       id: row.id,
@@ -893,7 +911,7 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
 
   const version = getAppVersion();
   const metrics = report.summaryJson ?? null;
-  const createdAtSource = (report as any).createdAt ?? (report as any).updatedAt ?? new Date(0);
+  const createdAtSource = report.createdAt ?? report.updatedAt ?? new Date(0);
   const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
   const impactSummary = await generateProjectImpactSummary(db, projectId);
   const impactMarkdown = renderProjectImpactSummaryMarkdown(impactSummary, createdAtIso);

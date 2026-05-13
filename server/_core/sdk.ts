@@ -5,8 +5,8 @@ import { parse as parseCookieHeader } from "cookie";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
-import type { User } from "../../drizzle/schema";
 import * as db from "../db";
+import type { UserRecord } from "../dbTypes";
 import { ENV } from "./env";
 import { logger } from "./logger";
 import type {
@@ -186,7 +186,7 @@ class SDKServer {
     } as GetUserInfoWithJwtResponse;
   }
 
-  async authenticateRequest(req: Request): Promise<User> {
+  async authenticateRequest(req: Request): Promise<UserRecord> {
     const cookies = this.parseCookies(req.headers.cookie);
     const sessionCookie = cookies.get(COOKIE_NAME);
     const session = await this.verifySession(sessionCookie);

@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import type { FocusLanguage, ImportWarning } from "../../shared/contracts";
 import { simpleGit } from "simple-git";
@@ -24,6 +25,7 @@ const MAX_FILES_IN_REPO = 2_000;
 const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
 const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 const GIT_CLONE_TIMEOUT_MS = 120_000;
+const DEFAULT_PRODUCTION_GIT_HOST_ALLOWLIST = ["github.com", "gitlab.com"] as const;
 
 // Exported for tests (import safety must remain stable).
 export function normalizeRepoPath(filePath: string): string {
@@ -89,6 +91,88 @@ export function isValidGitUrl(url: string): boolean {
   }
 }
 
+function isProductionEnv(env: NodeJS.ProcessEnv) {
+  return String(env.NODE_ENV ?? "").trim().toLowerCase() === "production";
+}
+
+function getConfiguredGitHostAllowlist(env: NodeJS.ProcessEnv) {
+  const rawValue = String(env.LEGACY_LENS_GIT_HOST_ALLOWLIST ?? "").trim();
+  if (!rawValue) {
+    return [...DEFAULT_PRODUCTION_GIT_HOST_ALLOWLIST];
+  }
+
+  return rawValue
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function parseGitHost(gitUrl: string) {
+  const trimmed = gitUrl.trim();
+  const sshMatch = trimmed.match(/^git@([^:]+):[^/]+\/[^/]+(?:\.git)?$/i);
+  if (sshMatch) {
+    return sshMatch[1].toLowerCase();
+  }
+
+  const parsed = new URL(trimmed);
+  return parsed.hostname.toLowerCase();
+}
+
+function isLoopbackHost(host: string) {
+  return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(host);
+}
+
+function isPrivateIpAddress(host: string) {
+  const normalizedHost = host.toLowerCase();
+  if (net.isIP(normalizedHost) === 4) {
+    const octets = normalizedHost.split(".").map((segment) => Number.parseInt(segment, 10));
+    const [first, second] = octets;
+    if (first === 10) return true;
+    if (first === 127) return true;
+    if (first === 169 && second === 254) return true;
+    if (first === 172 && second >= 16 && second <= 31) return true;
+    if (first === 192 && second === 168) return true;
+    return false;
+  }
+
+  if (net.isIP(normalizedHost) === 6) {
+    if (normalizedHost === "::1") return true;
+    if (normalizedHost.startsWith("fc") || normalizedHost.startsWith("fd")) return true;
+    if (normalizedHost.startsWith("fe8") || normalizedHost.startsWith("fe9") || normalizedHost.startsWith("fea") || normalizedHost.startsWith("feb")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function assertSafeGitUrl(gitUrl: string, env: NodeJS.ProcessEnv = process.env) {
+  if (!isValidGitUrl(gitUrl)) {
+    throw new AppError("INVALID_GIT_URL", "Repository URL is invalid or unsupported.");
+  }
+
+  const host = parseGitHost(gitUrl);
+  if (isLoopbackHost(host)) {
+    throw new AppError("INVALID_GIT_URL", `Git import blocked: host "${host}" is not allowed.`);
+  }
+
+  if (isPrivateIpAddress(host)) {
+    throw new AppError("INVALID_GIT_URL", `Git import blocked: private or link-local host "${host}" is not allowed.`);
+  }
+
+  if (!isProductionEnv(env)) {
+    return;
+  }
+
+  const allowlist = getConfiguredGitHostAllowlist(env);
+  if (!allowlist.includes(host)) {
+    throw new AppError(
+      "INVALID_GIT_URL",
+      `Git import blocked in production: host "${host}" is not in LEGACY_LENS_GIT_HOST_ALLOWLIST.`
+    );
+  }
+}
+
 export function extractRepoName(gitUrl: string): string {
   const sanitized = gitUrl.trim().replace(/\/+$/, "");
   const rawName = sanitized.split(/[/:]/).pop() ?? "repository";
@@ -102,6 +186,7 @@ export async function cloneAndExtractFiles(
   files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
+  assertSafeGitUrl(gitUrl);
   const repoName = extractRepoName(gitUrl);
   const repoPath = path.join(tempDir, repoName);
 
