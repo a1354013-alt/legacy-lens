@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertSafeGitUrl, isSafeRelativePath, normalizeRepoPath } from "./gitHandler";
+import { assertSafeGitUrl, isSafeRelativePath, normalizeRepoPath, validateSafeGitUrl } from "./gitHandler";
 
 describe("gitHandler", () => {
   it("normalizes and rejects unsafe import paths (stable safety contract)", () => {
@@ -65,5 +65,19 @@ describe("gitHandler", () => {
         resolvePublicDns
       )
     ).resolves.toBeUndefined();
+  });
+
+  it("returns validated metadata that can be reused by the clone step", async () => {
+    const resolvePublicDns = async () => [{ address: "93.184.216.34", family: 4 as const }];
+
+    await expect(
+      validateSafeGitUrl("https://github.com/org/repo.git", { NODE_ENV: "production" }, resolvePublicDns)
+    ).resolves.toMatchObject({
+      gitUrl: "https://github.com/org/repo.git",
+      host: "github.com",
+      resolvedAddresses: [{ address: "93.184.216.34", family: 4 }],
+      production: true,
+      allowlist: ["github.com", "gitlab.com"],
+    });
   });
 });

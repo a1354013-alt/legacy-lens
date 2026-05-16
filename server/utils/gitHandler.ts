@@ -44,6 +44,13 @@ unsafeAddressBlockList.addSubnet("fe80::", 10, "ipv6");
 
 type ResolvedAddress = { address: string; family: 4 | 6 };
 type ResolveDns = (hostname: string) => Promise<ResolvedAddress[]>;
+export interface ValidatedGitUrl {
+  gitUrl: string;
+  host: string;
+  resolvedAddresses: ResolvedAddress[];
+  allowlist: string[] | null;
+  production: boolean;
+}
 
 // Exported for tests (import safety must remain stable).
 export function normalizeRepoPath(filePath: string): string {
@@ -172,7 +179,7 @@ async function resolveDnsHost(host: string): Promise<ResolvedAddress[]> {
 async function resolveGitHostAddresses(host: string, resolver: ResolveDns) {
   const literalFamily = net.isIP(host);
   if (literalFamily === 4 || literalFamily === 6) {
-    return [{ address: normalizeIpAddress(host), family: literalFamily }];
+    return [{ address: normalizeIpAddress(host), family: literalFamily as 4 | 6 }];
   }
 
   try {
@@ -190,22 +197,25 @@ async function resolveGitHostAddresses(host: string, resolver: ResolveDns) {
   }
 }
 
-export async function assertSafeGitUrl(
+export async function validateSafeGitUrl(
   gitUrl: string,
   env: NodeJS.ProcessEnv = process.env,
   resolver: ResolveDns = resolveDnsHost
-) {
+): Promise<ValidatedGitUrl> {
   if (!isValidGitUrl(gitUrl)) {
     throw new AppError("INVALID_GIT_URL", "Repository URL is invalid or unsupported.");
   }
 
+  const normalizedUrl = gitUrl.trim();
   const host = parseGitHost(gitUrl);
   if (isLoopbackHost(host)) {
     throw new AppError("INVALID_GIT_URL", `Git import blocked: host "${host}" is not allowed.`);
   }
 
-  if (!isProductionEnv(env)) {
-    const resolvedAddresses = await resolveGitHostAddresses(host, resolver);
+  const production = isProductionEnv(env);
+  const resolvedAddresses = await resolveGitHostAddresses(host, resolver);
+
+  if (!production) {
     const unsafeAddress = resolvedAddresses.find((entry) => isUnsafeResolvedAddress(entry.address));
     if (unsafeAddress) {
       throw new AppError(
@@ -213,7 +223,13 @@ export async function assertSafeGitUrl(
         `Git import blocked: host "${host}" resolves to unsafe address "${unsafeAddress.address}".`
       );
     }
-    return;
+    return {
+      gitUrl: normalizedUrl,
+      host,
+      resolvedAddresses,
+      allowlist: null,
+      production,
+    };
   }
 
   const allowlist = getConfiguredGitHostAllowlist(env);
@@ -224,7 +240,6 @@ export async function assertSafeGitUrl(
     );
   }
 
-  const resolvedAddresses = await resolveGitHostAddresses(host, resolver);
   const unsafeAddress = resolvedAddresses.find((entry) => isUnsafeResolvedAddress(entry.address));
   if (unsafeAddress) {
     throw new AppError(
@@ -232,6 +247,22 @@ export async function assertSafeGitUrl(
       `Git import blocked: host "${host}" resolves to unsafe address "${unsafeAddress.address}".`
     );
   }
+
+  return {
+    gitUrl: normalizedUrl,
+    host,
+    resolvedAddresses,
+    allowlist,
+    production,
+  };
+}
+
+export async function assertSafeGitUrl(
+  gitUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+  resolver: ResolveDns = resolveDnsHost
+) {
+  await validateSafeGitUrl(gitUrl, env, resolver);
 }
 
 export function extractRepoName(gitUrl: string): string {
@@ -241,13 +272,14 @@ export function extractRepoName(gitUrl: string): string {
 }
 
 export async function cloneAndExtractFiles(
-  gitUrl: string,
+  gitSource: string | ValidatedGitUrl,
   tempDir: string
 ): Promise<{
   files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
-  await assertSafeGitUrl(gitUrl);
+  const validatedGitUrl = typeof gitSource === "string" ? await validateSafeGitUrl(gitSource) : gitSource;
+  const gitUrl = validatedGitUrl.gitUrl;
   const repoName = extractRepoName(gitUrl);
   const repoPath = path.join(tempDir, repoName);
 

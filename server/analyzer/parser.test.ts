@@ -442,4 +442,32 @@ describe("SQLParser", () => {
       ])
     );
   });
+
+  it("supports SQL Server bracket identifiers without flattening names or dropping spaces", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "CREATE TABLE [dbo].[Users] ([UserId] INT, [User Name] NVARCHAR(255));",
+        "CREATE TABLE [Order Details] ([Order Id] INT, [UserId] INT);",
+        "SELECT [UserId], [User Name] FROM [dbo].[Users];",
+      ].join("\n"),
+      "brackets.sql"
+    );
+
+    const symbols = parser.parseSymbols();
+    const references = parser.parseFieldReferences(symbols);
+
+    expect(symbols).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "dbo.Users", type: "table" }),
+        expect.objectContaining({ name: "Order Details", type: "table" }),
+      ])
+    );
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "UserId", type: "read" }),
+        expect.objectContaining({ table: "dbo.Users", field: "User Name", type: "read" }),
+      ])
+    );
+  });
 });

@@ -187,6 +187,7 @@ DEV_AUTH_OPEN_ID=local-dev-user
 Important notes:
 - Bypass does **not** remove the need for OAuth env variables. The server still validates `VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL` as required placeholders.
 - While bypass is enabled, the UI "Sign in" button uses `/api/dev/login` instead of starting an OAuth redirect.
+- `DEV_AUTH_BYPASS_UNSAFE_ALLOW` exists only for local/demo containers that still run with `NODE_ENV=production` for static asset serving. It must never be enabled in a real production deployment.
 
 Dev login flow:
 - UI "Sign in" navigates to `/api/dev/login?next=/...` (controlled by `VITE_DEV_AUTH_BYPASS`)
@@ -245,6 +246,20 @@ Port notes:
 - `docker compose` defaults to `3000` for the app and `3306` for MySQL.
 - You can override host ports with `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT`, which is what the smoke test does in CI to avoid collisions.
 
+### Docker Smoke / CI Environment Variables
+
+The Docker smoke script and compose stack use a small set of env vars to keep CI deterministic:
+
+- `LEGACY_LENS_PORT`: host port bound to container port `3000`
+- `LEGACY_LENS_DB_PORT`: host port bound to MySQL `3306`
+- `LEGACY_LENS_SMOKE_TIMEOUT_MS`: total polling timeout for DB health, app health, and dev-login redirect checks
+- `DEV_AUTH_BYPASS=1`: enables `/api/dev/login` for local/demo flows
+- `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1`: only for local/demo containers that keep `NODE_ENV=production`; never use in real production
+- `LEGACY_LENS_GIT_HOST_ALLOWLIST`: production Git host allowlist override
+- `LEGACY_LENS_TRUST_PROXY`: only set this when the app is actually behind a trusted reverse proxy or load balancer
+
+The CI smoke flow randomizes `COMPOSE_PROJECT_NAME`, `LEGACY_LENS_PORT`, and `LEGACY_LENS_DB_PORT` so parallel jobs do not collide on the same runner.
+
 Open `http://localhost:3000`.
 
 Operational notes:
@@ -302,6 +317,12 @@ Docker equivalents:
 - `docker compose run --rm migrate` -> run migrations only
 - `pnpm docker:smoke` -> build the compose stack, verify `/health`, `/api/health`, and demo dev-login redirect, then tear it down
 
+## Dependency Security Notes
+
+- `package.json` keeps a small `pnpm.overrides` block for transitive packages that were still flagged by `pnpm audit --audit-level high` after the direct dependency upgrades.
+- Current overrides are intentionally limited to security patches for `path-to-regexp`, `rollup`, `picomatch`, `tar`, `lodash`, and `lodash-es`.
+- When upstream packages adopt the patched transitive versions directly, prefer removing the override instead of letting the list grow.
+
 ## Import Safety Boundaries
 
 Import pipeline is intentionally bounded:
@@ -314,7 +335,10 @@ Import pipeline is intentionally bounded:
   - private / link-local IPs are blocked
   - production mode defaults to `github.com` and `gitlab.com`
   - override with `LEGACY_LENS_GIT_HOST_ALLOWLIST=github.com,gitlab.com,example.com`
-  - current validation is enforced at the URL host layer; if you publicly deploy Legacy Lens, pair this with network-layer egress policy because DNS resolution is not yet re-checked against private IP ranges after host allowlisting
+- DNS resolution is performed during validation and rejected if the resolved address is loopback, link-local, or private
+- `importProjectGit()` reuses the validated Git URL metadata so a single import flow does not repeat DNS resolution before clone
+- if you publicly deploy Legacy Lens, still pair host allowlisting with network-layer egress policy
+- `LEGACY_LENS_TRUST_PROXY` should stay unset unless the app is deployed behind a trusted reverse proxy/load balancer; enabling it on a directly exposed app weakens client IP handling for rate limits and cookies
 - Path traversal defense: unsafe paths (e.g. `../`, absolute paths, or drive-letter paths) are skipped with warnings
 - Imported source content is persisted in MySQL `MEDIUMTEXT`, which comfortably covers the 5MB per-file import ceiling
 
@@ -332,8 +356,10 @@ Import pipeline is intentionally bounded:
 
 - `docker-compose.yml` is tuned for local demo convenience, not hardened production rollout.
 - `DEV_AUTH_BYPASS` must not be enabled in production.
+- `DEV_AUTH_BYPASS_UNSAFE_ALLOW` must not be enabled in production.
 - `JWT_SECRET` must be at least 32 characters in production and local runtime validation.
 - Production Git import should use `LEGACY_LENS_GIT_HOST_ALLOWLIST`.
+- `LEGACY_LENS_TRUST_PROXY` should be enabled only when Legacy Lens sits behind a trusted reverse proxy/load balancer.
 - Production network policy should restrict outbound Git egress even if host allowlisting is configured.
 - Production deployments should review network policy, DB credentials, OAuth settings, and container secrets separately from this demo setup.
 
@@ -343,6 +369,7 @@ Use these commands for local acceptance before shipping changes:
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm audit --audit-level high
 pnpm check
 pnpm lint
 pnpm test

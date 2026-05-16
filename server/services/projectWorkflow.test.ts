@@ -16,6 +16,8 @@ let analyzerResult: Record<string, unknown> | null = null;
 let fakeDb: ReturnType<typeof createFakeDb>;
 let failRootProjectReadsDuringTransaction = false;
 let transactionDepth = 0;
+let lastValidatedGitUrl: { gitUrl: string; host: string; resolvedAddresses: Array<{ address: string; family: 4 | 6 }>; allowlist: string[] | null; production: boolean } | null = null;
+const cloneAndExtractFilesMock = vi.fn(async () => ({ files: gitFiles, warnings: importWarnings }));
 
 vi.mock("drizzle-orm", async () => {
   const actual = await vi.importActual<typeof import("drizzle-orm")>("drizzle-orm");
@@ -39,12 +41,23 @@ vi.mock("../utils/zipHandler", () => ({
 }));
 
 vi.mock("../utils/gitHandler", () => ({
-  assertSafeGitUrl: vi.fn(async (url: string) => {
-    if (!/^https:\/\/example\.com\/.+/.test(url)) {
+  validateSafeGitUrl: vi.fn(async (url: string) => {
+    const normalizedUrl = String(url).trim();
+    if (!/^https:\/\/example\.com\/.+/.test(normalizedUrl)) {
       throw new Error("Repository URL is invalid or unsupported.");
     }
+
+    lastValidatedGitUrl = {
+      gitUrl: normalizedUrl,
+      host: "example.com",
+      resolvedAddresses: [{ address: "93.184.216.34", family: 4 }],
+      allowlist: null,
+      production: false,
+    };
+
+    return lastValidatedGitUrl;
   }),
-  cloneAndExtractFiles: vi.fn(async () => ({ files: gitFiles, warnings: importWarnings })),
+  cloneAndExtractFiles: cloneAndExtractFilesMock,
   cleanupTempDir: vi.fn(async () => undefined),
 }));
 
@@ -221,6 +234,8 @@ beforeEach(() => {
   analyzerResult = null;
   failRootProjectReadsDuringTransaction = false;
   transactionDepth = 0;
+  lastValidatedGitUrl = null;
+  cloneAndExtractFilesMock.mockClear();
 });
 
 describe("project workflow", () => {
@@ -350,6 +365,13 @@ describe("project workflow", () => {
 
     expect(result.files).toHaveLength(1);
     expect(result.warnings).toHaveLength(0);
+    expect(cloneAndExtractFilesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitUrl: "https://example.com/org/repo.git",
+        host: "example.com",
+      }),
+      expect.any(String)
+    );
     expect(fakeDb.store.projects[0]).toMatchObject({
       sourceUrl: "https://example.com/org/repo.git",
       status: "ready",

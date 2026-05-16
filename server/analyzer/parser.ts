@@ -177,6 +177,14 @@ function splitQualifiedIdentifier(value: string) {
   let current = "";
   let quote: '"' | "`" | "[" | null = null;
 
+  const pushCurrent = () => {
+    const trimmed = normalizeSqlIdentifier(current);
+    if (trimmed) {
+      parts.push(trimmed);
+    }
+    current = "";
+  };
+
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
     const nextCharacter = value[index + 1];
@@ -209,21 +217,14 @@ function splitQualifiedIdentifier(value: string) {
     }
 
     if (character === ".") {
-      const trimmed = normalizeName(current);
-      if (trimmed) {
-        parts.push(trimmed);
-      }
-      current = "";
+      pushCurrent();
       continue;
     }
 
     current += character;
   }
 
-  const trimmed = normalizeName(current);
-  if (trimmed) {
-    parts.push(trimmed);
-  }
+  pushCurrent();
 
   return parts;
 }
@@ -853,21 +854,48 @@ export class SQLParser implements FileParser {
     const symbols: AnalyzedSymbol[] = [];
 
     lines.forEach((line, index) => {
-      const tableMatch = line.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z_][\w$]*)/i);
+      const tableMatch = line.match(new RegExp(String.raw`CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(${SQL_IDENTIFIER_PATTERN})`, "i"));
       if (tableMatch) {
-        symbols.push(createSymbol({ name: tableMatch[1], type: "table", file: this.file, startLine: index + 1, endLine: index + 1, signature: line.trim() }));
+        symbols.push(
+          createSymbol({
+            name: normalizeSqlTableName(tableMatch[1]),
+            type: "table",
+            file: this.file,
+            startLine: index + 1,
+            endLine: index + 1,
+            signature: line.trim(),
+          })
+        );
         return;
       }
 
-      const procedureMatch = line.match(/CREATE\s+PROCEDURE\s+([a-zA-Z_][\w$]*)/i);
+      const procedureMatch = line.match(new RegExp(String.raw`CREATE\s+PROCEDURE\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
       if (procedureMatch) {
-        symbols.push(createSymbol({ name: procedureMatch[1], type: "procedure", file: this.file, startLine: index + 1, endLine: index + 1, signature: line.trim() }));
+        symbols.push(
+          createSymbol({
+            name: normalizeSqlTableName(procedureMatch[1]),
+            type: "procedure",
+            file: this.file,
+            startLine: index + 1,
+            endLine: index + 1,
+            signature: line.trim(),
+          })
+        );
         return;
       }
 
-      const functionMatch = line.match(/CREATE\s+FUNCTION\s+([a-zA-Z_][\w$]*)/i);
+      const functionMatch = line.match(new RegExp(String.raw`CREATE\s+FUNCTION\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
       if (functionMatch) {
-        symbols.push(createSymbol({ name: functionMatch[1], type: "function", file: this.file, startLine: index + 1, endLine: index + 1, signature: line.trim() }));
+        symbols.push(
+          createSymbol({
+            name: normalizeSqlTableName(functionMatch[1]),
+            type: "function",
+            file: this.file,
+            startLine: index + 1,
+            endLine: index + 1,
+            signature: line.trim(),
+          })
+        );
         return;
       }
 
