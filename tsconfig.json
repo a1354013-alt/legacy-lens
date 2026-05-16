@@ -1,6 +1,15 @@
 {
   "include": ["client/src/**/*", "shared/**/*", "server/**/*"],
-  "exclude": ["node_modules", "build", "dist", "server/**/*.test.ts", "server/**/*.spec.ts"],
+  "exclude": [
+    "node_modules",
+    "build",
+    "dist",
+    "client/**/*.test.ts",
+    "client/**/*.test.tsx",
+    "client/**/*.smoke.test.tsx",
+    "server/**/*.test.ts",
+    "server/**/*.spec.ts"
+  ],
   "compilerOptions": {
     "incremental": true,
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",

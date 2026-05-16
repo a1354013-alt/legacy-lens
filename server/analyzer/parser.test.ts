@@ -200,6 +200,38 @@ describe("DelphiParser", () => {
     );
   });
 
+  it("tracks Go function and method block ranges without regex lastIndex bleed", () => {
+    const parser = new GoParser(
+      [
+        "package main",
+        "",
+        "type Service struct {}",
+        "",
+        "func (s *Service) Run() {",
+        "  if ready {",
+        "    call()",
+        "  }",
+        "}",
+        "",
+        "func main() {",
+        "  for i := 0; i < 1; i++ {",
+        "    println(i)",
+        "  }",
+        "}",
+      ].join("\n"),
+      "main.go"
+    );
+
+    const symbols = parser.parseSymbols();
+
+    expect(symbols).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Run", startLine: 5, endLine: 9, type: "method" }),
+        expect.objectContaining({ name: "main", startLine: 11, endLine: 15, type: "function" }),
+      ])
+    );
+  });
+
   it("falls back to symbol name when a Delphi procedure lacks qualifiedName", () => {
     const content = [
       "unit InvoiceUnit;",
@@ -373,6 +405,40 @@ describe("SQLParser", () => {
       expect.arrayContaining([
         expect.objectContaining({ table: "dbo.Users", field: "Name", type: "write", symbolName: "BuildQuery" }),
         expect.objectContaining({ table: "dbo.Users", field: "Email", type: "write", symbolName: "BuildQuery" }),
+      ])
+    );
+  });
+
+  it("handles CTEs, nested queries, insert-select, aliases, quoted identifiers, and function-call commas", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "WITH recent_orders AS (",
+        '  SELECT o."UserId", SUM(o."Amount") AS total_amount',
+        '  FROM "sales"."Orders" o',
+        '  WHERE o."Status" = \'paid\'',
+        '  GROUP BY o."UserId"',
+        ")",
+        'INSERT INTO "analytics"."UserTotals" ("UserId", "TotalAmount")',
+        'SELECT u."Id", COALESCE(ro.total_amount, 0)',
+        'FROM "dbo"."Users" u',
+        'LEFT JOIN recent_orders ro ON ro."UserId" = u."Id"',
+        'WHERE EXISTS (SELECT 1 FROM "audit"."Logins" l WHERE l."UserId" = u."Id");',
+      ].join("\n"),
+      "edge-cases.sql"
+    );
+
+    const references = parser.parseFieldReferences(parser.parseSymbols());
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "analytics.UserTotals", field: "UserId", type: "write" }),
+        expect.objectContaining({ table: "analytics.UserTotals", field: "TotalAmount", type: "write" }),
+        expect.objectContaining({ table: "dbo.Users", field: "Id", type: "read" }),
+        expect.objectContaining({ table: "sales.Orders", field: "UserId", type: "read" }),
+        expect.objectContaining({ table: "sales.Orders", field: "Amount", type: "read" }),
+        expect.objectContaining({ table: "sales.Orders", field: "Status", type: "read" }),
+        expect.objectContaining({ table: "audit.Logins", field: "UserId", type: "read" }),
       ])
     );
   });

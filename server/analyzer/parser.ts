@@ -30,6 +30,9 @@ export interface DfmAnalysisResult {
   warnings: AnalysisWarning[];
 }
 
+const SQL_IDENTIFIER_PART_PATTERN = String.raw`(?:[A-Za-z_][\w$]*|"(?:""|[^"])*"|\[(?:[^\]])+\]|` + "`(?:``|[^`])+`)";
+const SQL_IDENTIFIER_PATTERN = String.raw`${SQL_IDENTIFIER_PART_PATTERN}(?:\s*\.\s*${SQL_IDENTIFIER_PART_PATTERN})*`;
+
 function normalizeName(value: string) {
   return value.trim().replace(/^["'`]+|["'`]+$/g, "");
 }
@@ -71,13 +74,23 @@ function createSymbol(input: {
 }
 
 function findBlockEnd(lines: string[], startIndex: number, openPattern: RegExp, closePattern: RegExp): number {
+  const countMatches = (value: string, pattern: RegExp) => {
+    const localPattern = new RegExp(
+      pattern.source,
+      pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`
+    );
+    return Array.from(value.matchAll(localPattern)).length;
+  };
+
   let depth = 0;
   for (let index = startIndex; index < lines.length; index += 1) {
-    if (openPattern.test(lines[index] ?? "")) {
-      depth += 1;
+    const line = lines[index] ?? "";
+    depth += countMatches(line, openPattern);
+    depth -= countMatches(line, closePattern);
+    if (depth <= 0 && index > startIndex) {
+      return index + 1;
     }
-    if (closePattern.test(lines[index] ?? "")) {
-      depth -= 1;
+    if (depth <= 0 && index === startIndex && countMatches(line, openPattern) > 0) {
       if (depth <= 0) {
         return index + 1;
       }
@@ -91,21 +104,136 @@ function findOwnerSymbol(symbols: AnalyzedSymbol[], line: number, file?: string)
 }
 
 function splitSqlList(value: string) {
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+  const parts: string[] = [];
+  let current = "";
+  let parenthesesDepth = 0;
+  let quote: "'" | '"' | "`" | "[" | null = null;
+
+  const flush = () => {
+    const trimmed = current.trim();
+    if (trimmed) {
+      parts.push(trimmed);
+    }
+    current = "";
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    const nextCharacter = value[index + 1];
+
+    if (quote) {
+      current += character;
+      if (quote === "[" && character === "]") {
+        quote = null;
+      } else if (quote !== "[" && character === quote) {
+        if (nextCharacter === quote) {
+          current += nextCharacter;
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      current += character;
+      continue;
+    }
+
+    if (character === "[") {
+      quote = character;
+      current += character;
+      continue;
+    }
+
+    if (character === "(") {
+      parenthesesDepth += 1;
+      current += character;
+      continue;
+    }
+
+    if (character === ")") {
+      parenthesesDepth = Math.max(0, parenthesesDepth - 1);
+      current += character;
+      continue;
+    }
+
+    if (character === "," && parenthesesDepth === 0) {
+      flush();
+      continue;
+    }
+
+    current += character;
+  }
+
+  flush();
+  return parts;
 }
 
 function splitQualifiedIdentifier(value: string) {
-  return value
-    .split(".")
-    .map((part) => normalizeName(part))
-    .filter(Boolean);
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "`" | "[" | null = null;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    const nextCharacter = value[index + 1];
+
+    if (quote) {
+      current += character;
+      if (quote === "[" && character === "]") {
+        quote = null;
+      } else if (quote !== "[" && character === quote) {
+        if (nextCharacter === quote) {
+          current += nextCharacter;
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "`") {
+      quote = character;
+      current += character;
+      continue;
+    }
+
+    if (character === "[") {
+      quote = character;
+      current += character;
+      continue;
+    }
+
+    if (character === ".") {
+      const trimmed = normalizeName(current);
+      if (trimmed) {
+        parts.push(trimmed);
+      }
+      current = "";
+      continue;
+    }
+
+    current += character;
+  }
+
+  const trimmed = normalizeName(current);
+  if (trimmed) {
+    parts.push(trimmed);
+  }
+
+  return parts;
 }
 
 function normalizeSqlIdentifier(value: string) {
-  return normalizeName(value).replace(/^[[(]+|[\])]+$/g, "");
+  const normalized = normalizeName(value).trim();
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    return normalized.slice(1, -1).trim();
+  }
+  return normalized;
 }
 
 function normalizeSqlTableName(value: string) {
@@ -130,11 +258,11 @@ function stripSqlStringLiterals(sql: string) {
 }
 
 function isSqlKeyword(value: string) {
-  return /^(select|insert|update|delete)$/i.test(value);
+  return /^(select|insert|update|delete|with)$/i.test(value);
 }
 
 function isSqlReservedIdentifier(value: string) {
-  return /^(and|or|not|in|like|is|null|exists|between|on|where|having|join|inner|left|right|full|outer|as|case|when|then|else|end)$/i.test(
+  return /^(and|or|not|in|like|is|null|exists|between|on|where|having|join|inner|left|right|full|outer|as|case|when|then|else|end|from|group|by|order|limit|values|into)$/i.test(
     value
   );
 }
@@ -274,7 +402,10 @@ export function collectSqlStatements(content: string): Array<{ line: number; sql
 
 function extractSqlAliasMap(sql: string) {
   const aliasMap = new Map<string, string>();
-  const tablePattern = /\b(?:FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)(?:\s+(?:AS\s+)?([A-Za-z_][\w$]*))?/gi;
+  const tablePattern = new RegExp(
+    String.raw`\b(?:FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+(${SQL_IDENTIFIER_PATTERN})(?:\s+(?:AS\s+)?([A-Za-z_][\w$]*))?`,
+    "gi"
+  );
   let match: RegExpExecArray | null;
 
   while ((match = tablePattern.exec(sql)) !== null) {
@@ -307,6 +438,10 @@ function resolveSqlFieldTarget(rawField: string, primaryTable: string | undefine
     }
   }
 
+  if (aliasMap.has(normalizedField.toLowerCase())) {
+    return null;
+  }
+
   if (!primaryTable || normalizedField === "*") {
     return null;
   }
@@ -317,10 +452,52 @@ function resolveSqlFieldTarget(rawField: string, primaryTable: string | undefine
   };
 }
 
+function isTableReferenceContext(value: string, matchIndex: number) {
+  const prefix = value.slice(Math.max(0, matchIndex - 40), matchIndex);
+  return /\b(?:from|join|update|into|delete\s+from)\s*$/i.test(prefix.trimEnd());
+}
+
+function extractSqlReferencesFromExpression(expression: string, primaryTable: string | undefined, aliasMap: Map<string, string>) {
+  const references: Array<{ table: string; field: string }> = [];
+  const seen = new Set<string>();
+  const identifierPattern = new RegExp(SQL_IDENTIFIER_PATTERN, "g");
+  const cleanedExpression = stripSqlStringLiterals(expression).replace(/\s+AS\s+.+$/i, "");
+  let match: RegExpExecArray | null;
+
+  while ((match = identifierPattern.exec(cleanedExpression)) !== null) {
+    const candidate = match[0]?.trim();
+    if (!candidate || isSqlKeyword(candidate) || isSqlReservedIdentifier(candidate)) {
+      continue;
+    }
+    if (isTableReferenceContext(cleanedExpression, match.index)) {
+      continue;
+    }
+    const nextNonWhitespaceCharacter = cleanedExpression.slice(match.index + candidate.length).match(/^\s*(.)/)?.[1];
+    if (nextNonWhitespaceCharacter === "(") {
+      continue;
+    }
+
+    const resolved = resolveSqlFieldTarget(candidate, primaryTable, aliasMap);
+    if (!resolved || resolved.field === "*") {
+      continue;
+    }
+
+    const key = `${resolved.table}.${resolved.field}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    references.push(resolved);
+  }
+
+  return references;
+}
+
 function extractSqlPredicateFields(sql: string, primaryTable: string | undefined, aliasMap: Map<string, string>) {
   const references: Array<{ table: string; field: string }> = [];
   const seen = new Set<string>();
   const strippedSql = stripSqlStringLiterals(sql);
+  const predicatePattern = new RegExp(SQL_IDENTIFIER_PATTERN, "g");
   const predicateClauses = [
     ...Array.from(strippedSql.matchAll(/\bON\s+(.+?)(?=\bJOIN\b|\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/gi), (match) => match[1] ?? ""),
     ...Array.from(strippedSql.matchAll(/\bWHERE\s+(.+?)(?=\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/gi), (match) => match[1] ?? ""),
@@ -328,12 +505,14 @@ function extractSqlPredicateFields(sql: string, primaryTable: string | undefined
   ];
 
   for (const clause of predicateClauses) {
-    const predicatePattern = /\b([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)+|[A-Za-z_][\w$]*)\b/g;
     let match: RegExpExecArray | null;
 
     while ((match = predicatePattern.exec(clause)) !== null) {
-      const candidate = match[1];
+      const candidate = match[0]?.trim();
       if (!candidate || isSqlKeyword(candidate) || isSqlReservedIdentifier(candidate)) {
+        continue;
+      }
+      if (isTableReferenceContext(clause, match.index)) {
         continue;
       }
 
@@ -379,9 +558,48 @@ function detectSqlHeuristicWarnings(content: string, file: string): AnalysisWarn
   return warnings;
 }
 
+function extractLeadingCteBodies(sql: string) {
+  if (!/^\s*WITH\b/i.test(sql)) {
+    return [];
+  }
+
+  const bodies: string[] = [];
+  let cursor = sql.search(/\bWITH\b/i);
+
+  while (cursor >= 0 && cursor < sql.length) {
+    const asMatch = /\bAS\s*\(/gi;
+    asMatch.lastIndex = cursor;
+    const match = asMatch.exec(sql);
+    if (!match) {
+      break;
+    }
+
+    let index = asMatch.lastIndex;
+    let depth = 1;
+    while (index < sql.length && depth > 0) {
+      const character = sql[index];
+      if (character === "(") depth += 1;
+      if (character === ")") depth -= 1;
+      index += 1;
+    }
+
+    if (depth !== 0) {
+      break;
+    }
+
+    bodies.push(sql.slice(asMatch.lastIndex, index - 1).trim());
+    cursor = /^\s*,/.test(sql.slice(index)) ? index + 1 : -1;
+  }
+
+  return bodies;
+}
+
 function parseSqlReference(sql: string, line: number, file: string, owner?: AnalyzedSymbol): FieldReference[] {
   const normalizedSql = normalizeSqlStatement(sql);
   const references: FieldReference[] = [];
+  for (const cteBody of extractLeadingCteBodies(normalizedSql)) {
+    references.push(...parseSqlReference(cteBody, line, file, owner));
+  }
   const aliasMap = extractSqlAliasMap(normalizedSql);
 
   const base = {
@@ -392,7 +610,7 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
     context: normalizedSql,
   };
 
-  const insertMatch = normalizedSql.match(/INSERT\s+INTO\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)\s*\(([^)]+)\)/i);
+  const insertMatch = normalizedSql.match(new RegExp(String.raw`INSERT\s+INTO\s+(${SQL_IDENTIFIER_PATTERN})\s*\(([^)]+)\)`, "i"));
   if (insertMatch) {
     const table = normalizeSqlTableName(insertMatch[1]);
     const fields = splitSqlList(insertMatch[2]).map((value) => normalizeSqlFieldName(value));
@@ -400,10 +618,23 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
       if (!field) continue;
       references.push({ table, field, type: "write", ...base });
     }
+    const selectMatch = normalizedSql.match(/\)\s+SELECT\s+(.+?)\s+FROM\s+/i);
+    if (selectMatch) {
+      const readTableMatch = normalizedSql.match(new RegExp(String.raw`\)\s+SELECT\s+(.+?)\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
+      const primaryTable = readTableMatch ? normalizeSqlTableName(readTableMatch[2]) : undefined;
+      for (const expression of splitSqlList(selectMatch[1])) {
+        for (const reference of extractSqlReferencesFromExpression(expression, primaryTable, aliasMap)) {
+          references.push({ ...reference, type: "read", ...base });
+        }
+      }
+      for (const predicate of extractSqlPredicateFields(normalizedSql, primaryTable, aliasMap)) {
+        references.push({ ...predicate, type: "read", ...base });
+      }
+    }
     return references;
   }
 
-  const updateMatch = normalizedSql.match(/UPDATE\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)\s+SET\s+(.+?)(?:\s+WHERE|$)/i);
+  const updateMatch = normalizedSql.match(new RegExp(String.raw`UPDATE\s+(${SQL_IDENTIFIER_PATTERN})\s+SET\s+(.+?)(?:\s+WHERE|$)`, "i"));
   if (updateMatch) {
     const table = normalizeSqlTableName(updateMatch[1]);
     const assignments = splitSqlList(updateMatch[2]);
@@ -419,7 +650,7 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
     return references;
   }
 
-  const deleteMatch = normalizedSql.match(/DELETE\s+FROM\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)/i);
+  const deleteMatch = normalizedSql.match(new RegExp(String.raw`DELETE\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
   if (deleteMatch) {
     const table = normalizeSqlTableName(deleteMatch[1]);
     references.push({
@@ -435,14 +666,13 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
     return references;
   }
 
-  const selectMatch = normalizedSql.match(/SELECT\s+(.+?)\s+FROM\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)*)/i);
+  const selectMatch = normalizedSql.match(new RegExp(String.raw`SELECT\s+(.+?)\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
   if (selectMatch) {
-    const fields = splitSqlList(selectMatch[1]);
     const table = normalizeSqlTableName(selectMatch[2]);
-    for (const rawField of fields) {
-      const resolved = resolveSqlFieldTarget(rawField, table, aliasMap);
-      if (!resolved || resolved.field === "*") continue;
-      references.push({ ...resolved, type: "read", ...base });
+    for (const expression of splitSqlList(selectMatch[1])) {
+      for (const reference of extractSqlReferencesFromExpression(expression, table, aliasMap)) {
+        references.push({ ...reference, type: "read", ...base });
+      }
     }
 
     for (const predicate of extractSqlPredicateFields(normalizedSql, table, aliasMap)) {
@@ -575,7 +805,7 @@ export class GoParser implements FileParser {
             type: functionMatch[1] ? "method" : "function",
             file: this.file,
             startLine: index + 1,
-            endLine: findBlockEnd(lines, index, /{/g, /}/g),
+            endLine: findBlockEnd(lines, index, /{/, /}/),
             signature: line.trim(),
           })
         );

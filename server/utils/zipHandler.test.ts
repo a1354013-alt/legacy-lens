@@ -51,4 +51,32 @@ describe("zipHandler", () => {
       expect.objectContaining({ code: "IMPORT_LIMITED_ANALYSIS", filePath: "layout.fmx" }),
     ]));
   });
+
+  it("does not count ignored or unsupported entries against the source-file limit", async () => {
+    const zip = new JSZip();
+    for (let index = 0; index < 2100; index += 1) {
+      zip.file(`node_modules/pkg-${index}/index.js`, "export const x = 1;\n");
+      zip.file(`images/screenshot-${index}.png`, "binary");
+    }
+    zip.file("src/main.go", "package main\nfunc main() {}\n");
+    zip.file("src/schema.sql", "SELECT 1;\n");
+
+    const base64 = await zip.generateAsync({ type: "base64" });
+    const result = await extractFilesFromZip(base64);
+
+    expect(result.files.map((file) => file.path).sort()).toEqual(["src/main.go", "src/schema.sql"]);
+  });
+
+  it("still rejects archives with too many supported source files", async () => {
+    const zip = new JSZip();
+    for (let index = 0; index < 2001; index += 1) {
+      zip.file(`src/file-${index}.go`, "package main\n");
+    }
+
+    const base64 = await zip.generateAsync({ type: "base64" });
+    await expect(extractFilesFromZip(base64)).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: expect.stringContaining("too many source files"),
+    });
+  });
 });

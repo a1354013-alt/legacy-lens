@@ -1,7 +1,7 @@
 import { COOKIE_NAME } from "@shared/const";
 import { focusLanguageSchema, projectSourceTypeSchema } from "@shared/contracts";
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { analysisResults, projects, risks, symbols } from "../drizzle/schema";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -93,10 +93,15 @@ export const appRouter = router({
         const db = await getDb();
         if (!db) return [];
 
-        const [projectRows, reportRows] = await Promise.all([
-          db.select().from(projects).where(eq(projects.userId, ctx.user.id)).orderBy(desc(projects.id)),
-          db.select({ projectId: analysisResults.projectId, status: analysisResults.status }).from(analysisResults),
-        ]);
+        const projectRows = await db.select().from(projects).where(eq(projects.userId, ctx.user.id)).orderBy(desc(projects.id));
+        if (projectRows.length === 0) {
+          return [];
+        }
+
+        const reportRows = await db
+          .select({ projectId: analysisResults.projectId, status: analysisResults.status })
+          .from(analysisResults)
+          .where(inArray(analysisResults.projectId, projectRows.map((project) => project.id)));
 
         const analysisStatusByProjectId = new Map(reportRows.map((row) => [row.projectId, row.status]));
         return projectRows.map((project) => ({

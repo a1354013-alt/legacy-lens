@@ -26,6 +26,8 @@ export interface RateLimiterConfig {
   skipFailedRequests?: boolean;
 }
 
+type TrustProxyValue = boolean | number | string | string[];
+
 const defaultConfigs: Record<string, RateLimiterConfig> = {
   auth: {
     windowMs: 15 * 60 * 1000,
@@ -68,17 +70,36 @@ const defaultConfigs: Record<string, RateLimiterConfig> = {
   },
 };
 
+function parseTrustedProxySetting(rawValue: string | undefined): TrustProxyValue {
+  const normalized = String(rawValue ?? "").trim();
+  if (!normalized) {
+    return false;
+  }
+
+  const lowerValue = normalized.toLowerCase();
+  if (lowerValue === "true") {
+    return true;
+  }
+  if (lowerValue === "false") {
+    return false;
+  }
+  if (/^\d+$/.test(normalized)) {
+    return Number.parseInt(normalized, 10);
+  }
+  if (normalized.includes(",")) {
+    return normalized
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return normalized;
+}
+
+export function configureTrustProxy(app: Express, env: NodeJS.ProcessEnv = process.env) {
+  app.set("trust proxy", parseTrustedProxySetting(env.LEGACY_LENS_TRUST_PROXY));
+}
+
 function getClientIp(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-
-  if (Array.isArray(forwarded) && forwarded.length > 0) {
-    return forwarded[0] ?? req.ip ?? "anonymous";
-  }
-
-  if (typeof forwarded === "string" && forwarded.trim() !== "") {
-    return forwarded.split(",")[0]?.trim() || req.ip || "anonymous";
-  }
-
   return req.ip || "anonymous";
 }
 

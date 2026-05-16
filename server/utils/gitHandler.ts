@@ -1,3 +1,4 @@
+import { lookup } from "node:dns/promises";
 import { promises as fs } from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -26,6 +27,23 @@ const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
 const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 const GIT_CLONE_TIMEOUT_MS = 120_000;
 const DEFAULT_PRODUCTION_GIT_HOST_ALLOWLIST = ["github.com", "gitlab.com"] as const;
+const unsafeAddressBlockList = new net.BlockList();
+
+unsafeAddressBlockList.addAddress("0.0.0.0");
+unsafeAddressBlockList.addAddress("169.254.169.254");
+unsafeAddressBlockList.addAddress("::", "ipv6");
+unsafeAddressBlockList.addAddress("::1", "ipv6");
+unsafeAddressBlockList.addSubnet("10.0.0.0", 8);
+unsafeAddressBlockList.addSubnet("100.64.0.0", 10);
+unsafeAddressBlockList.addSubnet("127.0.0.0", 8);
+unsafeAddressBlockList.addSubnet("169.254.0.0", 16);
+unsafeAddressBlockList.addSubnet("172.16.0.0", 12);
+unsafeAddressBlockList.addSubnet("192.168.0.0", 16);
+unsafeAddressBlockList.addSubnet("fc00::", 7, "ipv6");
+unsafeAddressBlockList.addSubnet("fe80::", 10, "ipv6");
+
+type ResolvedAddress = { address: string; family: 4 | 6 };
+type ResolveDns = (hostname: string) => Promise<ResolvedAddress[]>;
 
 // Exported for tests (import safety must remain stable).
 export function normalizeRepoPath(filePath: string): string {
@@ -122,31 +140,61 @@ function isLoopbackHost(host: string) {
   return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(host);
 }
 
-function isPrivateIpAddress(host: string) {
-  const normalizedHost = host.toLowerCase();
-  if (net.isIP(normalizedHost) === 4) {
-    const octets = normalizedHost.split(".").map((segment) => Number.parseInt(segment, 10));
-    const [first, second] = octets;
-    if (first === 10) return true;
-    if (first === 127) return true;
-    if (first === 169 && second === 254) return true;
-    if (first === 172 && second >= 16 && second <= 31) return true;
-    if (first === 192 && second === 168) return true;
+function normalizeIpAddress(address: string) {
+  return address.toLowerCase().split("%")[0] ?? address.toLowerCase();
+}
+
+function isUnsafeResolvedAddress(address: string) {
+  const normalizedAddress = normalizeIpAddress(address);
+  const family = net.isIP(normalizedAddress);
+
+  if (family === 0) {
     return false;
   }
 
-  if (net.isIP(normalizedHost) === 6) {
-    if (normalizedHost === "::1") return true;
-    if (normalizedHost.startsWith("fc") || normalizedHost.startsWith("fd")) return true;
-    if (normalizedHost.startsWith("fe8") || normalizedHost.startsWith("fe9") || normalizedHost.startsWith("fea") || normalizedHost.startsWith("feb")) {
-      return true;
-    }
+  if (family === 6 && normalizedAddress.startsWith("::ffff:")) {
+    return isUnsafeResolvedAddress(normalizedAddress.slice("::ffff:".length));
   }
 
-  return false;
+  return unsafeAddressBlockList.check(normalizedAddress, family === 6 ? "ipv6" : "ipv4");
 }
 
-export function assertSafeGitUrl(gitUrl: string, env: NodeJS.ProcessEnv = process.env) {
+async function resolveDnsHost(host: string): Promise<ResolvedAddress[]> {
+  const resolved = await lookup(host, { all: true, verbatim: true });
+  return resolved
+    .filter((entry): entry is typeof entry & { family: 4 | 6 } => entry.family === 4 || entry.family === 6)
+    .map((entry) => ({
+      address: normalizeIpAddress(entry.address),
+      family: entry.family,
+    }));
+}
+
+async function resolveGitHostAddresses(host: string, resolver: ResolveDns) {
+  const literalFamily = net.isIP(host);
+  if (literalFamily === 4 || literalFamily === 6) {
+    return [{ address: normalizeIpAddress(host), family: literalFamily }];
+  }
+
+  try {
+    const resolved = await resolver(host);
+    if (resolved.length === 0) {
+      throw new Error("No addresses returned");
+    }
+    return resolved;
+  } catch (error) {
+    throw new AppError(
+      "INVALID_GIT_URL",
+      `Git import blocked: failed to resolve host "${host}" before clone.`,
+      error instanceof Error ? error.message : undefined
+    );
+  }
+}
+
+export async function assertSafeGitUrl(
+  gitUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+  resolver: ResolveDns = resolveDnsHost
+) {
   if (!isValidGitUrl(gitUrl)) {
     throw new AppError("INVALID_GIT_URL", "Repository URL is invalid or unsupported.");
   }
@@ -156,11 +204,15 @@ export function assertSafeGitUrl(gitUrl: string, env: NodeJS.ProcessEnv = proces
     throw new AppError("INVALID_GIT_URL", `Git import blocked: host "${host}" is not allowed.`);
   }
 
-  if (isPrivateIpAddress(host)) {
-    throw new AppError("INVALID_GIT_URL", `Git import blocked: private or link-local host "${host}" is not allowed.`);
-  }
-
   if (!isProductionEnv(env)) {
+    const resolvedAddresses = await resolveGitHostAddresses(host, resolver);
+    const unsafeAddress = resolvedAddresses.find((entry) => isUnsafeResolvedAddress(entry.address));
+    if (unsafeAddress) {
+      throw new AppError(
+        "INVALID_GIT_URL",
+        `Git import blocked: host "${host}" resolves to unsafe address "${unsafeAddress.address}".`
+      );
+    }
     return;
   }
 
@@ -169,6 +221,15 @@ export function assertSafeGitUrl(gitUrl: string, env: NodeJS.ProcessEnv = proces
     throw new AppError(
       "INVALID_GIT_URL",
       `Git import blocked in production: host "${host}" is not in LEGACY_LENS_GIT_HOST_ALLOWLIST.`
+    );
+  }
+
+  const resolvedAddresses = await resolveGitHostAddresses(host, resolver);
+  const unsafeAddress = resolvedAddresses.find((entry) => isUnsafeResolvedAddress(entry.address));
+  if (unsafeAddress) {
+    throw new AppError(
+      "INVALID_GIT_URL",
+      `Git import blocked: host "${host}" resolves to unsafe address "${unsafeAddress.address}".`
     );
   }
 }
@@ -186,7 +247,7 @@ export async function cloneAndExtractFiles(
   files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
-  assertSafeGitUrl(gitUrl);
+  await assertSafeGitUrl(gitUrl);
   const repoName = extractRepoName(gitUrl);
   const repoPath = path.join(tempDir, repoName);
 

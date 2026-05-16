@@ -49,6 +49,24 @@ export function getAnalysisViewState(status: ProjectStatus | null | undefined, a
   return "idle" satisfies AnalysisViewState;
 }
 
+export function canDownloadAnalysisReport(snapshot: AnalysisSnapshot | undefined) {
+  const report = snapshot?.report;
+  if (!report) {
+    return false;
+  }
+
+  if (report.status !== "completed" && report.status !== "partial") {
+    return false;
+  }
+
+  return Boolean(
+    report.flowMarkdown &&
+      report.dataDependencyMarkdown &&
+      report.risksMarkdown &&
+      report.rulesYaml
+  );
+}
+
 export function filterSymbols(snapshot: AnalysisSnapshot | undefined, filter: SymbolFilter) {
   const search = normalize(filter.search);
   return (snapshot?.symbols ?? []).filter((symbol) => {

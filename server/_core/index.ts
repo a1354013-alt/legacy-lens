@@ -12,7 +12,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { serveStatic, setupVite } from "./vite";
 import { logger } from "./logger";
 import { registerHealthEndpoint } from "./health";
-import { registerRateLimiters } from "./rateLimiter";
+import { configureTrustProxy, registerRateLimiters } from "./rateLimiter";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -50,6 +50,7 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
+  configureTrustProxy(app);
 
   // Middleware order matters!
   // Health endpoints first (no rate limiting)

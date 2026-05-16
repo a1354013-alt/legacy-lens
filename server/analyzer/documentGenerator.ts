@@ -4,6 +4,10 @@ function unique<T>(values: T[]) {
   return Array.from(new Set(values));
 }
 
+function stringifyYamlScalar(value: string | null | undefined) {
+  return JSON.stringify(String(value ?? ""));
+}
+
 export class DocumentGenerator {
   generateFlowDocument(symbols: AnalyzedSymbol[], dependencies: SymbolDependency[]): string {
     const symbolByKey = new Map(symbols.map((symbol) => [symbol.stableKey, symbol]));
@@ -125,19 +129,18 @@ export class DocumentGenerator {
   generateRulesYaml(rules: DetectedRule[]): string {
     const lines = ["rules:"];
     if (rules.length === 0) {
-      lines.push("  []");
-      return lines.join("\n");
+      return "rules: []";
     }
 
     for (const rule of rules) {
-      lines.push(`  - name: ${rule.name}`);
-      lines.push(`    type: ${rule.ruleType}`);
-      lines.push(`    description: ${rule.description.replace(/\n/g, " ")}`);
+      lines.push(`  - name: ${stringifyYamlScalar(rule.name)}`);
+      lines.push(`    type: ${stringifyYamlScalar(rule.ruleType)}`);
+      lines.push(`    description: ${stringifyYamlScalar(rule.description)}`);
       if (rule.condition) {
-        lines.push(`    condition: ${rule.condition.replace(/\n/g, " ")}`);
+        lines.push(`    condition: ${stringifyYamlScalar(rule.condition)}`);
       }
       if (rule.sourceFile) {
-        lines.push(`    source: ${rule.sourceFile}${rule.lineNumber ? `:${rule.lineNumber}` : ""}`);
+        lines.push(`    source: ${stringifyYamlScalar(`${rule.sourceFile}${rule.lineNumber ? `:${rule.lineNumber}` : ""}`)}`);
       }
     }
 

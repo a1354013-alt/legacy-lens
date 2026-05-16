@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
+  canDownloadAnalysisReport,
   filterFields,
   filterRisks,
   filterRules,
@@ -121,6 +122,7 @@ export default function AnalysisResult() {
   );
 
   const canRunAnalysis = project ? ["ready", "failed", "completed"].includes(project.status) : false;
+  const canDownloadReport = canDownloadAnalysisReport(snapshot);
   const isAnalyzing = viewState === "analyzing";
   const isFailed = viewState === "failed";
 
@@ -207,7 +209,7 @@ export default function AnalysisResult() {
               <RefreshCcw className="mr-2 size-4" />
               重新整理
             </Button>
-            <Button onClick={handleDownloadReport} disabled={reportDownloadQuery.isFetching || !report || isAnalyzing}>
+            <Button onClick={handleDownloadReport} disabled={reportDownloadQuery.isFetching || !canDownloadReport || isAnalyzing}>
               {reportDownloadQuery.isFetching ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}
               下載 ZIP 報告
             </Button>

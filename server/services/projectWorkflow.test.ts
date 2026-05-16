@@ -4,6 +4,7 @@ type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
 type Condition =
   | { type: "eq"; column: string; value: unknown }
+  | { type: "inArray"; column: string; values: unknown[] }
   | { type: "and"; conditions: Condition[] }
   | undefined;
 type SortOrder = { type: "desc"; column: string } | undefined;
@@ -13,12 +14,15 @@ let gitFiles: Array<{ path: string; fileName: string; content: string; language:
 let importWarnings: Array<{ code: string; message: string; filePath?: string }> = [];
 let analyzerResult: Record<string, unknown> | null = null;
 let fakeDb: ReturnType<typeof createFakeDb>;
+let failRootProjectReadsDuringTransaction = false;
+let transactionDepth = 0;
 
 vi.mock("drizzle-orm", async () => {
   const actual = await vi.importActual<typeof import("drizzle-orm")>("drizzle-orm");
   return {
     ...actual,
     eq: (column: { name: string }, value: unknown) => ({ type: "eq", column: column.name, value }),
+    inArray: (column: { name: string }, values: unknown[]) => ({ type: "inArray", column: column.name, values }),
     and: (...conditions: Condition[]) => ({ type: "and", conditions: conditions.filter(Boolean) as Condition[] }),
     desc: (column: { name: string }) => ({ type: "desc", column: column.name }),
   };
@@ -35,7 +39,7 @@ vi.mock("../utils/zipHandler", () => ({
 }));
 
 vi.mock("../utils/gitHandler", () => ({
-  assertSafeGitUrl: vi.fn((url: string) => {
+  assertSafeGitUrl: vi.fn(async (url: string) => {
     if (!/^https:\/\/example\.com\/.+/.test(url)) {
       throw new Error("Repository URL is invalid or unsupported.");
     }
@@ -61,6 +65,9 @@ function matches(condition: Condition, row: Row): boolean {
   if (!condition) return true;
   if (condition.type === "eq") {
     return row[condition.column] === condition.value;
+  }
+  if (condition.type === "inArray") {
+    return condition.values.includes(row[condition.column]);
   }
   return condition.conditions.every((child) => matches(child, row));
 }
@@ -147,6 +154,9 @@ function createFakeDb(initialStore?: Partial<Store>) {
   const db: any = {
     store,
     select(selection?: Row) {
+      if (failRootProjectReadsDuringTransaction && transactionDepth > 0) {
+        throw new Error("Root database handle was used while a transaction was active.");
+      }
       return new SelectQuery(selection);
     },
     insert(table: object) {
@@ -183,7 +193,21 @@ function createFakeDb(initialStore?: Partial<Store>) {
         },
       };
     },
-    transaction: async <T>(callback: (tx: typeof db) => Promise<T>) => callback(db),
+    transaction: async <T>(callback: (tx: typeof db) => Promise<T>) => {
+      transactionDepth += 1;
+      const tx = {
+        ...db,
+        select(selection?: Row) {
+          return new SelectQuery(selection);
+        },
+      };
+
+      try {
+        return await callback(tx);
+      } finally {
+        transactionDepth -= 1;
+      }
+    },
   };
 
   return db;
@@ -195,6 +219,8 @@ beforeEach(() => {
   gitFiles = [];
   importWarnings = [];
   analyzerResult = null;
+  failRootProjectReadsDuringTransaction = false;
+  transactionDepth = 0;
 });
 
 describe("project workflow", () => {
@@ -419,6 +445,154 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({
       status: "completed",
       analysisProgress: 100,
+    });
+  });
+
+  it("keeps state transitions on the transaction handle while analyzing", async () => {
+    const { analyzeProject } = await import("./projectWorkflow");
+    failRootProjectReadsDuringTransaction = true;
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "tx-analysis-project",
+      language: "go",
+      sourceType: "upload",
+      status: "ready",
+      importProgress: 100,
+      analysisProgress: 0,
+      errorMessage: null,
+      lastErrorCode: null,
+    });
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 1,
+      filePath: "main.go",
+      fileName: "main.go",
+      fileType: ".go",
+      content: "package main",
+      lineCount: 1,
+      status: "stored",
+    });
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "go",
+      symbols: [],
+      dependencies: [],
+      fieldReferences: [],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA_DEPENDENCY",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 1,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 0,
+        dependencyCount: 0,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    await expect(analyzeProject(1, 7)).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("preserves valid importing/analyzing/completed/failed workflow transitions", async () => {
+    const { analyzeProject, importProjectZip } = await import("./projectWorkflow");
+    fakeDb.store.projects.push(
+      {
+        id: 1,
+        userId: 7,
+        name: "importing-project",
+        language: "go",
+        sourceType: "upload",
+        status: "draft",
+        importProgress: 0,
+        analysisProgress: 0,
+        errorMessage: null,
+        lastErrorCode: null,
+      },
+      {
+        id: 2,
+        userId: 7,
+        name: "failing-project",
+        language: "go",
+        sourceType: "upload",
+        status: "ready",
+        importProgress: 100,
+        analysisProgress: 0,
+        errorMessage: null,
+        lastErrorCode: null,
+      }
+    );
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 2,
+      filePath: "main.go",
+      fileName: "main.go",
+      fileType: ".go",
+      content: "package main",
+      lineCount: 1,
+      status: "stored",
+    });
+    zipFiles = [{ path: "fresh.go", fileName: "fresh.go", content: "package main", language: "go", size: 10 }];
+    analyzerResult = {
+      projectId: 2,
+      status: "failed",
+      language: "go",
+      symbols: [],
+      dependencies: [],
+      fieldReferences: [],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "",
+      dataDependencyDocument: "",
+      risksDocument: "",
+      rulesYaml: "",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 0,
+        skippedFileCount: 1,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 0,
+        dependencyCount: 0,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    await expect(importProjectZip(1, 7, "encoded")).resolves.toMatchObject({ files: [expect.objectContaining({ path: "fresh.go" })] });
+    expect(fakeDb.store.projects.find((project: Row) => project.id === 1)).toMatchObject({
+      status: "ready",
+      importProgress: 100,
+    });
+
+    await expect(analyzeProject(2, 7)).rejects.toMatchObject({ code: "ANALYSIS_FAILED" });
+    expect(fakeDb.store.projects.find((project: Row) => project.id === 2)).toMatchObject({
+      status: "failed",
+      analysisProgress: 0,
+      lastErrorCode: "ANALYSIS_FAILED",
+    });
+    expect(fakeDb.store.analysisResults.find((report: Row) => report.projectId === 2)).toMatchObject({
+      status: "failed",
     });
   });
 

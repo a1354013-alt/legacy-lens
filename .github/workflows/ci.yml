@@ -129,10 +129,6 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run npm audit
-        run: pnpm audit --audit-level moderate
-        continue-on-error: true
-
-      - name: Check for vulnerable dependencies
-        run: |
-          echo "Security scan completed"
-          echo "Review any reported vulnerabilities in the audit output above"
+        # Keep CI stable for a demo app by failing only on high/critical findings.
+        # Lower-severity advisories should still be reviewed, but they do not block every run.
+        run: pnpm audit --audit-level high

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisSnapshot } from "@shared/contracts";
 import {
+  canDownloadAnalysisReport,
   filterFields,
   filterRisks,
   filterRules,
@@ -133,5 +134,44 @@ describe("analysisResultModel", () => {
     expect(getAnalysisViewState("analyzing", "pending", false)).toBe("analyzing");
     expect(getAnalysisViewState("completed", "completed", true)).toBe("completed");
     expect(getAnalysisViewState("failed", "failed", false)).toBe("failed");
+  });
+
+  it("enables report download only for completed or partial reports with all snapshot artifacts", () => {
+    const completedSnapshot = createSnapshot();
+    const partialSnapshot = {
+      ...createSnapshot(),
+      report: {
+        ...createSnapshot().report!,
+        status: "partial" as const,
+      },
+    };
+    const failedSnapshot = {
+      ...createSnapshot(),
+      report: {
+        ...createSnapshot().report!,
+        status: "failed" as const,
+      },
+    };
+    const pendingSnapshot = {
+      ...createSnapshot(),
+      report: {
+        ...createSnapshot().report!,
+        status: "processing" as const,
+      },
+    };
+    const missingYamlSnapshot = {
+      ...createSnapshot(),
+      report: {
+        ...createSnapshot().report!,
+        rulesYaml: null,
+      },
+    };
+
+    expect(canDownloadAnalysisReport(completedSnapshot)).toBe(true);
+    expect(canDownloadAnalysisReport(partialSnapshot)).toBe(true);
+    expect(canDownloadAnalysisReport(failedSnapshot)).toBe(false);
+    expect(canDownloadAnalysisReport(pendingSnapshot)).toBe(false);
+    expect(canDownloadAnalysisReport(missingYamlSnapshot)).toBe(false);
+    expect(canDownloadAnalysisReport(undefined)).toBe(false);
   });
 });

@@ -5,6 +5,7 @@ import iconvLite from "iconv-lite";
 import jschardet from "jschardet";
 
 const MAX_FILES_IN_ZIP = 2_000;
+const MAX_TOTAL_ENTRIES_IN_ZIP = 10_000;
 const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
 const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 
@@ -144,10 +145,11 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
     const extractedFiles: ExtractedFile[] = [];
     const warnings: ImportWarning[] = [];
     let totalExtractedSize = 0;
+    let sourceCandidateCount = 0;
 
     const entries = Object.entries(zip.files);
-    if (entries.length > MAX_FILES_IN_ZIP) {
-      throw new AppError("ZIP_INVALID", `Archive contains too many entries (${entries.length}). Limit: ${MAX_FILES_IN_ZIP}.`);
+    if (entries.length > MAX_TOTAL_ENTRIES_IN_ZIP) {
+      throw new AppError("ZIP_INVALID", `Archive contains too many entries (${entries.length}). Limit: ${MAX_TOTAL_ENTRIES_IN_ZIP}.`);
     }
 
     for (const [rawPath, entry] of entries) {
@@ -187,6 +189,11 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
           });
         }
         continue;
+      }
+
+      sourceCandidateCount += 1;
+      if (sourceCandidateCount > MAX_FILES_IN_ZIP) {
+        throw new AppError("ZIP_INVALID", `Archive contains too many source files (${sourceCandidateCount}). Limit: ${MAX_FILES_IN_ZIP}.`);
       }
 
       const fileBuffer = await entry.async("nodebuffer");

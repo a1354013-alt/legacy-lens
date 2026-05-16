@@ -6,6 +6,7 @@ type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
 type Condition =
   | { type: "eq"; column: string; value: unknown }
+  | { type: "inArray"; column: string; values: unknown[] }
   | { type: "and"; conditions: Condition[] }
   | undefined;
 type SortOrder = { type: "desc"; column: string } | undefined;
@@ -19,6 +20,7 @@ vi.mock("drizzle-orm", async () => {
   return {
     ...actual,
     eq: (column: { name: string }, value: unknown) => ({ type: "eq", column: column.name, value }),
+    inArray: (column: { name: string }, values: unknown[]) => ({ type: "inArray", column: column.name, values }),
     and: (...conditions: Condition[]) => ({ type: "and", conditions: conditions.filter(Boolean) as Condition[] }),
     desc: (column: { name: string }) => ({ type: "desc", column: column.name }),
   };
@@ -35,7 +37,7 @@ vi.mock("./utils/zipHandler", () => ({
 }));
 
 vi.mock("./utils/gitHandler", () => ({
-  assertSafeGitUrl: vi.fn(() => undefined),
+  assertSafeGitUrl: vi.fn(async () => undefined),
   cloneAndExtractFiles: vi.fn(async () => ({ files: zipFiles, warnings: [] })),
   cleanupTempDir: vi.fn(async () => undefined),
 }));
@@ -57,6 +59,9 @@ function matches(condition: Condition, row: Row): boolean {
   if (!condition) return true;
   if (condition.type === "eq") {
     return row[condition.column] === condition.value;
+  }
+  if (condition.type === "inArray") {
+    return condition.values.includes(row[condition.column]);
   }
   return condition.conditions.every((child) => matches(child, row));
 }
@@ -280,5 +285,27 @@ describe("appRouter integration", () => {
     expect(metadataJson.symbolCount).toBe(1);
     expect(metadataJson.dependencyCount).toBe(0);
     expect(metadataJson.warningCount).toBe(1);
+  });
+
+  it("lists only the current user's analysis results", async () => {
+    const { appRouter } = await import("./routers");
+    fakeDb.store.projects.push(
+      { id: 1, userId: 7, name: "owned-a", language: "go", sourceType: "upload", status: "completed" },
+      { id: 2, userId: 7, name: "owned-b", language: "sql", sourceType: "git", status: "ready" },
+      { id: 3, userId: 99, name: "other-user", language: "go", sourceType: "upload", status: "completed" }
+    );
+    fakeDb.store.analysisResults.push(
+      { id: 1, projectId: 1, status: "partial" },
+      { id: 2, projectId: 3, status: "completed" }
+    );
+
+    const caller = appRouter.createCaller(createContext());
+    const projects = await caller.projects.list();
+
+    expect(projects).toEqual([
+      expect.objectContaining({ id: 2, analysisStatus: "pending" }),
+      expect.objectContaining({ id: 1, analysisStatus: "partial" }),
+    ]);
+    expect(projects.some((project) => project.id === 3)).toBe(false);
   });
 });

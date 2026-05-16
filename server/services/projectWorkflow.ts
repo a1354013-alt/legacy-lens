@@ -168,8 +168,7 @@ export async function requireDb() {
   return db;
 }
 
-export async function getOwnedProject(projectId: number, userId: number) {
-  const db = await requireDb();
+async function getOwnedProjectWithHandle(db: DbHandle, projectId: number, userId: number) {
   const project = await db
     .select()
     .from(projects)
@@ -181,6 +180,11 @@ export async function getOwnedProject(projectId: number, userId: number) {
   }
 
   return project[0];
+}
+
+export async function getOwnedProject(projectId: number, userId: number) {
+  const db = await requireDb();
+  return getOwnedProjectWithHandle(db, projectId, userId);
 }
 
 async function replaceAnalysisResult(db: DbHandle, projectId: number, values: Omit<typeof analysisResults.$inferInsert, "projectId">) {
@@ -197,7 +201,9 @@ async function transitionProjectState(
   updates: Partial<InsertProjectRecord> & { status: ProjectStatus },
   userId?: number
 ) {
-  const current = userId ? await getOwnedProject(projectId, userId) : (await db.select().from(projects).where(eq(projects.id, projectId)).limit(1))[0];
+  const current = userId
+    ? await getOwnedProjectWithHandle(db, projectId, userId)
+    : (await db.select().from(projects).where(eq(projects.id, projectId)).limit(1))[0];
   if (!current) {
     throw new AppError("PROJECT_NOT_FOUND", "Project not found.");
   }
@@ -318,7 +324,7 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
 
 export async function importProjectGit(projectId: number, userId: number, gitUrl: string) {
   await getOwnedProject(projectId, userId);
-  assertSafeGitUrl(gitUrl);
+  await assertSafeGitUrl(gitUrl);
 
   logger.info("Import started", { projectId, action: "import.git.start", status: "ok" });
   let tempDir = "";
@@ -600,6 +606,41 @@ async function getProjectAnalysisRecord(db: DbHandle, projectId: number) {
   return report ?? null;
 }
 
+function isReportReadyForExport(
+  report: Awaited<ReturnType<typeof getProjectAnalysisRecord>>
+): report is NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>> & {
+  flowMarkdown: string;
+  dataDependencyMarkdown: string;
+  risksMarkdown: string;
+  rulesYaml: string;
+} {
+  return Boolean(
+    report &&
+      (report.status === "completed" || report.status === "partial") &&
+      report.flowMarkdown &&
+      report.dataDependencyMarkdown &&
+      report.risksMarkdown &&
+      report.rulesYaml
+  );
+}
+
+function mapSnapshotReport(report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>) {
+  return {
+    id: report.id,
+    projectId: report.projectId,
+    status: report.status,
+    flowMarkdown: report.flowMarkdown,
+    dataDependencyMarkdown: report.dataDependencyMarkdown,
+    risksMarkdown: report.risksMarkdown,
+    rulesYaml: report.rulesYaml,
+    summaryJson: report.summaryJson,
+    warningsJson: report.warningsJson,
+    errorMessage: report.errorMessage,
+    createdAt: report.createdAt,
+    updatedAt: report.updatedAt,
+  };
+}
+
 function severityRank(severity: string | null | undefined) {
   switch (severity) {
     case "critical":
@@ -812,22 +853,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
   }
 
   return {
-    report: report
-      ? {
-          id: report.id,
-          projectId: report.projectId,
-          status: report.status,
-          flowMarkdown: report.flowMarkdown,
-          dataDependencyMarkdown: report.dataDependencyMarkdown,
-          risksMarkdown: report.risksMarkdown,
-          rulesYaml: report.rulesYaml,
-          summaryJson: report.summaryJson,
-          warningsJson: report.warningsJson,
-          errorMessage: report.errorMessage,
-          createdAt: report.createdAt,
-          updatedAt: report.updatedAt,
-        }
-      : null,
+    report: report ? mapSnapshotReport(report) : null,
     symbols: sortedSymbolRows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -897,21 +923,22 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
     getProjectAnalysisRecord(db, projectId),
   ]);
 
-  if (!report || !report.flowMarkdown || !report.dataDependencyMarkdown || !report.risksMarkdown || !report.rulesYaml) {
+  if (!isReportReadyForExport(report)) {
     logger.warn("Export not ready", { projectId, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
     throw new AppError("REPORT_NOT_READY", "Analysis report is not ready for download.");
   }
+  const readyReport = report;
 
   const archive = new JSZip();
   const deterministicFileOptions = { date: new Date(0) };
-  archive.file("FLOW.md", report.flowMarkdown, deterministicFileOptions);
-  archive.file("DATA_DEPENDENCY.md", report.dataDependencyMarkdown, deterministicFileOptions);
-  archive.file("RISKS.md", report.risksMarkdown, deterministicFileOptions);
-  archive.file("RULES.yaml", report.rulesYaml, deterministicFileOptions);
+  archive.file("FLOW.md", readyReport.flowMarkdown, deterministicFileOptions);
+  archive.file("DATA_DEPENDENCY.md", readyReport.dataDependencyMarkdown, deterministicFileOptions);
+  archive.file("RISKS.md", readyReport.risksMarkdown, deterministicFileOptions);
+  archive.file("RULES.yaml", readyReport.rulesYaml, deterministicFileOptions);
 
   const version = getAppVersion();
-  const metrics = report.summaryJson ?? null;
-  const createdAtSource = report.createdAt ?? report.updatedAt ?? new Date(0);
+  const metrics = readyReport.summaryJson ?? null;
+  const createdAtSource = readyReport.createdAt ?? readyReport.updatedAt ?? new Date(0);
   const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
   const impactSummary = await generateProjectImpactSummary(db, projectId);
   const impactMarkdown = renderProjectImpactSummaryMarkdown(impactSummary, createdAtIso);
@@ -935,10 +962,10 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
     "analysis-summary.json",
     JSON.stringify(
       {
-        analysisResultId: report.id,
-        status: report.status,
-        metrics: report.summaryJson,
-        warnings: report.warningsJson,
+        analysisResultId: readyReport.id,
+        status: readyReport.status,
+        metrics: readyReport.summaryJson,
+        warnings: readyReport.warningsJson,
       },
       null,
       2
@@ -946,7 +973,7 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
     deterministicFileOptions
   );
 
-  logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: report.id });
+  logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
   const exportBaseName = sanitizeExportBaseName(project?.name ?? "project");
   return {
     fileName: `${exportBaseName}-analysis-report.zip`,
