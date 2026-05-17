@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
+import { waitForHttp } from "./docker-smoke-http.mjs";
 
 const composeProjectName = globalThis.process.env.COMPOSE_PROJECT_NAME ?? `legacy-lens-smoke-${Date.now()}`;
 const hostPort = globalThis.process.env.LEGACY_LENS_PORT ?? "38080";
 const hostDbPort = globalThis.process.env.LEGACY_LENS_DB_PORT ?? "33306";
 const pollTimeoutMs = Number.parseInt(globalThis.process.env.LEGACY_LENS_SMOKE_TIMEOUT_MS ?? "180000", 10);
 const pollIntervalMs = 2_000;
+const httpRequestTimeoutMs = 3_000;
 const services = ["db", "migrate", "app"];
 
 let lastMigrateOutput = "";
@@ -120,10 +122,8 @@ async function dumpDiagnostics(contextMessage) {
     }
   }
 
-  if (lastMigrateOutput) {
-    globalThis.console.error("\n[migrate run output]");
-    globalThis.console.error(lastMigrateOutput.trimEnd());
-  }
+  globalThis.console.error("\n[migrate run output]");
+  globalThis.console.error(lastMigrateOutput ? lastMigrateOutput.trimEnd() : "No migrate run output captured.");
 }
 
 async function getComposeContainerId(service) {
@@ -182,32 +182,43 @@ async function waitForServiceHealthy(service) {
   throw new Error(`Timed out waiting for service "${service}" to become healthy. Last state: ${lastStateSummary}.`);
 }
 
-async function waitForHttp(url, validator) {
+async function waitForServiceRunning(service) {
   const startedAt = Date.now();
-  let lastError = null;
-  let lastStatus = null;
+  let lastStateSummary = "container not created";
 
   while (Date.now() - startedAt < pollTimeoutMs) {
-    try {
-      const response = await globalThis.fetch(url, { redirect: "manual" });
-      lastStatus = response.status;
-      if (await validator(response)) {
-        return;
-      }
+    const containerId = await getComposeContainerId(service);
+    if (!containerId) {
+      lastStateSummary = "container id unavailable";
+      await new Promise((resolve) => globalThis.setTimeout(resolve, pollIntervalMs));
+      continue;
+    }
 
-      lastError = new Error(`Unexpected response ${response.status} from ${url}`);
-    } catch (error) {
-      lastError = error;
+    const state = await inspectContainerState(containerId);
+    const status = state.Status ?? "unknown";
+    const healthStatus = state.Health?.Status;
+    lastStateSummary = healthStatus ? `${status}/${healthStatus}` : status;
+
+    if (status === "exited" || status === "dead") {
+      throw new Error(`Service "${service}" is ${status}.`);
+    }
+
+    if (status === "running") {
+      return;
     }
 
     await new Promise((resolve) => globalThis.setTimeout(resolve, pollIntervalMs));
   }
 
-  if (lastError instanceof Error) {
-    throw new Error(`${lastError.message}${lastStatus ? ` (last status: ${lastStatus})` : ""}`);
-  }
+  throw new Error(`Timed out waiting for service "${service}" to run. Last state: ${lastStateSummary}.`);
+}
 
-  throw new Error(`Timed out waiting for ${url}${lastStatus ? ` (last status: ${lastStatus})` : ""}`);
+async function waitForSmokeHttp(url, validator) {
+  await waitForHttp(url, validator, {
+    pollIntervalMs,
+    requestTimeoutMs: httpRequestTimeoutMs,
+    timeoutMs: pollTimeoutMs,
+  });
 }
 
 async function verifyDockerAvailable() {
@@ -253,14 +264,17 @@ async function main() {
     globalThis.console.log("\n[step] docker compose up -d --no-deps app");
     await runCompose(["up", "-d", "--no-deps", "app"]);
 
+    globalThis.console.log("\n[step] wait for app running");
+    await waitForServiceRunning("app");
+
     globalThis.console.log("\n[step] wait for /health");
-    await waitForHttp(`http://127.0.0.1:${hostPort}/health`, async (response) => response.ok);
+    await waitForSmokeHttp(`http://127.0.0.1:${hostPort}/health`, async (response) => response.ok);
 
     globalThis.console.log("\n[step] wait for /api/health");
-    await waitForHttp(`http://127.0.0.1:${hostPort}/api/health`, async (response) => response.ok);
+    await waitForSmokeHttp(`http://127.0.0.1:${hostPort}/api/health`, async (response) => response.ok);
 
     globalThis.console.log("\n[step] wait for /api/dev/login redirect");
-    await waitForHttp(
+    await waitForSmokeHttp(
       `http://127.0.0.1:${hostPort}/api/dev/login?next=%2F`,
       async (response) => response.status >= 300 && response.status < 400
     );
