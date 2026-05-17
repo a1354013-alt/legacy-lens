@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import { JSON_UPLOAD_BODY_LIMIT_BYTES } from "@shared/const";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { validateDbConfig, closeDb } from "../db";
@@ -13,6 +14,7 @@ import { serveStatic } from "./static";
 import { logger } from "./logger";
 import { registerHealthEndpoint } from "./health";
 import { configureTrustProxy, registerRateLimiters } from "./rateLimiter";
+import { registerReportDownloadRoute } from "./reportRoute";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -59,9 +61,9 @@ async function startServer() {
   // Rate limiting
   registerRateLimiters(app);
   
-  // Body parsers with increased limits for large uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Body parsers with enough headroom for the shared raw ZIP upload limit after base64 encoding.
+  app.use(express.json({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES }));
+  app.use(express.urlencoded({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES, extended: true }));
 
   // Logging middleware
   app.use((req, res, next) => {
@@ -82,6 +84,7 @@ async function startServer() {
 
   registerDevAuthRoutes(app);
   registerOAuthRoutes(app);
+  registerReportDownloadRoute(app);
   app.use(
     "/api/trpc",
     createExpressMiddleware({

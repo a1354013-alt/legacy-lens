@@ -29,7 +29,6 @@ import { getAppVersion } from "../_core/version";
 import {
   mapSnapshotReport,
   renderProjectImpactSummaryMarkdown,
-  sanitizeExportBaseName,
   severityRank,
   sortFieldDependencies,
   sortProjectDependencies,
@@ -738,7 +737,11 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
   };
 }
 
-export async function buildReportArchive(projectId: number, userId: number): Promise<ReportArchivePayload> {
+function buildReportFileName(projectId: number) {
+  return `legacy-lens-report-${projectId}.zip`;
+}
+
+export async function buildReportArchiveBuffer(projectId: number, userId: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
   await getOwnedProject(projectId, userId);
   logger.info("Export started", { projectId, action: "export.zip.start", status: "ok" });
   const db = await requireDb();
@@ -798,11 +801,19 @@ export async function buildReportArchive(projectId: number, userId: number): Pro
   );
 
   logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
-  const exportBaseName = sanitizeExportBaseName(project?.name ?? "project");
   return {
-    fileName: `${exportBaseName}-analysis-report.zip`,
+    fileName: buildReportFileName(projectId),
     mimeType: "application/zip",
-    base64: await archive.generateAsync({ type: "base64" }),
+    buffer: await archive.generateAsync({ type: "nodebuffer" }),
+  };
+}
+
+export async function buildReportArchive(projectId: number, userId: number): Promise<ReportArchivePayload> {
+  const archive = await buildReportArchiveBuffer(projectId, userId);
+  return {
+    fileName: archive.fileName,
+    mimeType: archive.mimeType,
+    base64: archive.buffer.toString("base64"),
   };
 }
 

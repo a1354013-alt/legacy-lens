@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import { promises as fs } from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { MAX_EXTRACTED_BYTES, MAX_FILE_COUNT, MAX_SINGLE_FILE_BYTES, formatBytes } from "../../shared/const";
 import type { FocusLanguage, ImportWarning } from "../../shared/contracts";
 import { simpleGit } from "simple-git";
 import { AppError } from "../appError";
@@ -22,9 +23,6 @@ const IGNORED_DIRECTORIES = new Set([
 
 const LIMITED_ANALYSIS_EXTENSIONS = new Set([".dfm", ".inc", ".dpk", ".fmx"]);
 
-const MAX_FILES_IN_REPO = 2_000;
-const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
-const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 const GIT_CLONE_TIMEOUT_MS = 120_000;
 const DEFAULT_PRODUCTION_GIT_HOST_ALLOWLIST = ["github.com", "gitlab.com"] as const;
 const unsafeAddressBlockList = new net.BlockList();
@@ -288,8 +286,8 @@ export async function cloneAndExtractFiles(
     await simpleGit({ timeout: { block: GIT_CLONE_TIMEOUT_MS } }).clone(gitUrl, repoPath, ["--depth", "1", "--no-tags"]);
     const realRepoPath = await fs.realpath(repoPath);
     const extracted = await scanDirectoryForCodeFiles(repoPath, undefined, {
-      fileLimit: MAX_FILES_IN_REPO,
-      maxTotalBytes: MAX_TOTAL_EXTRACTED_SIZE,
+      fileLimit: MAX_FILE_COUNT,
+      maxTotalBytes: MAX_EXTRACTED_BYTES,
     }, undefined, realRepoPath, new Map());
     if (extracted.files.length === 0) {
       throw new AppError("EMPTY_SOURCE", "The repository does not contain supported Go, SQL, or Delphi source files. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx");
@@ -317,7 +315,7 @@ export async function cloneAndExtractFiles(
 async function scanDirectoryForCodeFiles(
   directoryPath: string,
   baseDir: string = directoryPath,
-  limits: { fileLimit: number; maxTotalBytes: number } = { fileLimit: MAX_FILES_IN_REPO, maxTotalBytes: MAX_TOTAL_EXTRACTED_SIZE },
+  limits: { fileLimit: number; maxTotalBytes: number } = { fileLimit: MAX_FILE_COUNT, maxTotalBytes: MAX_EXTRACTED_BYTES },
   state: { totalFiles: number; totalBytes: number } = { totalFiles: 0, totalBytes: 0 },
   realBaseDir: string = baseDir,
   realpathCache: Map<string, string> = new Map()
@@ -401,13 +399,11 @@ async function scanDirectoryForCodeFiles(
       });
     }
     const size = Buffer.byteLength(decoded.content, "utf8");
-    if (size > MAX_SINGLE_FILE_SIZE) {
-      warnings.push({
-        code: "IMPORT_FILE_TOO_LARGE",
-        message: `The file was skipped because it exceeds the maximum supported size (${Math.round(MAX_SINGLE_FILE_SIZE / (1024 * 1024))}MB).`,
-        filePath: relativePath,
-      });
-      continue;
+    if (size > MAX_SINGLE_FILE_BYTES) {
+      throw new AppError(
+        "IMPORT_FAILED",
+        `Repository contains a source file larger than the allowed single-file limit (${formatBytes(MAX_SINGLE_FILE_BYTES)}): ${relativePath}.`
+      );
     }
 
     state.totalFiles += 1;
@@ -417,7 +413,7 @@ async function scanDirectoryForCodeFiles(
 
     state.totalBytes += size;
     if (state.totalBytes > limits.maxTotalBytes) {
-      throw new AppError("IMPORT_FAILED", `Repository import exceeds the allowed total size limit (${Math.round(limits.maxTotalBytes / (1024 * 1024))}MB).`);
+      throw new AppError("IMPORT_FAILED", `Repository import exceeds the allowed total size limit (${formatBytes(limits.maxTotalBytes)}).`);
     }
 
     const language = detectLanguage(extension);

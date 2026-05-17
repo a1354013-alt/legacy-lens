@@ -1,11 +1,12 @@
 import type { Express } from "express";
 import { getDb } from "../db";
-import { getAppVersion } from "./version";
+import { getAppVersion, getCommitHash } from "./version";
 
 export interface HealthStatus {
   status: "healthy" | "unhealthy" | "degraded";
   timestamp: string;
   version: string;
+  commitHash: string;
   checks: {
     database?: {
       status: "up" | "down";
@@ -126,6 +127,7 @@ export async function getHealthStatus(): Promise<HealthStatus> {
     status,
     timestamp: new Date().toISOString(),
     version: getAppVersion(),
+    commitHash: getCommitHash(),
     checks,
   };
 }
@@ -152,6 +154,7 @@ export function registerHealthEndpoint(app: Express) {
         status: "unhealthy",
         timestamp: new Date().toISOString(),
         version: getAppVersion(),
+        commitHash: getCommitHash(),
         error: error instanceof Error ? error.message : "Unknown error",
       });
     }

@@ -1,0 +1,50 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+      args:
+        VITE_DEV_AUTH_BYPASS: "0"
+        APP_VERSION: ${APP_VERSION:?Set APP_VERSION for production-like runs}
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL}
+    restart: "no"
+    networks:
+      - legacy-lens-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_DEV_AUTH_BYPASS: "0"
+        APP_VERSION: ${APP_VERSION:?Set APP_VERSION for production-like runs}
+    ports:
+      - "${LEGACY_LENS_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - APP_VERSION=${APP_VERSION:?Set APP_VERSION}
+      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET with at least 32 characters}
+      - VITE_APP_ID=${VITE_APP_ID:?Set VITE_APP_ID}
+      - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL:?Set VITE_OAUTH_PORTAL_URL}
+      - OAUTH_SERVER_URL=${OAUTH_SERVER_URL:?Set OAUTH_SERVER_URL}
+      - LEGACY_LENS_GIT_HOST_ALLOWLIST=${LEGACY_LENS_GIT_HOST_ALLOWLIST:-github.com,gitlab.com}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - legacy-lens-network
+
+networks:
+  legacy-lens-network:
+    driver: bridge

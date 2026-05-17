@@ -1,7 +1,7 @@
 import { users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { publicProcedure, router } from "./trpc";
-import { getAppVersion } from "./version";
+import { getAppVersion, getCommitHash } from "./version";
 
 export const systemRouter = router({
   health: publicProcedure.query(async () => {
@@ -24,6 +24,7 @@ export const systemRouter = router({
       ok: true,
       timestamp: new Date().toISOString(),
       version: getAppVersion(),
+      commitHash: getCommitHash(),
       dbStatus,
       environment: process.env.NODE_ENV ?? "development",
     };

@@ -15,6 +15,8 @@ const runtimeEnvSchema = z.object({
   DEV_AUTH_BYPASS_UNSAFE_ALLOW: z.string().trim().optional(),
   LEGACY_LENS_GIT_HOST_ALLOWLIST: z.string().trim().optional(),
   LEGACY_LENS_TRUST_PROXY: z.string().trim().optional(),
+  APP_VERSION: z.string().trim().optional(),
+  GIT_COMMIT: z.string().trim().optional(),
   NODE_ENV: z.string().trim().optional(),
 });
 

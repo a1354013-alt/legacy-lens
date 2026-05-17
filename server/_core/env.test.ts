@@ -17,6 +17,16 @@ describe("dev auth bypass gating", () => {
     expect(isDevAuthBypassEnabled()).toBe(false);
   });
 
+  it("keeps production auth disabled even when a demo open id is present", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.DEV_AUTH_BYPASS = "1";
+    process.env.DEV_AUTH_OPEN_ID = "local-dev-user";
+    delete process.env.DEV_AUTH_BYPASS_UNSAFE_ALLOW;
+
+    const { isDevAuthBypassEnabled } = await import("./env");
+    expect(isDevAuthBypassEnabled()).toBe(false);
+  });
+
   it("allows dev auth bypass in production only with the explicit unsafe gate", async () => {
     process.env.NODE_ENV = "production";
     process.env.DEV_AUTH_BYPASS = "1";

@@ -217,9 +217,11 @@ Open `http://localhost:3000`. Click "Sign in".
 
 ## Quick Start (Docker)
 
-This repo ships a Dockerfile and a `docker-compose.yml` for running the app + MySQL locally in a reproducible way.
+This repo ships a Dockerfile plus separate compose files for demo and production-like runs.
 
-By default, `docker-compose.yml` runs in **local demo mode**:
+### Demo mode (local only)
+
+`docker-compose.demo.yml` is for local demos and smoke tests only:
 - `DEV_AUTH_BYPASS=1` (server enables `/api/dev/login`)
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1` (explicitly allows bypass even when the container runs with `NODE_ENV=production` for static serving)
 - `VITE_DEV_AUTH_BYPASS=1` (client builds the "Sign in" button to hit `/api/dev/login`)
@@ -227,15 +229,31 @@ By default, `docker-compose.yml` runs in **local demo mode**:
 - `JWT_SECRET` demo default is long enough for runtime validation, but you must replace it in any real deployment.
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.demo.yml up --build
 ```
 
-`docker compose up --build` now brings up MySQL, waits for the one-shot `migrate` service to finish, and only then starts `app`.
+The demo compose file brings up MySQL, waits for the one-shot `migrate` service to finish, and only then starts `app`.
 
 If you want to run migrations manually without starting the app:
 ```bash
-docker compose run --rm migrate
+docker compose -f docker-compose.demo.yml run --rm migrate
 ```
+
+### Production-like mode
+
+`docker-compose.yml` extends `docker-compose.prod.yml` and does not enable demo auth, weak demo secrets, or fake users. It expects production-like environment values:
+
+```bash
+APP_VERSION=1.0.0 \
+DATABASE_URL=mysql://user:password@host:3306/legacy_lens \
+JWT_SECRET=replace-with-at-least-32-characters \
+VITE_APP_ID=your-app-id \
+VITE_OAUTH_PORTAL_URL=https://oauth.example.com \
+OAUTH_SERVER_URL=https://oauth.example.com \
+docker compose up --build
+```
+
+Do not set `DEV_AUTH_BYPASS`, `VITE_DEV_AUTH_BYPASS`, or `DEV_AUTH_BYPASS_UNSAFE_ALLOW` for production-like runs.
 
 If you want to verify the full demo container flow end-to-end (build -> migrate -> app health -> dev login redirect):
 ```bash
@@ -243,7 +261,8 @@ pnpm docker:smoke
 ```
 
 Port notes:
-- `docker compose` defaults to `3000` for the app and `3306` for MySQL.
+- Demo compose defaults to `3000` for the app and `3306` for MySQL.
+- Production-like compose binds only the app port and expects `DATABASE_URL` to point at an existing MySQL-compatible database.
 - You can override host ports with `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT`, which is what the smoke test does in CI to avoid collisions.
 
 ### Docker Smoke / CI Environment Variables
@@ -253,7 +272,7 @@ The Docker smoke script and compose stack use a small set of env vars to keep CI
 - `LEGACY_LENS_PORT`: host port bound to container port `3000`
 - `LEGACY_LENS_DB_PORT`: host port bound to MySQL `3306`
 - `LEGACY_LENS_SMOKE_TIMEOUT_MS`: total polling timeout for DB health, app health, and dev-login redirect checks
-- `DEV_AUTH_BYPASS=1`: enables `/api/dev/login` for local/demo flows
+- `DEV_AUTH_BYPASS=1`: enables `/api/dev/login` for local/demo flows only
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1`: only for local/demo containers that keep `NODE_ENV=production`; never use in real production
 - `LEGACY_LENS_GIT_HOST_ALLOWLIST`: production Git host allowlist override
 - `LEGACY_LENS_TRUST_PROXY`: only set this when the app is actually behind a trusted reverse proxy or load balancer
@@ -275,6 +294,8 @@ Operational notes:
 4. Review the persisted snapshot in the UI
 5. Export report ZIP (generated from persisted analysis only)
 
+Report downloads use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available for compatibility.
+
 ## Samples
 
 The `samples/` folder contains small fixtures you can ZIP for import:
@@ -295,10 +316,10 @@ Example:
 ## Health / System Info
 
 - Liveness: `GET /health`
-- Full health (includes DB check + version): `GET /api/health`
+- Full health (includes DB check, version, and commit hash): `GET /api/health`
 - tRPC system health: `GET /api/trpc/system.health`
 
-Version is sourced from `package.json` (with `npm_package_version` as a fast path when available).
+Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `package.json`. If no reliable value exists, health reports `unknown` rather than an incorrect `0.0.0`. `GIT_COMMIT` is reported when injected; otherwise commit hash is `unknown`.
 
 ## Scripts
 
@@ -313,8 +334,9 @@ Version is sourced from `package.json` (with `npm_package_version` as a fast pat
 | `pnpm db:migrate` | Apply Drizzle migrations |
 
 Docker equivalents:
-- `docker compose up --build` -> start `db`, run `migrate`, then start `app`
-- `docker compose run --rm migrate` -> run migrations only
+- `docker compose -f docker-compose.demo.yml up --build` -> local demo stack with MySQL and dev auth bypass
+- `docker compose up --build` -> production-like app/migrate flow using external `DATABASE_URL`
+- `docker compose -f docker-compose.demo.yml run --rm migrate` -> run demo migrations only
 - `pnpm docker:smoke` -> build the compose stack, verify `/health`, `/api/health`, and demo dev-login redirect, then tear it down
 
 ## Dependency Security Notes
@@ -326,10 +348,10 @@ Docker equivalents:
 ## Import Safety Boundaries
 
 Import pipeline is intentionally bounded:
-- Frontend ZIP upload preflight: max 30MB per `.zip` before base64 encoding
-- HTTP request body limit: 50MB JSON payload to leave room for base64 overhead
-- ZIP: max 2,000 entries, max 5MB per file, max 500MB expanded
-- Git: max 2,000 files, max 5MB per file, max 500MB total extracted
+- Shared raw ZIP upload limit: 30MB per `.zip` before base64 encoding (`MAX_UPLOAD_BYTES` / `MAX_ZIP_RAW_BYTES`)
+- HTTP JSON body limit is derived from the same raw ZIP limit with base64 overhead headroom (`JSON_UPLOAD_BODY_LIMIT_BYTES`)
+- ZIP: max 10,000 total archive entries, max 2,000 supported source files, max 5MB per source file, max 500MB expanded supported source content
+- Git: max 2,000 supported source files, max 5MB per source file, max 500MB total supported source content
 - Production Git host policy:
   - loopback hosts are blocked (`localhost`, `127.0.0.1`, `0.0.0.0`, `::1`)
   - private / link-local IPs are blocked
@@ -344,9 +366,11 @@ Import pipeline is intentionally bounded:
 
 ## Limitations (Honest)
 
-- Parsing is **heuristic static analysis**, not compiler-grade.
+- Parsing is **heuristic static analysis**, not a compiler, language server, or full semantic index.
 - SQL / Delphi / Go extraction is meant to support legacy code exploration, initial dependency review, and first-pass impact analysis.
-- Cross-file Delphi resolution is best-effort.
+- Delphi `.pas` / `.dpr` parsing is best-effort; `.dfm`, `.fmx`, `.dpk`, and `.inc` are imported with limited analysis warnings.
+- SQL extraction handles common table/field and query patterns but is not a complete SQL parser, optimizer, or execution-plan analyzer.
+- Go extraction focuses on structural symbols and dependencies; it does not replace `go/types`, `gopls`, build tags, or module-aware compilation.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
 - Results do **not** replace a compiler, runtime tracing, DB execution plan analysis, or a full SQL AST parser.
 - Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
@@ -354,9 +378,9 @@ Import pipeline is intentionally bounded:
 
 ## Demo vs Production
 
-- `docker-compose.yml` is tuned for local demo convenience, not hardened production rollout.
-- `DEV_AUTH_BYPASS` must not be enabled in production.
-- `DEV_AUTH_BYPASS_UNSAFE_ALLOW` must not be enabled in production.
+- `docker-compose.demo.yml` is tuned for local demo convenience, not hardened production rollout.
+- `docker-compose.yml` / `docker-compose.prod.yml` are production-like and do not enable demo auth by default.
+- `DEV_AUTH_BYPASS`, `VITE_DEV_AUTH_BYPASS`, and `DEV_AUTH_BYPASS_UNSAFE_ALLOW` must not be enabled in production.
 - `JWT_SECRET` must be at least 32 characters in production and local runtime validation.
 - Production Git import should use `LEGACY_LENS_GIT_HOST_ALLOWLIST`.
 - `LEGACY_LENS_TRUST_PROXY` should be enabled only when Legacy Lens sits behind a trusted reverse proxy/load balancer.

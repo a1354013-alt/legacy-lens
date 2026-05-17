@@ -13,7 +13,9 @@ RUN corepack enable && corepack prepare pnpm@10.4.1 --activate
 
 # Vite build-time variables (only the VITE_* subset is embedded into the client bundle)
 ARG VITE_DEV_AUTH_BYPASS=0
+ARG APP_VERSION=unknown
 ENV VITE_DEV_AUTH_BYPASS=$VITE_DEV_AUTH_BYPASS
+ENV APP_VERSION=$APP_VERSION
 
 # Copy package files and patches (patches must be copied before install)
 COPY package.json pnpm-lock.yaml ./
@@ -75,6 +77,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
+ARG APP_VERSION=unknown
+ENV APP_VERSION=$APP_VERSION
 
 # Start server
 CMD ["node", "dist/index.js"]

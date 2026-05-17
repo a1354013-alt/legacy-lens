@@ -21,18 +21,32 @@ import {
   getAnalysisViewState,
   getFieldTables,
   getSymbolKinds,
+  limitResults,
+  RESULT_LIST_PAGE_SIZE,
   shouldPollProjectStatus,
   shouldPollSnapshot,
 } from "./analysisResultModel";
 
-function downloadBase64File(base64: string, fileName: string, mimeType: string) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+async function downloadReportZip(projectId: number) {
+  const response = await fetch(`/api/projects/${projectId}/report.zip`, {
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    let message = "Report download failed.";
+    try {
+      const payload = (await response.json()) as { error?: string };
+      message = payload.error ?? message;
+    } catch {
+      message = response.statusText || message;
+    }
+    throw new Error(message);
   }
 
-  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const fileName = disposition.match(/filename="([^"]+)"/)?.[1] ?? `legacy-lens-report-${projectId}.zip`;
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = fileName;
@@ -62,6 +76,10 @@ export default function AnalysisResult() {
   const [riskSearch, setRiskSearch] = useState("");
   const [riskSeverity, setRiskSeverity] = useState("all");
   const [ruleSearch, setRuleSearch] = useState("");
+  const [isReportDownloading, setIsReportDownloading] = useState(false);
+  const [symbolVisibleCount, setSymbolVisibleCount] = useState(RESULT_LIST_PAGE_SIZE);
+  const [riskVisibleCount, setRiskVisibleCount] = useState(RESULT_LIST_PAGE_SIZE);
+  const [ruleVisibleCount, setRuleVisibleCount] = useState(RESULT_LIST_PAGE_SIZE);
   const utils = trpc.useUtils();
 
   const projectQuery = trpc.projects.getById.useQuery(projectId, {
@@ -81,11 +99,6 @@ export default function AnalysisResult() {
         : false,
     refetchOnWindowFocus: false,
   });
-
-  const reportDownloadQuery = trpc.analysis.downloadReport.useQuery(
-    { projectId, format: "zip" },
-    { enabled: false }
-  );
 
   const triggerAnalysisMutation = trpc.analysis.trigger.useMutation({
     onSuccess: async () => {
@@ -115,6 +128,9 @@ export default function AnalysisResult() {
     [snapshot, riskSearch, riskSeverity]
   );
   const visibleRules = useMemo(() => filterRules(snapshot, { search: ruleSearch }), [snapshot, ruleSearch]);
+  const symbolResultPage = useMemo(() => limitResults(visibleSymbols, symbolVisibleCount), [visibleSymbols, symbolVisibleCount]);
+  const riskResultPage = useMemo(() => limitResults(visibleRisks, riskVisibleCount), [visibleRisks, riskVisibleCount]);
+  const ruleResultPage = useMemo(() => limitResults(visibleRules, ruleVisibleCount), [visibleRules, ruleVisibleCount]);
 
   const criticalRisks = useMemo(
     () => snapshot?.risks.filter((risk) => risk.severity === "critical").length ?? 0,
@@ -144,17 +160,14 @@ export default function AnalysisResult() {
   };
 
   const handleDownloadReport = async () => {
+    setIsReportDownloading(true);
     try {
-      const result = await reportDownloadQuery.refetch();
-      if (!result.data) {
-        toast.error("持久化報告尚未準備完成。");
-        return;
-      }
-
-      downloadBase64File(result.data.base64, result.data.fileName, result.data.mimeType);
-      toast.success("報告已下載。");
+      await downloadReportZip(projectId);
+      toast.success("Report ZIP downloaded.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "下載報告失敗。");
+      toast.error(error instanceof Error ? error.message : "Report download failed.");
+    } finally {
+      setIsReportDownloading(false);
     }
   };
 
@@ -209,8 +222,8 @@ export default function AnalysisResult() {
               <RefreshCcw className="mr-2 size-4" />
               重新整理
             </Button>
-            <Button onClick={handleDownloadReport} disabled={reportDownloadQuery.isFetching || !canDownloadReport || isAnalyzing}>
-              {reportDownloadQuery.isFetching ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}
+            <Button onClick={handleDownloadReport} disabled={isReportDownloading || !canDownloadReport || isAnalyzing}>
+              {isReportDownloading ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}
               下載 ZIP 報告
             </Button>
           </div>
@@ -381,8 +394,11 @@ export default function AnalysisResult() {
               </CardContent>
             </Card>
 
-            {visibleRisks.length ? (
-              visibleRisks.map((risk) => (
+            <p className="text-sm text-slate-600">
+              Showing {riskResultPage.visibleItems.length} of {riskResultPage.totalCount} matching risks ({snapshot?.risks.length ?? 0} total).
+            </p>
+            {riskResultPage.visibleItems.length ? (
+              riskResultPage.visibleItems.map((risk) => (
                 <Card key={risk.id}>
                   <CardHeader>
                     <div className="flex items-center justify-between gap-4">
@@ -405,6 +421,11 @@ export default function AnalysisResult() {
                 <CardContent className="py-10 text-center text-sm text-slate-600">查無符合條件的風險項目。</CardContent>
               </Card>
             )}
+            {riskResultPage.hasMore ? (
+              <Button variant="outline" onClick={() => setRiskVisibleCount((count) => count + RESULT_LIST_PAGE_SIZE)}>
+                Load more risks
+              </Button>
+            ) : null}
           </TabsContent>
 
           <TabsContent value="symbols" className="space-y-4">
@@ -432,9 +453,12 @@ export default function AnalysisResult() {
                       </SelectContent>
                     </Select>
                   </div>
+                  <p className="text-xs text-slate-500">
+                    Showing {symbolResultPage.visibleItems.length} of {symbolResultPage.totalCount} matching symbols ({snapshot?.symbols.length ?? 0} total).
+                  </p>
                   <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1 text-sm">
-                    {visibleSymbols.length ? (
-                      visibleSymbols.map((symbol) => (
+                    {symbolResultPage.visibleItems.length ? (
+                      symbolResultPage.visibleItems.map((symbol) => (
                         <div key={symbol.id} className="rounded-lg border px-3 py-2">
                           <div className="flex items-center justify-between gap-3">
                             <span className="truncate font-medium text-slate-950">{symbol.name}</span>
@@ -448,6 +472,11 @@ export default function AnalysisResult() {
                       <p className="py-6 text-center text-slate-500">查無符合條件的 symbols。</p>
                     )}
                   </div>
+                  {symbolResultPage.hasMore ? (
+                    <Button variant="outline" onClick={() => setSymbolVisibleCount((count) => count + RESULT_LIST_PAGE_SIZE)}>
+                      Load more symbols
+                    </Button>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2 rounded-lg border p-4">
@@ -500,9 +529,12 @@ export default function AnalysisResult() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <Input placeholder="搜尋 rule 名稱或描述" value={ruleSearch} onChange={(event) => setRuleSearch(event.target.value)} />
+                <p className="text-xs text-slate-500">
+                  Showing {ruleResultPage.visibleItems.length} of {ruleResultPage.totalCount} matching rules ({snapshot?.rules.length ?? 0} total).
+                </p>
                 <div className="max-h-[36rem] space-y-2 overflow-y-auto pr-1 text-sm">
-                  {visibleRules.length ? (
-                    visibleRules.map((rule) => (
+                  {ruleResultPage.visibleItems.length ? (
+                    ruleResultPage.visibleItems.map((rule) => (
                       <div key={rule.id} className="rounded-lg border px-3 py-3">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-medium text-slate-950">{rule.name}</span>
@@ -519,6 +551,11 @@ export default function AnalysisResult() {
                     <p className="py-6 text-center text-slate-500">查無符合條件的規則。</p>
                   )}
                 </div>
+                {ruleResultPage.hasMore ? (
+                  <Button variant="outline" onClick={() => setRuleVisibleCount((count) => count + RESULT_LIST_PAGE_SIZE)}>
+                    Load more rules
+                  </Button>
+                ) : null}
               </CardContent>
             </Card>
           </TabsContent>

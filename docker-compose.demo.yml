@@ -1,0 +1,82 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+      args:
+        VITE_DEV_AUTH_BYPASS: "1"
+    environment:
+      - DATABASE_URL=mysql://root:password@db:3306/legacy_lens
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - legacy-lens-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_DEV_AUTH_BYPASS: "1"
+        APP_VERSION: ${APP_VERSION:-demo}
+    ports:
+      - "${LEGACY_LENS_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - APP_VERSION=${APP_VERSION:-demo}
+      - DATABASE_URL=mysql://root:password@db:3306/legacy_lens
+      - JWT_SECRET=${JWT_SECRET:-legacy-lens-demo-secret-0123456789}
+      - VITE_APP_ID=${VITE_APP_ID:-legacy-lens-demo}
+      - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL:-http://localhost:3001}
+      - OAUTH_SERVER_URL=${OAUTH_SERVER_URL:-http://localhost:3001}
+      - LEGACY_LENS_GIT_HOST_ALLOWLIST=${LEGACY_LENS_GIT_HOST_ALLOWLIST:-github.com,gitlab.com}
+      - DEV_AUTH_BYPASS=1
+      - DEV_AUTH_OPEN_ID=${DEV_AUTH_OPEN_ID:-local-dev-user}
+      - DEV_AUTH_BYPASS_UNSAFE_ALLOW=1
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - legacy-lens-network
+
+  db:
+    image: mysql:8.0
+    ports:
+      - "${LEGACY_LENS_DB_PORT:-3306}:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=password
+      - MYSQL_DATABASE=legacy_lens
+      - MYSQL_USER=legacy_user
+      - MYSQL_PASSWORD=legacy_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ppassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - legacy-lens-network
+
+volumes:
+  mysql-data:
+    driver: local
+
+networks:
+  legacy-lens-network:
+    driver: bridge

@@ -7,6 +7,8 @@ import {
   filterRules,
   filterSymbols,
   getAnalysisViewState,
+  limitResults,
+  RESULT_LIST_PAGE_SIZE,
   shouldPollProjectStatus,
   shouldPollSnapshot,
 } from "./analysisResultModel";
@@ -62,12 +64,22 @@ function createSnapshot(): AnalysisSnapshot {
 }
 
 describe("analysisResultModel", () => {
-  it("does not truncate large symbol collections and can filter by search and kind", () => {
+  it("filters large symbol collections by search and kind", () => {
     const snapshot = createSnapshot();
 
     expect(filterSymbols(snapshot, { search: "", kind: "all" })).toHaveLength(100);
     expect(filterSymbols(snapshot, { search: "loaduser", kind: "all" })).toHaveLength(50);
     expect(filterSymbols(snapshot, { search: "", kind: "method" })).toHaveLength(50);
+  });
+
+  it("limits large result lists before rendering them into the DOM", () => {
+    const items = Array.from({ length: RESULT_LIST_PAGE_SIZE + 25 }, (_, index) => index);
+    const page = limitResults(items);
+
+    expect(page.visibleItems).toHaveLength(RESULT_LIST_PAGE_SIZE);
+    expect(page.totalCount).toBe(RESULT_LIST_PAGE_SIZE + 25);
+    expect(page.hasMore).toBe(true);
+    expect(limitResults(items, RESULT_LIST_PAGE_SIZE + 25).hasMore).toBe(false);
   });
 
   it("filters fields by table and field search while keeping reference counts available", () => {

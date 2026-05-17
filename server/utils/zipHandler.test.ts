@@ -1,6 +1,16 @@
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
-import { extractFilesFromZip, isAbsoluteArchivePath, isSafeRelativePath, normalizePath } from "./zipHandler";
+import { MAX_EXTRACTED_BYTES, MAX_FILE_COUNT, MAX_SINGLE_FILE_BYTES, MAX_ZIP_RAW_BYTES } from "../../shared/const";
+import {
+  assertExtractedSize,
+  assertSingleFileSize,
+  assertSourceFileCount,
+  assertZipRawSize,
+  extractFilesFromZip,
+  isAbsoluteArchivePath,
+  isSafeRelativePath,
+  normalizePath,
+} from "./zipHandler";
 
 describe("zipHandler", () => {
   it("normalizes and rejects unsafe import paths (stable safety contract)", () => {
@@ -77,6 +87,33 @@ describe("zipHandler", () => {
     await expect(extractFilesFromZip(base64)).rejects.toMatchObject({
       code: "ZIP_INVALID",
       message: expect.stringContaining("too many source files"),
+    });
+  });
+
+  it("returns stable errors for raw ZIP, extracted, file-count, and single-file limits", () => {
+    expect(() => assertZipRawSize(MAX_ZIP_RAW_BYTES + 1)).toThrow(/too large.*Limit: 30MB/);
+    expect(() => assertExtractedSize(MAX_EXTRACTED_BYTES + 1)).toThrow(/expands beyond.*500MB/);
+    expect(() => assertSourceFileCount(MAX_FILE_COUNT + 1)).toThrow(/too many source files.*2000/);
+    expect(() => assertSingleFileSize(MAX_SINGLE_FILE_BYTES + 1, "src/huge.go")).toThrow(/single-file limit.*5MB.*src\/huge\.go/);
+  });
+
+  it("rejects an uploaded ZIP payload larger than the raw archive limit before parsing", async () => {
+    const oversizedBase64 = Buffer.alloc(MAX_ZIP_RAW_BYTES + 1).toString("base64");
+
+    await expect(extractFilesFromZip(oversizedBase64)).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: expect.stringContaining("Limit: 30MB"),
+    });
+  });
+
+  it("rejects a ZIP containing a source file larger than the single-file limit", async () => {
+    const zip = new JSZip();
+    zip.file("src/huge.go", Buffer.alloc(MAX_SINGLE_FILE_BYTES + 1, "a"));
+
+    const base64 = await zip.generateAsync({ type: "base64" });
+    await expect(extractFilesFromZip(base64)).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: expect.stringContaining("single-file limit"),
     });
   });
 });

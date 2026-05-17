@@ -1,4 +1,4 @@
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME, MAX_ZIP_RAW_BYTES, formatBytes } from "@shared/const";
 import { focusLanguageSchema, projectSourceTypeSchema } from "@shared/contracts";
 import { TRPCError } from "@trpc/server";
 import { desc, eq, inArray } from "drizzle-orm";
@@ -34,7 +34,9 @@ const createProjectSchema = z.object({
 
 const uploadFilesSchema = z.object({
   projectId: projectIdSchema,
-  zipContent: z.string().min(1),
+  zipContent: z.string().min(1).refine((value) => Buffer.from(value, "base64").length <= MAX_ZIP_RAW_BYTES, {
+    message: `ZIP upload exceeds the raw archive limit (${formatBytes(MAX_ZIP_RAW_BYTES)}).`,
+  }),
 });
 
 const cloneGitSchema = z.object({

@@ -20,6 +20,7 @@ export type RuleFilter = {
 };
 
 export type AnalysisViewState = "idle" | "analyzing" | "completed" | "failed";
+export const RESULT_LIST_PAGE_SIZE = 100;
 
 function normalize(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
@@ -116,6 +117,15 @@ export function filterRules(snapshot: AnalysisSnapshot | undefined, filter: Rule
       normalize(rule.description).includes(search)
     );
   });
+}
+
+export function limitResults<T>(items: T[], visibleCount = RESULT_LIST_PAGE_SIZE) {
+  const safeVisibleCount = Math.max(0, visibleCount);
+  return {
+    totalCount: items.length,
+    visibleItems: items.slice(0, safeVisibleCount),
+    hasMore: items.length > safeVisibleCount,
+  };
 }
 
 export function getSymbolKinds(snapshot: AnalysisSnapshot | undefined) {

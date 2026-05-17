@@ -1,13 +1,16 @@
 import type { FocusLanguage, ImportWarning } from "../../shared/contracts";
 import JSZip from "jszip";
+import {
+  MAX_EXTRACTED_BYTES,
+  MAX_FILE_COUNT,
+  MAX_SINGLE_FILE_BYTES,
+  MAX_TOTAL_ARCHIVE_ENTRIES,
+  MAX_ZIP_RAW_BYTES,
+  formatBytes,
+} from "../../shared/const";
 import { AppError } from "../appError";
 import iconvLite from "iconv-lite";
 import jschardet from "jschardet";
-
-const MAX_FILES_IN_ZIP = 2_000;
-const MAX_TOTAL_ENTRIES_IN_ZIP = 10_000;
-const MAX_TOTAL_EXTRACTED_SIZE = 500 * 1024 * 1024;
-const MAX_SINGLE_FILE_SIZE = 5 * 1024 * 1024;
 
 export const SUPPORTED_SOURCE_EXTENSIONS = [".go", ".sql", ".pas", ".dpr", ".delphi", ".dfm", ".inc", ".dpk", ".fmx"] as const;
 export const UNSUPPORTED_CODE_EXTENSIONS = [
@@ -60,6 +63,36 @@ export interface ExtractedFile {
 export interface ExtractedSourceBundle {
   files: ExtractedFile[];
   warnings: ImportWarning[];
+}
+
+export function assertZipRawSize(byteLength: number) {
+  if (byteLength === 0) {
+    throw new AppError("ZIP_INVALID", "Uploaded ZIP archive is empty.");
+  }
+  if (byteLength > MAX_ZIP_RAW_BYTES) {
+    throw new AppError("ZIP_INVALID", `Uploaded ZIP archive is too large (${formatBytes(byteLength)}). Limit: ${formatBytes(MAX_ZIP_RAW_BYTES)}.`);
+  }
+}
+
+export function assertExtractedSize(byteLength: number) {
+  if (byteLength > MAX_EXTRACTED_BYTES) {
+    throw new AppError("ZIP_INVALID", `Archive expands beyond the allowed size limit (${formatBytes(MAX_EXTRACTED_BYTES)}).`);
+  }
+}
+
+export function assertSourceFileCount(fileCount: number) {
+  if (fileCount > MAX_FILE_COUNT) {
+    throw new AppError("ZIP_INVALID", `Archive contains too many source files (${fileCount}). Limit: ${MAX_FILE_COUNT}.`);
+  }
+}
+
+export function assertSingleFileSize(byteLength: number, filePath: string) {
+  if (byteLength > MAX_SINGLE_FILE_BYTES) {
+    throw new AppError(
+      "ZIP_INVALID",
+      `Archive contains a source file larger than the allowed single-file limit (${formatBytes(MAX_SINGLE_FILE_BYTES)}): ${filePath}.`
+    );
+  }
 }
 
 // Exported for tests (import safety must remain stable).
@@ -127,9 +160,7 @@ function isKnownUnsupportedCodeFile(filePath: string) {
 export async function validateZipFile(base64Content: string): Promise<boolean> {
   try {
     const buffer = Buffer.from(base64Content, "base64");
-    if (buffer.length === 0 || buffer.length > MAX_TOTAL_EXTRACTED_SIZE) {
-      return false;
-    }
+    assertZipRawSize(buffer.length);
 
     await JSZip.loadAsync(buffer);
     return true;
@@ -141,6 +172,8 @@ export async function validateZipFile(base64Content: string): Promise<boolean> {
 export async function extractFilesFromZip(base64Content: string): Promise<ExtractedSourceBundle> {
   try {
     const buffer = Buffer.from(base64Content, "base64");
+    assertZipRawSize(buffer.length);
+
     const zip = await JSZip.loadAsync(buffer);
     const extractedFiles: ExtractedFile[] = [];
     const warnings: ImportWarning[] = [];
@@ -148,8 +181,8 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
     let sourceCandidateCount = 0;
 
     const entries = Object.entries(zip.files);
-    if (entries.length > MAX_TOTAL_ENTRIES_IN_ZIP) {
-      throw new AppError("ZIP_INVALID", `Archive contains too many entries (${entries.length}). Limit: ${MAX_TOTAL_ENTRIES_IN_ZIP}.`);
+    if (entries.length > MAX_TOTAL_ARCHIVE_ENTRIES) {
+      throw new AppError("ZIP_INVALID", `Archive contains too many entries (${entries.length}). Limit: ${MAX_TOTAL_ARCHIVE_ENTRIES}.`);
     }
 
     for (const [rawPath, entry] of entries) {
@@ -192,25 +225,14 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       }
 
       sourceCandidateCount += 1;
-      if (sourceCandidateCount > MAX_FILES_IN_ZIP) {
-        throw new AppError("ZIP_INVALID", `Archive contains too many source files (${sourceCandidateCount}). Limit: ${MAX_FILES_IN_ZIP}.`);
-      }
+      assertSourceFileCount(sourceCandidateCount);
 
       const fileBuffer = await entry.async("nodebuffer");
       const fileSize = fileBuffer.length;
-      if (fileSize > MAX_SINGLE_FILE_SIZE) {
-        warnings.push({
-          code: "IMPORT_FILE_TOO_LARGE",
-          message: `The file was skipped because it exceeds the maximum supported size (${Math.round(MAX_SINGLE_FILE_SIZE / (1024 * 1024))}MB).`,
-          filePath: normalizedPath,
-        });
-        continue;
-      }
+      assertSingleFileSize(fileSize, normalizedPath);
 
       totalExtractedSize += fileSize;
-      if (totalExtractedSize > MAX_TOTAL_EXTRACTED_SIZE) {
-        throw new AppError("ZIP_INVALID", `Archive expands beyond the allowed size limit (${Math.round(MAX_TOTAL_EXTRACTED_SIZE / (1024 * 1024))}MB).`);
-      }
+      assertExtractedSize(totalExtractedSize);
 
       const language = detectLanguage(normalizedPath);
       if (!language) {

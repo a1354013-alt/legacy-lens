@@ -90,7 +90,7 @@ function runCommand(command, args, options = {}) {
 }
 
 async function runCompose(args, options = {}) {
-  return runCommand("docker", ["compose", ...args], options);
+  return runCommand("docker", ["compose", "-f", "docker-compose.demo.yml", ...args], options);
 }
 
 async function captureCompose(args) {
@@ -101,7 +101,7 @@ async function captureCompose(args) {
     });
     return result.stdout.trim();
   } catch (error) {
-    return `Unable to run ${commandToString("docker", ["compose", ...args])}: ${error instanceof Error ? error.message : String(error)}`;
+      return `Unable to run ${commandToString("docker", ["compose", "-f", "docker-compose.demo.yml", ...args])}: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 

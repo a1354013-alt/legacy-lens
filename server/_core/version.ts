@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 let cachedVersion: string | null = null;
+let cachedCommitHash: string | null = null;
 
 function readPackageVersionFromDisk(): string | null {
   try {
@@ -17,16 +18,38 @@ function readPackageVersionFromDisk(): string | null {
 export function getAppVersion(): string {
   if (cachedVersion) return cachedVersion;
 
+  const appVersion =
+    typeof process.env.APP_VERSION === "string"
+      ? process.env.APP_VERSION.trim()
+      : "";
   const envVersion =
     typeof process.env.npm_package_version === "string"
       ? process.env.npm_package_version.trim()
       : "";
 
   cachedVersion =
-    envVersion.length > 0
+    appVersion.length > 0
+      ? appVersion
+      : envVersion.length > 0
       ? envVersion
-      : readPackageVersionFromDisk() ?? "0.0.0";
+      : readPackageVersionFromDisk() ?? "unknown";
 
   return cachedVersion;
 }
 
+export function getCommitHash(): string {
+  if (cachedCommitHash) return cachedCommitHash;
+
+  const commitHash =
+    typeof process.env.GIT_COMMIT === "string"
+      ? process.env.GIT_COMMIT.trim()
+      : "";
+
+  cachedCommitHash = commitHash.length > 0 ? commitHash : "unknown";
+  return cachedCommitHash;
+}
+
+export function resetVersionCacheForTests() {
+  cachedVersion = null;
+  cachedCommitHash = null;
+}
