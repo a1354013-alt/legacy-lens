@@ -9,7 +9,7 @@ import { createContext } from "./context";
 import { validateRuntimeConfig } from "./env";
 import { registerDevAuthRoutes } from "./devAuth";
 import { registerOAuthRoutes } from "./oauth";
-import { serveStatic, setupVite } from "./vite";
+import { serveStatic } from "./static";
 import { logger } from "./logger";
 import { registerHealthEndpoint } from "./health";
 import { configureTrustProxy, registerRateLimiters } from "./rateLimiter";
@@ -91,6 +91,8 @@ async function startServer() {
   );
 
   if (process.env.NODE_ENV === "development") {
+    const viteDevModulePath = "./vite-dev";
+    const { setupVite }: typeof import("./vite-dev") = await import(viteDevModulePath);
     await setupVite(app, server);
   } else {
     serveStatic(app);
