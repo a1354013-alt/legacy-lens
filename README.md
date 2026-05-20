@@ -152,11 +152,19 @@ IMPORT_FILE_TOO_LARGE: big.sql - The file was skipped because it exceeds the max
 - Legacy encoding awareness during import (explicit detection + human-readable warnings)
 - Exportable review artifact (ZIP report with stable structure + `metadata.json` for audit/replay)
 
+## Verified Environment
+
+Legacy Lens is currently verified in CI and local acceptance with:
+- Node.js `20.19.0`
+- pnpm `10.4.1`
+
+`package.json` engines, the lockfile, and `.github/workflows/ci.yml` are intentionally aligned so local `build` / `test` results match CI behavior.
+
 ## Quick Start (Local)
 
 ### Prerequisites
-- Node.js 20+
-- pnpm 10+
+- Node.js 20.x (`>=20 <23`, verified with `20.19.0`)
+- pnpm 10.4.1
 - MySQL 8+ (or compatible provider)
 
 ### 1) Configure env
@@ -295,7 +303,7 @@ Operational notes:
 4. Review the persisted snapshot in the UI
 5. Export report ZIP (generated from persisted analysis only)
 
-Report downloads use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available for compatibility.
+Report downloads should use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available only for compatibility and should be treated as deprecated.
 
 ## Samples
 
@@ -313,6 +321,13 @@ Example:
 2. Import the ZIP in the UI
 3. Run analysis
 4. Download the report
+
+Demo walkthrough:
+1. Start the app with `pnpm dev` or `docker compose -f docker-compose.demo.yml up --build`
+2. Sign in with dev auth bypass
+3. Create a project and import `samples/go/`, `samples/sql/`, or `samples/delphi/`
+4. Run analysis
+5. Download the report from the result page using the HTTP ZIP route
 
 ## Health / System Info
 
@@ -353,6 +368,9 @@ Import pipeline is intentionally bounded:
 - HTTP JSON body limit is derived from the same raw ZIP limit with base64 overhead headroom (`JSON_UPLOAD_BODY_LIMIT_BYTES`)
 - ZIP: max 10,000 total archive entries, max 2,000 supported source files, max 5MB per source file, max 500MB expanded supported source content
 - Git: max 2,000 supported source files, max 5MB per source file, max 500MB total supported source content
+- Oversize individual source files are skipped with a stable `IMPORT_FILE_TOO_LARGE` warning so the rest of the import can continue
+- ZIP and Git imports both preserve import warnings in the persisted project snapshot and exported report
+- Archive / repository import fails only for whole-import safety boundaries such as invalid ZIP content, unsafe ZIP paths, total supported-source bytes, or supported-source file-count limits
 - Production Git host policy:
   - loopback hosts are blocked (`localhost`, `127.0.0.1`, `0.0.0.0`, `::1`)
   - private / link-local IPs are blocked
@@ -360,9 +378,11 @@ Import pipeline is intentionally bounded:
   - override with `LEGACY_LENS_GIT_HOST_ALLOWLIST=github.com,gitlab.com,example.com`
 - DNS resolution is performed during validation and rejected if the resolved address is loopback, link-local, or private
 - `importProjectGit()` reuses the validated Git URL metadata so a single import flow does not repeat DNS resolution before clone
-- if you publicly deploy Legacy Lens, still pair host allowlisting with network-layer egress policy
+- Git clone includes application-layer host/IP validation, but if you publicly deploy Legacy Lens you should still pair it with container or network-layer egress policy
+- DNS rebinding / TOCTOU risk cannot be eliminated purely in app code; use deployment-layer egress controls to reduce that residual risk
 - `LEGACY_LENS_TRUST_PROXY` should stay unset unless the app is deployed behind a trusted reverse proxy/load balancer; enabling it on a directly exposed app weakens client IP handling for rate limits and cookies
-- Path traversal defense: unsafe paths (e.g. `../`, absolute paths, or drive-letter paths) are skipped with warnings
+- ZIP path traversal defense: unsafe archive paths (e.g. `../`, absolute paths, or drive-letter paths) reject the whole archive
+- Git path traversal / symlink escape defense: unsafe resolved paths are skipped and recorded as import warnings
 - Imported source content is persisted in MySQL `MEDIUMTEXT`, which comfortably covers the 5MB per-file import ceiling
 
 ## Limitations (Honest)
@@ -376,6 +396,7 @@ Import pipeline is intentionally bounded:
 - Results do **not** replace a compiler, runtime tracing, DB execution plan analysis, or a full SQL AST parser.
 - Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
 - Import is capped at 5MB per file and 500MB total extracted content by design.
+- Analysis and impact output remain heuristic even when the status is `completed`; review warnings, skipped files, and degraded files before treating results as source-of-truth.
 
 ## Demo vs Production
 

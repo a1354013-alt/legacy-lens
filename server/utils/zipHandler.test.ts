@@ -1,11 +1,12 @@
 import JSZip from "jszip";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_EXTRACTED_BYTES, MAX_FILE_COUNT, MAX_SINGLE_FILE_BYTES, MAX_ZIP_RAW_BYTES } from "../../shared/const";
 import {
   assertExtractedSize,
   assertSingleFileSize,
   assertSourceFileCount,
   assertZipRawSize,
+  createSingleFileSizeWarning,
   extractFilesFromZip,
   isAbsoluteArchivePath,
   isSafeRelativePath,
@@ -13,6 +14,10 @@ import {
 } from "./zipHandler";
 
 describe("zipHandler", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("normalizes and rejects unsafe import paths (stable safety contract)", () => {
     expect(isSafeRelativePath(normalizePath("safe/main.go"))).toBe(true);
     expect(isSafeRelativePath(normalizePath("../evil.go"))).toBe(false);
@@ -95,6 +100,11 @@ describe("zipHandler", () => {
     expect(() => assertExtractedSize(MAX_EXTRACTED_BYTES + 1)).toThrow(/expands beyond.*500MB/);
     expect(() => assertSourceFileCount(MAX_FILE_COUNT + 1)).toThrow(/too many source files.*2000/);
     expect(() => assertSingleFileSize(MAX_SINGLE_FILE_BYTES + 1, "src/huge.go")).toThrow(/single-file limit.*5MB.*src\/huge\.go/);
+    expect(createSingleFileSizeWarning("src/huge.go")).toEqual({
+      code: "IMPORT_FILE_TOO_LARGE",
+      message: "The file was skipped because it exceeds the maximum supported size (5MB).",
+      filePath: "src/huge.go",
+    });
   });
 
   it("rejects an uploaded ZIP payload larger than the raw archive limit before parsing", async () => {
@@ -106,14 +116,67 @@ describe("zipHandler", () => {
     });
   });
 
-  it("rejects a ZIP containing a source file larger than the single-file limit", async () => {
+  it("rejects invalid ZIP payloads with a stable ZIP_INVALID error", async () => {
+    await expect(extractFilesFromZip(Buffer.from("not-a-zip").toString("base64"))).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: "Failed to read ZIP archive.",
+    });
+  });
+
+  it("rejects empty ZIP payloads before parsing", async () => {
+    await expect(extractFilesFromZip("")).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: "Uploaded ZIP archive is empty.",
+    });
+  });
+
+  it("rejects archives with unsafe paths instead of silently skipping them", async () => {
+    vi.spyOn(JSZip, "loadAsync").mockResolvedValue({
+      files: {
+        "../evil.go": { dir: false, async: vi.fn(async () => Buffer.from("package main\n")) },
+      },
+    } as any);
+
+    await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: expect.stringContaining("unsafe path"),
+    });
+  });
+
+  it("rejects archives whose extracted supported-source bytes exceed the limit", async () => {
+    const nearSingleFileLimitBuffer = Buffer.alloc(MAX_SINGLE_FILE_BYTES, "a");
+
+    const files = Object.fromEntries(
+      Array.from({ length: 101 }, (_, index) => [
+        `src/file-${index}.go`,
+        { dir: false, async: vi.fn(async () => nearSingleFileLimitBuffer) },
+      ])
+    );
+
+    const loadAsyncSpy = vi.spyOn(JSZip, "loadAsync").mockResolvedValue({
+      files,
+    } as any);
+
+    await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: expect.stringContaining("allowed size limit"),
+    });
+
+    expect(loadAsyncSpy).toHaveBeenCalled();
+  });
+
+  it("skips oversize files and keeps importing the remaining supported files", async () => {
     const zip = new JSZip();
     zip.file("src/huge.go", Buffer.alloc(MAX_SINGLE_FILE_BYTES + 1, "a"));
+    zip.file("src/main.go", "package main\nfunc main() {}\n");
 
-    const base64 = await zip.generateAsync({ type: "base64" });
-    await expect(extractFilesFromZip(base64)).rejects.toMatchObject({
-      code: "ZIP_INVALID",
-      message: expect.stringContaining("single-file limit"),
+    const result = await extractFilesFromZip(await zip.generateAsync({ type: "base64" }));
+
+    expect(result.files.map((file) => file.path)).toEqual(["src/main.go"]);
+    expect(result.warnings).toContainEqual({
+      code: "IMPORT_FILE_TOO_LARGE",
+      message: "The file was skipped because it exceeds the maximum supported size (5MB).",
+      filePath: "src/huge.go",
     });
   });
 });

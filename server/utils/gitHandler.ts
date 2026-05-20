@@ -6,7 +6,12 @@ import { MAX_EXTRACTED_BYTES, MAX_FILE_COUNT, MAX_SINGLE_FILE_BYTES, formatBytes
 import type { FocusLanguage, ImportWarning } from "../../shared/contracts";
 import { simpleGit } from "simple-git";
 import { AppError } from "../appError";
-import { SUPPORTED_SOURCE_EXTENSIONS, UNSUPPORTED_CODE_EXTENSIONS, decodeTextContent } from "./zipHandler";
+import {
+  SUPPORTED_SOURCE_EXTENSIONS,
+  UNSUPPORTED_CODE_EXTENSIONS,
+  createSingleFileSizeWarning,
+  decodeTextContent,
+} from "./zipHandler";
 
 const IGNORED_DIRECTORIES = new Set([
   ".git",
@@ -42,6 +47,12 @@ unsafeAddressBlockList.addSubnet("fe80::", 10, "ipv6");
 
 type ResolvedAddress = { address: string; family: 4 | 6 };
 type ResolveDns = (hostname: string) => Promise<ResolvedAddress[]>;
+type ScanDirectoryIo = {
+  readdir: typeof fs.readdir;
+  realpath: typeof fs.realpath;
+  stat: typeof fs.stat;
+  readFile: (path: Parameters<typeof fs.readFile>[0]) => Promise<Buffer>;
+};
 export interface ValidatedGitUrl {
   gitUrl: string;
   host: string;
@@ -312,20 +323,21 @@ export async function cloneAndExtractFiles(
   }
 }
 
-async function scanDirectoryForCodeFiles(
+export async function scanDirectoryForCodeFiles(
   directoryPath: string,
   baseDir: string = directoryPath,
   limits: { fileLimit: number; maxTotalBytes: number } = { fileLimit: MAX_FILE_COUNT, maxTotalBytes: MAX_EXTRACTED_BYTES },
   state: { totalFiles: number; totalBytes: number } = { totalFiles: 0, totalBytes: 0 },
   realBaseDir: string = baseDir,
-  realpathCache: Map<string, string> = new Map()
+  realpathCache: Map<string, string> = new Map(),
+  io: ScanDirectoryIo = fs
 ): Promise<{
   files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }>;
   warnings: ImportWarning[];
 }> {
   const files: Array<{ path: string; fileName: string; content: string; language: FocusLanguage; size: number; encoding?: string; encodingWarning?: string }> = [];
   const warnings: ImportWarning[] = [];
-  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+  const entries = await io.readdir(directoryPath, { withFileTypes: true });
 
   for (const entry of entries) {
     const fullPath = path.join(directoryPath, entry.name);
@@ -333,7 +345,7 @@ async function scanDirectoryForCodeFiles(
 
     try {
       const cached = realpathCache.get(fullPath);
-      const realFullPath = cached ?? (await fs.realpath(fullPath));
+      const realFullPath = cached ?? (await io.realpath(fullPath));
       realpathCache.set(fullPath, realFullPath);
 
       const relativeReal = path.relative(realBaseDir, realFullPath);
@@ -358,7 +370,7 @@ async function scanDirectoryForCodeFiles(
       if (IGNORED_DIRECTORIES.has(entry.name)) {
         continue;
       }
-      const nested = await scanDirectoryForCodeFiles(fullPath, baseDir, limits, state, realBaseDir, realpathCache);
+      const nested = await scanDirectoryForCodeFiles(fullPath, baseDir, limits, state, realBaseDir, realpathCache, io);
       files.push(...nested.files);
       warnings.push(...nested.warnings);
       continue;
@@ -389,7 +401,23 @@ async function scanDirectoryForCodeFiles(
       continue;
     }
 
-    const buffer = await fs.readFile(fullPath);
+    const stat = await io.stat(fullPath);
+    if (stat.size > MAX_SINGLE_FILE_BYTES) {
+      warnings.push(createSingleFileSizeWarning(relativePath));
+      continue;
+    }
+
+    state.totalFiles += 1;
+    if (state.totalFiles > limits.fileLimit) {
+      throw new AppError("IMPORT_FAILED", `Repository contains too many source files (limit: ${limits.fileLimit}).`);
+    }
+
+    state.totalBytes += stat.size;
+    if (state.totalBytes > limits.maxTotalBytes) {
+      throw new AppError("IMPORT_FAILED", `Repository import exceeds the allowed total size limit (${formatBytes(limits.maxTotalBytes)}).`);
+    }
+
+    const buffer = await io.readFile(fullPath);
     const decoded = decodeTextContent(buffer);
     if (decoded.warning) {
       warnings.push({
@@ -398,24 +426,6 @@ async function scanDirectoryForCodeFiles(
         filePath: relativePath,
       });
     }
-    const size = Buffer.byteLength(decoded.content, "utf8");
-    if (size > MAX_SINGLE_FILE_BYTES) {
-      throw new AppError(
-        "IMPORT_FAILED",
-        `Repository contains a source file larger than the allowed single-file limit (${formatBytes(MAX_SINGLE_FILE_BYTES)}): ${relativePath}.`
-      );
-    }
-
-    state.totalFiles += 1;
-    if (state.totalFiles > limits.fileLimit) {
-      throw new AppError("IMPORT_FAILED", `Repository contains too many source files (limit: ${limits.fileLimit}).`);
-    }
-
-    state.totalBytes += size;
-    if (state.totalBytes > limits.maxTotalBytes) {
-      throw new AppError("IMPORT_FAILED", `Repository import exceeds the allowed total size limit (${formatBytes(limits.maxTotalBytes)}).`);
-    }
-
     const language = detectLanguage(extension);
     if (!language) {
       continue;
@@ -434,7 +444,7 @@ async function scanDirectoryForCodeFiles(
       fileName: entry.name,
       content: decoded.content,
       language,
-      size,
+      size: stat.size,
       encoding: decoded.encoding,
       encodingWarning: decoded.warning,
     });

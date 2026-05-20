@@ -33,12 +33,17 @@ vi.mock("./db", () => ({
 
 vi.mock("./utils/zipHandler", () => ({
   SUPPORTED_SOURCE_EXTENSIONS: [".go", ".sql", ".pas"],
-  validateZipFile: vi.fn(async () => true),
   extractFilesFromZip: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
 }));
 
 vi.mock("./utils/gitHandler", () => ({
-  assertSafeGitUrl: vi.fn(async () => undefined),
+  validateSafeGitUrl: vi.fn(async () => ({
+    gitUrl: "https://example.com/org/repo.git",
+    host: "example.com",
+    resolvedAddresses: [{ address: "93.184.216.34", family: 4 }],
+    allowlist: null,
+    production: false,
+  })),
   cloneAndExtractFiles: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
   cleanupTempDir: vi.fn(async () => undefined),
 }));

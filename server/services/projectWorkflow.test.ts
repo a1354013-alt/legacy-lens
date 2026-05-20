@@ -36,7 +36,6 @@ vi.mock("../db", () => ({
 
 vi.mock("../utils/zipHandler", () => ({
   SUPPORTED_SOURCE_EXTENSIONS: [".go", ".sql", ".pas"],
-  validateZipFile: vi.fn(async () => true),
   extractFilesFromZip: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
 }));
 
@@ -838,10 +837,16 @@ describe("project workflow", () => {
     expect(archive.mimeType).toBe("application/zip");
     expect(archive.base64).toBe(archiveAgain.base64);
     expect(zip.file("FLOW.md")).toBeTruthy();
+    expect(zip.file("metadata.json")).toBeTruthy();
     expect(zip.file("analysis-summary.json")).toBeTruthy();
+    expect(zip.file("import-warnings.json")).toBeTruthy();
+    expect(zip.file("DATA_DEPENDENCY.md")).toBeTruthy();
+    expect(zip.file("RISKS.md")).toBeTruthy();
+    expect(zip.file("RULES.yaml")).toBeTruthy();
     expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
     await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"importWarnings\"");
+    await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"limitationSummary\"");
     await expect(zip.file("import-warnings.json")!.async("text")).resolves.toContain("IMPORT_LIMITED_ANALYSIS");
     await Promise.all(
       zipFileNames.map(async (fileName) => {

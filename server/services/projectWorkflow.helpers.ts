@@ -156,6 +156,7 @@ export function renderProjectImpactSummaryMarkdown(
     "# IMPACT_ANALYSIS",
     "",
     `Snapshot timestamp: ${generatedAtIso}`,
+    "Heuristic note: impact paths are inferred from persisted static-analysis artifacts and should be reviewed before making production changes.",
     "",
     "## Totals",
     `- Files: ${summary.totals.files}`,

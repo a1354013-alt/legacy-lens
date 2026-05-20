@@ -97,7 +97,13 @@ export class DocumentGenerator {
 
   generateRisksDocument(risks: DetectedRisk[]): string {
     const groups: Array<DetectedRisk["severity"]> = ["critical", "high", "medium", "low"];
-    const lines = ["# RISKS", "", "Detected implementation risks grouped by severity.", ""];
+    const lines = [
+      "# RISKS",
+      "",
+      "Detected implementation risks grouped by severity.",
+      "Heuristic note: this risk register is produced from bounded static analysis and may miss runtime-only behavior.",
+      "",
+    ];
 
     for (const severity of groups) {
       const bucket = risks.filter((risk) => risk.severity === severity);

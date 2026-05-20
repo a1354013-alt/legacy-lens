@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=20 <23",
+    "pnpm": "10.4.1"
+  },
   "scripts": {
     "dev": "pnpm exec cross-env NODE_ENV=development pnpm exec tsx watch server/_core/index.ts",
     "build": "pnpm exec cross-env NODE_ENV=production pnpm exec vite build && pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",

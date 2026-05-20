@@ -134,6 +134,11 @@ function getClientIp(req: Request): string {
   return req.ip || "anonymous";
 }
 
+function getStableRequestPath(request: Request) {
+  const stablePath = String(request.originalUrl || request.baseUrl || request.url || request.path || "").split("?")[0];
+  return stablePath || "/";
+}
+
 export function createRateLimiter(configName: keyof typeof defaultConfigs = "api") {
   const config = defaultConfigs[configName];
   let limiterPromise:
@@ -167,11 +172,13 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
           },
           keyGenerator: (request: Request) => `${config.keyPrefix ?? configName}:${getClientIp(request)}`,
           skip: (request: Request) => {
+            const stablePath = getStableRequestPath(request);
+
             if (process.env.NODE_ENV === "test") {
               return true;
             }
 
-            if (request.path === "/health" || request.path === "/api/health") {
+            if (stablePath === "/health" || stablePath === "/api/health") {
               return true;
             }
 
@@ -181,7 +188,7 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
                 "/api/trpc/projects.uploadFiles",
                 "/api/trpc/projects.cloneGit",
                 "/api/trpc/analysis.trigger",
-              ].includes(request.path)
+              ].includes(stablePath)
             ) {
               return true;
             }
@@ -213,4 +220,4 @@ export function registerRateLimiters(app: Express) {
   app.use("/api/trpc", createRateLimiter("api"));
 }
 
-export { defaultConfigs };
+export { defaultConfigs, getStableRequestPath };

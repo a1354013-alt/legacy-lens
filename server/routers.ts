@@ -265,6 +265,7 @@ export const appRouter = router({
       .input(z.object({ projectId: projectIdSchema, format: z.literal("zip").default("zip") }))
       .query(async ({ ctx, input }) => {
         try {
+          // Deprecated: prefer GET /api/projects/:projectId/report.zip for binary ZIP downloads.
           return await buildReportArchive(input.projectId, ctx.user.id);
         } catch (error) {
           raiseAsTrpc(error);

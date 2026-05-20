@@ -86,6 +86,18 @@ export function assertSourceFileCount(fileCount: number) {
   }
 }
 
+export function createSingleFileSizeWarning(filePath: string): ImportWarning {
+  return {
+    code: "IMPORT_FILE_TOO_LARGE",
+    message: `The file was skipped because it exceeds the maximum supported size (${formatBytes(MAX_SINGLE_FILE_BYTES)}).`,
+    filePath,
+  };
+}
+
+export function assertUnsafeArchivePath(rawPath: string) {
+  throw new AppError("ZIP_INVALID", `Archive contains an unsafe path and was rejected: ${rawPath}.`);
+}
+
 export function assertSingleFileSize(byteLength: number, filePath: string) {
   if (byteLength > MAX_SINGLE_FILE_BYTES) {
     throw new AppError(
@@ -164,7 +176,10 @@ export async function validateZipFile(base64Content: string): Promise<boolean> {
 
     await JSZip.loadAsync(buffer);
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
     return false;
   }
 }
@@ -191,22 +206,12 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       }
 
       if (isAbsoluteArchivePath(rawPath)) {
-        warnings.push({
-          code: "IMPORT_UNSAFE_PATH",
-          message: "The file was skipped because its path is not a safe relative path.",
-          filePath: rawPath,
-        });
-        continue;
+        assertUnsafeArchivePath(rawPath);
       }
 
       const normalizedPath = normalizePath(rawPath);
       if (!isSafeRelativePath(normalizedPath)) {
-        warnings.push({
-          code: "IMPORT_UNSAFE_PATH",
-          message: "The file was skipped because its path is not a safe relative path.",
-          filePath: rawPath,
-        });
-        continue;
+        assertUnsafeArchivePath(rawPath);
       }
 
       if (shouldIgnoreFile(normalizedPath)) {
@@ -229,7 +234,10 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
 
       const fileBuffer = await entry.async("nodebuffer");
       const fileSize = fileBuffer.length;
-      assertSingleFileSize(fileSize, normalizedPath);
+      if (fileSize > MAX_SINGLE_FILE_BYTES) {
+        warnings.push(createSingleFileSizeWarning(normalizedPath));
+        continue;
+      }
 
       totalExtractedSize += fileSize;
       assertExtractedSize(totalExtractedSize);

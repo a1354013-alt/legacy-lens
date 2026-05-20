@@ -23,7 +23,7 @@ import { getDb } from "../db";
 import type { DatabaseClient, InsertProjectRecord } from "../dbTypes";
 import { deleteProjectFiles, getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
 import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../utils/gitHandler";
-import { extractFilesFromZip, validateZipFile } from "../utils/zipHandler";
+import { extractFilesFromZip } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
 import { getAppVersion } from "../_core/version";
 import {
@@ -208,11 +208,6 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
   logger.info("Import started", { projectId, action: "import.zip.start", status: "ok" });
 
   try {
-    const isValid = await validateZipFile(zipContent);
-    if (!isValid) {
-      throw new AppError("ZIP_INVALID", "Uploaded file is not a valid ZIP archive.");
-    }
-
     const extractedFiles = await extractFilesFromZip(zipContent);
     const fileIds = await replaceProjectFiles(projectId, extractedFiles);
 
@@ -801,6 +796,8 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
         metrics: readyReport.summaryJson,
         warnings: readyReport.warningsJson,
         importWarnings: project?.importWarningsJson ?? [],
+        limitationSummary:
+          "Legacy Lens uses heuristic static analysis for Go, SQL, and Delphi. Review skipped files, degraded files, and warnings before treating the report as source-of-truth.",
       },
       null,
       2
