@@ -14,6 +14,7 @@ type SortOrder = { type: "desc"; column: string } | undefined;
 let fakeDb: ReturnType<typeof createFakeDb>;
 let zipFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
 let analyzerResult: Record<string, unknown> | null = null;
+let importWarnings: Array<{ code: string; message: string; filePath?: string }> = [];
 
 vi.mock("drizzle-orm", async () => {
   const actual = await vi.importActual<typeof import("drizzle-orm")>("drizzle-orm");
@@ -33,12 +34,12 @@ vi.mock("./db", () => ({
 vi.mock("./utils/zipHandler", () => ({
   SUPPORTED_SOURCE_EXTENSIONS: [".go", ".sql", ".pas"],
   validateZipFile: vi.fn(async () => true),
-  extractFilesFromZip: vi.fn(async () => ({ files: zipFiles, warnings: [] })),
+  extractFilesFromZip: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
 }));
 
 vi.mock("./utils/gitHandler", () => ({
   assertSafeGitUrl: vi.fn(async () => undefined),
-  cloneAndExtractFiles: vi.fn(async () => ({ files: zipFiles, warnings: [] })),
+  cloneAndExtractFiles: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
   cleanupTempDir: vi.fn(async () => undefined),
 }));
 
@@ -211,6 +212,7 @@ function createContext(): TrpcContext {
 beforeEach(() => {
   fakeDb = createFakeDb();
   zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+  importWarnings = [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }];
   analyzerResult = {
     projectId: 1,
     status: "partial",
@@ -261,12 +263,17 @@ describe("appRouter integration", () => {
       zipContent: "encoded",
     });
     expect(uploaded.fileCount).toBe(1);
+    expect(uploaded.warnings).toEqual(importWarnings);
+
+    const project = await caller.projects.getById(created.projectId);
+    expect(project?.importWarningsJson).toEqual(importWarnings);
 
     const analyzed = await caller.analysis.trigger(created.projectId);
     expect(analyzed.status).toBe("partial");
 
     const snapshot = await caller.analysis.getSnapshot(created.projectId);
     expect(snapshot.report?.status).toBe("partial");
+    expect(snapshot.importWarnings).toEqual(importWarnings);
 
     const archive = await caller.analysis.downloadReport({
       projectId: created.projectId,

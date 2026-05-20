@@ -1,5 +1,5 @@
 import { COOKIE_NAME, MAX_ZIP_RAW_BYTES, formatBytes } from "@shared/const";
-import { focusLanguageSchema, projectSourceTypeSchema } from "@shared/contracts";
+import { focusLanguageSchema, projectSourceTypeSchema, type AnalysisStatus, type ProjectStatus } from "@shared/contracts";
 import { TRPCError } from "@trpc/server";
 import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
@@ -43,6 +43,23 @@ const cloneGitSchema = z.object({
   projectId: projectIdSchema,
   gitUrl: z.string().trim().min(1),
 });
+
+function deriveProjectAnalysisStatus(projectStatus: ProjectStatus, reportStatus?: AnalysisStatus): AnalysisStatus {
+  if (reportStatus) {
+    return reportStatus;
+  }
+
+  switch (projectStatus) {
+    case "analyzing":
+      return "processing";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    default:
+      return "pending";
+  }
+}
 
 function raiseAsTrpc(error: unknown): never {
   if (error instanceof TRPCError) {
@@ -108,7 +125,7 @@ export const appRouter = router({
         const analysisStatusByProjectId = new Map(reportRows.map((row) => [row.projectId, row.status]));
         return projectRows.map((project) => ({
           ...project,
-          analysisStatus: analysisStatusByProjectId.get(project.id) ?? "pending",
+          analysisStatus: deriveProjectAnalysisStatus(project.status, analysisStatusByProjectId.get(project.id)),
         }));
       } catch (error) {
         raiseAsTrpc(error);
@@ -129,7 +146,7 @@ export const appRouter = router({
 
         return {
           ...project,
-          analysisStatus: report?.status ?? "pending",
+          analysisStatus: deriveProjectAnalysisStatus(project.status, report?.status),
         };
       } catch (error) {
         raiseAsTrpc(error);

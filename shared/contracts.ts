@@ -105,6 +105,25 @@ export interface ImportWarning {
   filePath?: string;
 }
 
+export interface ProjectRecordSummary {
+  id: number;
+  userId: number;
+  name: string;
+  description: string | null;
+  language: FocusLanguage;
+  sourceType: ProjectSourceType;
+  sourceUrl: string | null;
+  status: ProjectStatus;
+  importProgress: number;
+  analysisProgress: number;
+  errorMessage: string | null;
+  lastErrorCode: string | null;
+  importWarningsJson: ImportWarning[];
+  createdAt: Date;
+  updatedAt: Date;
+  analysisStatus: AnalysisStatus;
+}
+
 export interface AnalysisSnapshot {
   report: {
     id: number;
@@ -120,6 +139,7 @@ export interface AnalysisSnapshot {
     createdAt: Date;
     updatedAt: Date;
   } | null;
+  importWarnings: ImportWarning[];
   symbols: Array<{
     id: number;
     name: string;

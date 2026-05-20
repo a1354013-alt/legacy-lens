@@ -37,7 +37,7 @@ It is intentionally **not** positioned as:
 Highlights (why this repo is portfolio-worthy):
 - Delphi support (including limited-analysis import for `.dfm` / `.fmx` / `.dpk` / `.inc`)
 - SQL field read/write extraction (heuristic)
-- legacy encoding detection + stable import warnings
+- legacy encoding detection + persisted stable import warnings
 - persisted snapshot as the single source of truth
 - deterministic, exportable review artifact (ZIP)
 
@@ -63,7 +63,7 @@ Browser (React/Vite)
             -> Export ZIP -> generated from persisted analysisResults snapshot
 
 MySQL (Drizzle ORM)
-  -> projects
+  -> projects (status + import warnings)
   -> files
   -> symbols / dependencies
   -> fields / fieldDependencies
@@ -102,6 +102,7 @@ The exported ZIP is generated **only** from the persisted server-side snapshot (
 Files at the ZIP root:
 - `metadata.json` (audit/replay metadata)
 - `analysis-summary.json` (metrics + warnings summary)
+- `import-warnings.json`
 - `FLOW.md`
 - `DATA_DEPENDENCY.md`
 - `RISKS.md`
@@ -111,7 +112,7 @@ Files at the ZIP root:
 
 `IMPACT_ANALYSIS.md` and `impact-analysis.json` are generated from the persisted project snapshot and summarize:
 - total files / symbols / dependencies / risks / rules
-- top impacted files
+- top impacted files (dependency/risk/rule-driven impact signals)
 - top dependencies
 - high-risk items
 - business rules summary

@@ -24,6 +24,7 @@ export interface RateLimiterConfig {
   legacyHeaders?: boolean;
   skipSuccessfulRequests?: boolean;
   skipFailedRequests?: boolean;
+  keyPrefix?: string;
 }
 
 type TrustProxyValue = boolean | number | string | string[];
@@ -63,6 +64,36 @@ const defaultConfigs: Record<string, RateLimiterConfig> = {
     windowMs: 60 * 60 * 1000,
     max: 10,
     message: "Too many upload requests, please try again later",
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: false,
+    skipFailedRequests: false,
+  },
+
+  clone: {
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: "Too many Git clone requests, please wait before cloning another repository",
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: false,
+    skipFailedRequests: false,
+  },
+
+  analysis: {
+    windowMs: 10 * 60 * 1000,
+    max: 6,
+    message: "Too many analysis requests, please wait for running analyses to finish",
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: false,
+    skipFailedRequests: false,
+  },
+
+  report: {
+    windowMs: 5 * 60 * 1000,
+    max: 20,
+    message: "Too many report downloads, please slow down before retrying",
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false,
@@ -134,13 +165,24 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
               message: config.message,
             });
           },
-          keyGenerator: (request: Request) => getClientIp(request),
+          keyGenerator: (request: Request) => `${config.keyPrefix ?? configName}:${getClientIp(request)}`,
           skip: (request: Request) => {
             if (process.env.NODE_ENV === "test") {
               return true;
             }
 
             if (request.path === "/health" || request.path === "/api/health") {
+              return true;
+            }
+
+            if (
+              configName === "api" &&
+              [
+                "/api/trpc/projects.uploadFiles",
+                "/api/trpc/projects.cloneGit",
+                "/api/trpc/analysis.trigger",
+              ].includes(request.path)
+            ) {
               return true;
             }
 
@@ -166,6 +208,8 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
 export function registerRateLimiters(app: Express) {
   app.use("/api/oauth", createRateLimiter("auth"));
   app.use("/api/trpc/projects.uploadFiles", createRateLimiter("upload"));
+  app.use("/api/trpc/projects.cloneGit", createRateLimiter("clone"));
+  app.use("/api/trpc/analysis.trigger", createRateLimiter("analysis"));
   app.use("/api/trpc", createRateLimiter("api"));
 }
 

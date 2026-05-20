@@ -9,6 +9,7 @@ import {
   getAnalysisViewState,
   limitResults,
   RESULT_LIST_PAGE_SIZE,
+  resolveAnalysisStatus,
   shouldPollProjectStatus,
   shouldPollSnapshot,
 } from "./analysisResultModel";
@@ -29,6 +30,7 @@ function createSnapshot(): AnalysisSnapshot {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     },
+    importWarnings: [],
     symbols: Array.from({ length: 100 }, (_, index) => ({
       id: index + 1,
       name: index % 2 === 0 ? `LoadUser${index}` : `SaveOrder${index}`,
@@ -146,6 +148,14 @@ describe("analysisResultModel", () => {
     expect(getAnalysisViewState("analyzing", "pending", false)).toBe("analyzing");
     expect(getAnalysisViewState("completed", "completed", true)).toBe("completed");
     expect(getAnalysisViewState("failed", "failed", false)).toBe("failed");
+  });
+
+  it("prefers the persisted report status and falls back to project analysis status", () => {
+    expect(resolveAnalysisStatus(undefined, undefined)).toBe("pending");
+    expect(resolveAnalysisStatus(undefined, "processing")).toBe("processing");
+    expect(resolveAnalysisStatus(undefined, "completed")).toBe("completed");
+    expect(resolveAnalysisStatus(undefined, "failed")).toBe("failed");
+    expect(resolveAnalysisStatus("partial", "processing")).toBe("partial");
   });
 
   it("enables report download only for completed or partial reports with all snapshot artifacts", () => {

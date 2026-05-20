@@ -171,7 +171,7 @@ export function renderProjectImpactSummaryMarkdown(
     lines.push("- No impacted files recorded.");
   } else {
     summary.topImpactedFiles.forEach((entry) => {
-      lines.push(`- ${entry.filePath}: ${entry.impactCount}`);
+      lines.push(`- ${entry.filePath}: ${entry.impactCount} impact signals`);
     });
   }
 

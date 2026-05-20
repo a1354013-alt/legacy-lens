@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `importWarningsJson` json DEFAULT ('[]') NOT NULL;

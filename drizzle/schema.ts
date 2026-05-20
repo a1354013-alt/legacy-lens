@@ -1,4 +1,4 @@
-import type { AnalysisMetrics, AnalysisWarning } from "../shared/contracts";
+import type { AnalysisMetrics, AnalysisWarning, ImportWarning } from "../shared/contracts";
 import { analysisStatuses, fileStatuses, focusLanguages, projectSourceTypes, projectStatuses } from "../shared/contracts";
 import { customType, index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
@@ -38,6 +38,7 @@ export const projects = mysqlTable(
     analysisProgress: int("analysisProgress").default(0).notNull(),
     errorMessage: text("errorMessage"),
     lastErrorCode: varchar("lastErrorCode", { length: 64 }),
+    importWarningsJson: json("importWarningsJson").$type<ImportWarning[]>().default([]).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

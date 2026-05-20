@@ -23,6 +23,7 @@ import {
   getSymbolKinds,
   limitResults,
   RESULT_LIST_PAGE_SIZE,
+  resolveAnalysisStatus,
   shouldPollProjectStatus,
   shouldPollSnapshot,
 } from "./analysisResultModel";
@@ -111,7 +112,8 @@ export default function AnalysisResult() {
   const snapshot = snapshotQuery.data;
   const report = snapshot?.report;
   const metrics = report?.summaryJson;
-  const analysisStatus = report?.status ?? project?.analysisStatus;
+  const analysisStatus = resolveAnalysisStatus(report?.status, project?.analysisStatus);
+  const importWarnings = snapshot?.importWarnings ?? project?.importWarningsJson ?? [];
   const viewState = getAnalysisViewState(project?.status, analysisStatus, Boolean(report));
   const symbolKinds = useMemo(() => getSymbolKinds(snapshot), [snapshot]);
   const fieldTables = useMemo(() => getFieldTables(snapshot), [snapshot]);
@@ -234,7 +236,7 @@ export default function AnalysisResult() {
         <div className="flex flex-wrap items-center gap-3">
           <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>Project: {projectStatusLabels[project.status]}</Badge>
           <Badge variant={isFailed ? "destructive" : report?.status === "completed" || report?.status === "partial" ? "default" : "secondary"}>
-            Analysis: {analysisStatusLabels[report?.status ?? "pending"]}
+            Analysis: {analysisStatusLabels[analysisStatus]}
           </Badge>
           <Badge variant="outline">Focus: {project.language.toUpperCase()}</Badge>
           <Badge variant="outline">Source: {project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
@@ -272,7 +274,7 @@ export default function AnalysisResult() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-slate-600">
               <p>專案狀態：{project.status}</p>
-              <p>分析狀態：{report?.status ?? project.analysisStatus ?? "pending"}</p>
+              <p>分析狀態：{analysisStatus}</p>
             </CardContent>
           </Card>
         ) : null}
@@ -325,7 +327,7 @@ export default function AnalysisResult() {
               </CardHeader>
               <CardContent className="grid gap-3 text-sm md:grid-cols-2">
                 <SummaryRow label="Project status" value={projectStatusLabels[project.status]} />
-                <SummaryRow label="Analysis status" value={analysisStatusLabels[report?.status ?? "pending"]} />
+                <SummaryRow label="Analysis status" value={analysisStatusLabels[analysisStatus]} />
                 <SummaryRow label="Imported files" value={String(metrics?.fileCount ?? 0)} />
                 <SummaryRow label="Eligible files" value={String(metrics?.eligibleFileCount ?? 0)} />
                 <SummaryRow label="Analyzed files" value={String(metrics?.analyzedFileCount ?? 0)} />
@@ -345,6 +347,24 @@ export default function AnalysisResult() {
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm text-slate-700">
                   {(report?.warningsJson ?? []).map((warning, index) => (
+                    <div key={`${warning.code}-${warning.filePath ?? index}`} className="rounded-lg border px-3 py-2">
+                      <p className="font-medium text-slate-950">{warning.code}</p>
+                      <p>{warning.message}</p>
+                      {warning.filePath ? <p className="text-slate-500">{warning.filePath}</p> : null}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {importWarnings.length > 0 ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Import warnings</CardTitle>
+                  <CardDescription>These warnings were recorded during ZIP or Git import and remain part of the persisted project snapshot.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm text-slate-700">
+                  {importWarnings.map((warning, index) => (
                     <div key={`${warning.code}-${warning.filePath ?? index}`} className="rounded-lg border px-3 py-2">
                       <p className="font-medium text-slate-950">{warning.code}</p>
                       <p>{warning.message}</p>

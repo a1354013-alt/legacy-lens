@@ -159,6 +159,7 @@ export async function createProjectForUser(
     analysisProgress: 0,
     errorMessage: null,
     lastErrorCode: null,
+    importWarningsJson: [],
   });
 
   const insertId = Number((insertResult as { insertId?: number }).insertId ?? 0);
@@ -183,6 +184,7 @@ async function replaceProjectFiles(
       sourceUrl: sourceUrl ?? null,
       errorMessage: null,
       lastErrorCode: null,
+      importWarningsJson: [],
     });
 
     await clearProjectAnalysisGraph(tx, projectId, true);
@@ -194,6 +196,7 @@ async function replaceProjectFiles(
       analysisProgress: 0,
       errorMessage: null,
       lastErrorCode: null,
+      importWarningsJson: extractedFiles.warnings,
     });
 
     return fileIds;
@@ -234,6 +237,7 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
         status: "failed",
         errorMessage: appError.message,
         lastErrorCode: appError.code,
+        importWarningsJson: [],
       })
       .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
     throw appError;
@@ -274,6 +278,7 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
         status: "failed",
         errorMessage: appError.message,
         lastErrorCode: appError.code,
+        importWarningsJson: [],
       })
       .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
     throw appError;
@@ -566,7 +571,6 @@ async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requir
     fileImpactCounts.set(filePath, (fileImpactCounts.get(filePath) ?? 0) + 1);
   };
 
-  projectSymbols.forEach((symbol) => incrementFileImpact(fileById.get(symbol.fileId)));
   projectRisks.forEach((risk) => incrementFileImpact(risk.sourceFile));
   projectRules.forEach((rule) => incrementFileImpact(rule.sourceFile));
   projectDependencies.forEach((dependency) => {
@@ -635,7 +639,7 @@ async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requir
 }
 
 export async function getAnalysisSnapshot(projectId: number, userId: number): Promise<AnalysisSnapshot> {
-  await getOwnedProject(projectId, userId);
+  const project = await getOwnedProject(projectId, userId);
   const db = await requireDb();
 
   const report = await getProjectAnalysisRecord(db, projectId);
@@ -677,6 +681,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
 
   return {
     report: report ? mapSnapshotReport(report) : null,
+    importWarnings: project.importWarningsJson ?? [],
     symbols: sortedSymbolRows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -772,6 +777,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
 
   archive.file("IMPACT_ANALYSIS.md", impactMarkdown, deterministicFileOptions);
   archive.file("impact-analysis.json", JSON.stringify(impactSummary, null, 2), deterministicFileOptions);
+  archive.file("import-warnings.json", JSON.stringify(project?.importWarningsJson ?? [], null, 2), deterministicFileOptions);
 
   const metadata = {
     projectName: project?.name ?? "project",
@@ -782,6 +788,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     symbolCount: metrics?.symbolCount ?? 0,
     dependencyCount: metrics?.dependencyCount ?? 0,
     warningCount: metrics?.warningCount ?? 0,
+    importWarningCount: project?.importWarningsJson?.length ?? 0,
   } as const;
 
   archive.file("metadata.json", JSON.stringify(metadata, null, 2), deterministicFileOptions);
@@ -793,6 +800,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
         status: readyReport.status,
         metrics: readyReport.summaryJson,
         warnings: readyReport.warningsJson,
+        importWarnings: project?.importWarningsJson ?? [],
       },
       null,
       2

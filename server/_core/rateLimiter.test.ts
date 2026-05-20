@@ -1,10 +1,14 @@
 import express from "express";
 import { describe, expect, it, vi } from "vitest";
-import { configureTrustProxy, createRateLimiter } from "./rateLimiter";
+import { configureTrustProxy, createRateLimiter, defaultConfigs } from "./rateLimiter";
 
 type RateLimitFactoryOptions = {
   max: number;
   keyGenerator: (request: unknown) => string;
+  message: {
+    error: string;
+    message: string | undefined;
+  };
 };
 
 const rateLimitFactory = vi.fn((options: RateLimitFactoryOptions) => {
@@ -46,7 +50,21 @@ describe("createRateLimiter", () => {
         ip: "198.51.100.10",
         headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.1" },
       } as any)
-    ).toBe("198.51.100.10");
+    ).toBe("api:198.51.100.10");
+  });
+
+  it("uses separate limiter buckets for clone and analysis routes", async () => {
+    const cloneLimiter = createRateLimiter("clone");
+    const analysisLimiter = createRateLimiter("analysis");
+
+    await cloneLimiter({ path: "/api/trpc/projects.cloneGit", headers: {}, ip: "198.51.100.10" } as any, {} as any, vi.fn());
+    await analysisLimiter({ path: "/api/trpc/analysis.trigger", headers: {}, ip: "198.51.100.10" } as any, {} as any, vi.fn());
+
+    const cloneOptions = rateLimitFactory.mock.calls.find((call) => call[0].message.message === defaultConfigs.clone.message)?.[0];
+    const analysisOptions = rateLimitFactory.mock.calls.find((call) => call[0].message.message === defaultConfigs.analysis.message)?.[0];
+
+    expect(cloneOptions?.keyGenerator({ ip: "198.51.100.10" } as any)).toBe("clone:198.51.100.10");
+    expect(analysisOptions?.keyGenerator({ ip: "198.51.100.10" } as any)).toBe("analysis:198.51.100.10");
   });
 });
 

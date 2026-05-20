@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { AppError } from "../appError";
 import { buildReportArchiveBuffer } from "../services/projectWorkflow";
+import { createRateLimiter } from "./rateLimiter";
 import { sdk } from "./sdk";
 
 function sendAppError(res: Response, error: AppError) {
@@ -9,7 +10,7 @@ function sendAppError(res: Response, error: AppError) {
 }
 
 export function registerReportDownloadRoute(app: Express) {
-  app.get("/api/projects/:projectId/report.zip", async (req: Request, res: Response) => {
+  app.get("/api/projects/:projectId/report.zip", createRateLimiter("report"), async (req: Request, res: Response) => {
     const projectId = Number(req.params.projectId);
     if (!Number.isInteger(projectId) || projectId <= 0) {
       res.status(400).json({ error: "Project id must be a positive integer.", code: "INVALID_PROJECT_STATE" });

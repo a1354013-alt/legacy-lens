@@ -50,6 +50,13 @@ export function getAnalysisViewState(status: ProjectStatus | null | undefined, a
   return "idle" satisfies AnalysisViewState;
 }
 
+export function resolveAnalysisStatus(
+  reportStatus: AnalysisStatus | null | undefined,
+  projectAnalysisStatus: AnalysisStatus | null | undefined
+) {
+  return reportStatus ?? projectAnalysisStatus ?? "pending";
+}
+
 export function canDownloadAnalysisReport(snapshot: AnalysisSnapshot | undefined) {
   const report = snapshot?.report;
   if (!report) {

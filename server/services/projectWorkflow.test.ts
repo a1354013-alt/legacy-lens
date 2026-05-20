@@ -256,6 +256,7 @@ describe("project workflow", () => {
       status: "draft",
       importProgress: 0,
       analysisProgress: 0,
+      importWarningsJson: [],
     });
   });
 
@@ -287,7 +288,33 @@ describe("project workflow", () => {
       status: "ready",
       importProgress: 100,
       analysisProgress: 0,
+      importWarningsJson: [],
     });
+  });
+
+  it("persists ZIP import warnings on the project record", async () => {
+    const { getOwnedProject, importProjectZip } = await import("./projectWorkflow");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "zip-warning-project",
+      language: "go",
+      sourceType: "upload",
+      status: "draft",
+      importProgress: 0,
+      analysisProgress: 0,
+      errorMessage: null,
+      lastErrorCode: null,
+      importWarningsJson: [],
+    });
+    zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+    importWarnings = [{ code: "IMPORT_FILE_TOO_LARGE", message: "Skipped an oversized file.", filePath: "big.sql" }];
+
+    const result = await importProjectZip(1, 7, "encoded");
+    const project = await getOwnedProject(1, 7);
+
+    expect(result.warnings).toEqual(importWarnings);
+    expect(project.importWarningsJson).toEqual(importWarnings);
   });
 
   it("clears stale analysis records before replacing imported files", async () => {
@@ -375,7 +402,32 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({
       sourceUrl: "https://example.com/org/repo.git",
       status: "ready",
+      importWarningsJson: [],
     });
+  });
+
+  it("persists Git import warnings on the project record", async () => {
+    const { getOwnedProject, importProjectGit } = await import("./projectWorkflow");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "git-warning-project",
+      language: "go",
+      sourceType: "git",
+      status: "draft",
+      importProgress: 0,
+      analysisProgress: 0,
+      errorMessage: null,
+      lastErrorCode: null,
+      importWarningsJson: [],
+    });
+    gitFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+    importWarnings = [{ code: "IMPORT_LIMITED_ANALYSIS", message: "Imported with limited analysis.", filePath: "form.dfm" }];
+
+    await importProjectGit(1, 7, "https://example.com/org/repo.git");
+    const project = await getOwnedProject(1, 7);
+
+    expect(project.importWarningsJson).toEqual(importWarnings);
   });
 
   it("writes back analysis artifacts, symbols, dependencies, fields, rules, and risks", async () => {
@@ -713,7 +765,7 @@ describe("project workflow", () => {
 
   it("returns a complete analysis snapshot", async () => {
     const { getAnalysisSnapshot } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({ id: 1, userId: 7, status: "completed" });
+    fakeDb.store.projects.push({ id: 1, userId: 7, status: "completed", importWarningsJson: [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }] });
     fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
@@ -744,11 +796,19 @@ describe("project workflow", () => {
     });
     expect(snapshot.fields).toHaveLength(1);
     expect(snapshot.fieldDependencies[0]?.fieldId).toBe(1);
+    expect(snapshot.importWarnings).toEqual([{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }]);
   });
 
   it("builds a downloadable report archive with the expected files", async () => {
     const { buildReportArchive } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({ id: 1, userId: 7, name: "report-project", language: "go", status: "completed" });
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "report-project",
+      language: "go",
+      status: "completed",
+      importWarningsJson: [{ code: "IMPORT_LIMITED_ANALYSIS", message: "Imported with limited analysis.", filePath: "Form1.dfm" }],
+    });
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
     fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 1, signature: "func main()", description: null });
     fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "external.Dependency", targetKind: "unresolved", dependencyType: "references", lineNumber: 1 });
@@ -781,6 +841,8 @@ describe("project workflow", () => {
     expect(zip.file("analysis-summary.json")).toBeTruthy();
     expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
+    await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"importWarnings\"");
+    await expect(zip.file("import-warnings.json")!.async("text")).resolves.toContain("IMPORT_LIMITED_ANALYSIS");
     await Promise.all(
       zipFileNames.map(async (fileName) => {
         const [firstContent, secondContent] = await Promise.all([
