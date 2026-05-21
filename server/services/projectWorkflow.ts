@@ -12,7 +12,6 @@ import type {
   PagedResult,
   ProjectJobCreateResult,
   ProjectJobRecord,
-  ProjectJobType,
   ReportArchivePayload,
   RiskListItem,
   RisksPageInput,
@@ -70,10 +69,16 @@ const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {
 };
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
-type JobRunner = () => Promise<void>;
+type ProjectJobRow = typeof projectJobs.$inferSelect;
+type ProjectJobPayload =
+  | { type: "import_zip"; zipContent: string }
+  | { type: "import_git"; gitUrl: string }
+  | { type: "analyze" };
 
 const queuedJobPromises = new Map<number, Promise<void>>();
-const STALE_PROJECT_JOB_MS = 15 * 60 * 1000;
+const ACTIVE_PROJECT_JOB_KEY = "active";
+const STALE_PROJECT_JOB_MS = Number.parseInt(process.env.PROJECT_JOB_STALE_MS ?? "900000", 10);
+let projectJobWorkerLoop: Promise<void> | null = null;
 
 function assertProjectTransition(current: ProjectStatus, next: ProjectStatus) {
   if (current === next) {
@@ -134,6 +139,43 @@ function paginateItems<T>(items: T[], page: number, pageSize: number): PagedResu
 
 function isInMemoryDb(db: DbHandle): db is DbHandle & { store: Record<string, Array<Record<string, unknown>>> } {
   return typeof db === "object" && db !== null && "store" in db;
+}
+
+function isActiveProjectJobStatus(status: ProjectJobRow["status"]) {
+  return status === "queued" || status === "running";
+}
+
+function serializeProjectJobPayload(payload: ProjectJobPayload) {
+  return JSON.stringify(payload);
+}
+
+function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloadJson">): ProjectJobPayload {
+  if (!job.payloadJson) {
+    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is missing.`);
+  }
+
+  const parsed = JSON.parse(job.payloadJson) as ProjectJobPayload;
+  if (!parsed || parsed.type !== job.type) {
+    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
+  }
+
+  return parsed;
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return error instanceof Error && /duplicate entry|unique/i.test(error.message);
+}
+
+function extractAffectedRows(result: unknown) {
+  if (typeof (result as { affectedRows?: number } | undefined)?.affectedRows === "number") {
+    return (result as { affectedRows: number }).affectedRows;
+  }
+
+  if (Array.isArray(result) && typeof (result[0] as { affectedRows?: number } | undefined)?.affectedRows === "number") {
+    return (result[0] as { affectedRows: number }).affectedRows;
+  }
+
+  return undefined;
 }
 
 async function countRows(
@@ -250,88 +292,199 @@ async function transitionProjectState(
   await db.update(projects).set({ ...updates, updatedAt: new Date() }).where(condition);
 }
 
-async function createProjectJob(projectId: number, userId: number, type: ProjectJobType) {
-  const db = await requireDb();
-  const insertResult = await db.insert(projectJobs).values({
-    projectId,
-    userId,
-    type,
-    status: "queued",
-    progress: 0,
-    errorCode: null,
-    errorMessage: null,
-    startedAt: null,
-    completedAt: null,
-  });
-
-  const jobId = Number((insertResult as { insertId?: number }).insertId ?? 0);
-  if (jobId <= 0) {
-    throw new AppError("DATABASE_UNAVAILABLE", "Job was created but its identifier could not be resolved.");
-  }
-
-  return jobId;
-}
-
 async function updateProjectJob(jobId: number, updates: Partial<typeof projectJobs.$inferInsert>) {
   const db = await requireDb();
   await db.update(projectJobs).set(updates).where(eq(projectJobs.id, jobId));
 }
 
-async function getActiveProjectJobs(projectId: number, userId: number, type?: ProjectJobType) {
+async function getProjectJobById(jobId: number) {
   const db = await requireDb();
-  const rows = await db.select().from(projectJobs).where(and(eq(projectJobs.projectId, projectId), eq(projectJobs.userId, userId)));
-  return rows.filter((job) => (type ? job.type === type : true) && (job.status === "queued" || job.status === "running"));
+  const [job] = await db.select().from(projectJobs).where(eq(projectJobs.id, jobId)).limit(1);
+  return job ?? null;
 }
 
-async function runQueuedProjectJob(jobId: number, runner: JobRunner) {
-  const promise = (async () => {
+async function createQueuedProjectJob(projectId: number, userId: number, payload: ProjectJobPayload): Promise<number> {
+  const db = await requireDb();
+  const nextStatus = payload.type === "analyze" ? "analyzing" : "importing";
+  const allowedStatuses =
+    payload.type === "analyze"
+      ? new Set<ProjectStatus>(["ready", "completed", "failed"])
+      : new Set<ProjectStatus>(["draft", "ready", "completed", "failed"]);
+
+  try {
+    return await db.transaction(async (tx) => {
+      const project = await getOwnedProjectWithHandle(tx, projectId, userId);
+      const existingJobs = await tx.select().from(projectJobs).where(and(eq(projectJobs.projectId, projectId), eq(projectJobs.userId, userId)));
+      if (existingJobs.some((job) => isActiveProjectJobStatus(job.status))) {
+        throw new AppError("PROJECT_JOB_ACTIVE", "Project already has an active job.");
+      }
+
+      if (!allowedStatuses.has(project.status)) {
+        throw new AppError("INVALID_PROJECT_STATE", `Project is currently "${projectStatusLabels[project.status]}".`);
+      }
+
+      const insertResult = await tx.insert(projectJobs).values({
+        projectId,
+        userId,
+        type: payload.type,
+        status: "queued",
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        payloadJson: serializeProjectJobPayload(payload),
+        activeKey: ACTIVE_PROJECT_JOB_KEY,
+        startedAt: null,
+        finishedAt: null,
+      });
+
+      const jobId = Number((insertResult as { insertId?: number }).insertId ?? 0);
+      if (jobId <= 0) {
+        throw new AppError("DATABASE_UNAVAILABLE", "Job was created but its identifier could not be resolved.");
+      }
+
+      await transitionProjectState(
+        tx,
+        projectId,
+        {
+          status: nextStatus,
+          importProgress: payload.type === "analyze" ? project.importProgress : 0,
+          analysisProgress: payload.type === "analyze" ? 0 : project.analysisProgress,
+          sourceUrl: payload.type === "import_git" ? payload.gitUrl : project.sourceUrl,
+          errorMessage: null,
+          lastErrorCode: null,
+        },
+        userId
+      );
+
+      if (payload.type === "analyze") {
+        await replaceAnalysisResult(tx, projectId, {
+          status: "processing",
+          flowMarkdown: null,
+          dataDependencyMarkdown: null,
+          risksMarkdown: null,
+          rulesYaml: null,
+          summaryJson: null,
+          warningsJson: [],
+          errorMessage: null,
+        });
+      }
+
+      return jobId;
+    });
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+    if (isUniqueConstraintError(error)) {
+      throw new AppError("PROJECT_JOB_ACTIVE", "Project already has an active job.");
+    }
+    throw error;
+  }
+}
+
+function kickProjectJobWorker() {
+  if (projectJobWorkerLoop) {
+    return projectJobWorkerLoop;
+  }
+
+  projectJobWorkerLoop = (async () => {
     try {
-      await updateProjectJob(jobId, {
-        status: "running",
-        progress: 10,
-        startedAt: new Date(),
-        completedAt: null,
-        errorCode: null,
-        errorMessage: null,
-      });
-      await runner();
-      await updateProjectJob(jobId, {
-        status: "completed",
-        progress: 100,
-        completedAt: new Date(),
-        errorCode: null,
-        errorMessage: null,
-      });
-    } catch (error) {
-      const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Project job failed."));
-      await updateProjectJob(jobId, {
-        status: "failed",
-        progress: 100,
-        completedAt: new Date(),
-        errorCode: appError.code,
-        errorMessage: appError.message,
-      });
+      while (await processNextQueuedProjectJob()) {
+        // Keep draining queued jobs until none remain for this worker cycle.
+      }
     } finally {
-      queuedJobPromises.delete(jobId);
+      projectJobWorkerLoop = null;
     }
   })();
 
-  queuedJobPromises.set(jobId, promise);
-  queueMicrotask(() => void promise);
+  return projectJobWorkerLoop;
 }
 
-async function enqueueProjectJob(projectId: number, userId: number, type: ProjectJobType, runner: JobRunner): Promise<ProjectJobCreateResult> {
-  await getOwnedProject(projectId, userId);
-
-  if (type === "analyze") {
-    const activeJobs = await getActiveProjectJobs(projectId, userId, "analyze");
-    if (activeJobs.length > 0) {
-      throw new AppError("INVALID_PROJECT_STATE", "An analysis job is already queued or running for this project.");
-    }
+async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
+  const db = await requireDb();
+  const queuedRows = await db.select().from(projectJobs).where(eq(projectJobs.status, "queued")).orderBy(asc(projectJobs.id)).limit(1);
+  const nextJob = queuedRows[0];
+  if (!nextJob) {
+    return null;
   }
 
-  const jobId = await createProjectJob(projectId, userId, type);
-  await runQueuedProjectJob(jobId, runner);
+  const startedAt = new Date();
+  const updateResult = await db
+    .update(projectJobs)
+    .set({
+      status: "running",
+      progress: 10,
+      startedAt,
+      finishedAt: null,
+      errorCode: null,
+      errorMessage: null,
+    })
+    .where(and(eq(projectJobs.id, nextJob.id), eq(projectJobs.status, "queued")));
+
+  const affectedRows = extractAffectedRows(updateResult);
+  if (typeof affectedRows === "number" && affectedRows === 0) {
+    return null;
+  }
+
+  const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
+  return claimedJob ?? null;
+}
+
+async function executeProjectJob(job: ProjectJobRow) {
+  const payload = parseProjectJobPayload(job);
+
+  if (payload.type === "import_zip") {
+    await importProjectZip(job.projectId, job.userId, payload.zipContent);
+    return;
+  }
+
+  if (payload.type === "import_git") {
+    await importProjectGit(job.projectId, job.userId, payload.gitUrl);
+    return;
+  }
+
+  await analyzeProject(job.projectId, job.userId);
+}
+
+async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "failed", error?: AppError) {
+  const now = new Date();
+  await updateProjectJob(job.id, {
+    status,
+    progress: 100,
+    activeKey: null,
+    payloadJson: null,
+    errorCode: error?.code ?? null,
+    errorMessage: error?.message ?? null,
+    finishedAt: now,
+  });
+}
+
+async function processNextQueuedProjectJob() {
+  const claimedJob = await claimNextQueuedProjectJob();
+  if (!claimedJob) {
+    return false;
+  }
+
+  const promise = (async () => {
+    try {
+      await executeProjectJob(claimedJob);
+      await finalizeProjectJob(claimedJob, "completed");
+    } catch (error) {
+      const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Project job failed."));
+      await finalizeProjectJob(claimedJob, "failed", appError);
+    } finally {
+      queuedJobPromises.delete(claimedJob.id);
+    }
+  })();
+
+  queuedJobPromises.set(claimedJob.id, promise);
+  await promise;
+  return true;
+}
+
+async function enqueueProjectJob(projectId: number, userId: number, payload: ProjectJobPayload): Promise<ProjectJobCreateResult> {
+  const jobId = await createQueuedProjectJob(projectId, userId, payload);
+  void kickProjectJobWorker();
 
   return {
     jobId,
@@ -341,52 +494,133 @@ async function enqueueProjectJob(projectId: number, userId: number, type: Projec
 }
 
 export async function waitForProjectJobForTests(jobId: number) {
-  await queuedJobPromises.get(jobId);
+  while (true) {
+    const job = await getProjectJobById(jobId);
+    if (!job || !isActiveProjectJobStatus(job.status)) {
+      return;
+    }
+
+    if (queuedJobPromises.has(jobId)) {
+      await queuedJobPromises.get(jobId);
+      continue;
+    }
+
+    if (projectJobWorkerLoop) {
+      await projectJobWorkerLoop;
+      continue;
+    }
+
+    await kickProjectJobWorker();
+  }
 }
 
 export async function waitForAllProjectJobsForTests() {
-  await Promise.all(Array.from(queuedJobPromises.values()));
+  while (true) {
+    const db = await requireDb();
+    const rows = await db.select().from(projectJobs);
+    if (!rows.some((row) => isActiveProjectJobStatus(row.status))) {
+      return;
+    }
+
+    if (projectJobWorkerLoop) {
+      await projectJobWorkerLoop;
+      continue;
+    }
+
+    await kickProjectJobWorker();
+  }
+}
+
+async function markProjectAsRecoveryFailed(projectId: number, status: ProjectStatus, message: string, now: Date) {
+  const db = await requireDb();
+  const updates: Partial<InsertProjectRecord> & { status: ProjectStatus } = {
+    status: "failed",
+    errorMessage: message,
+    lastErrorCode: "PROJECT_JOB_STALE",
+    updatedAt: now,
+  };
+  if (status === "importing") {
+    updates.importProgress = 0;
+  }
+  if (status === "analyzing") {
+    updates.analysisProgress = 0;
+  }
+
+  await db.update(projects).set(updates).where(eq(projects.id, projectId));
+
+  if (status === "analyzing") {
+    await replaceAnalysisResult(db, projectId, {
+      status: "failed",
+      flowMarkdown: null,
+      dataDependencyMarkdown: null,
+      risksMarkdown: null,
+      rulesYaml: null,
+      summaryJson: null,
+      warningsJson: [],
+      errorMessage: message,
+    });
+  }
 }
 
 export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAfterMs = STALE_PROJECT_JOB_MS) {
   const db = await requireDb();
   const staleBefore = new Date(now.getTime() - staleAfterMs);
-  const runningJobs = await db.select().from(projectJobs).where(eq(projectJobs.status, "running"));
-  const staleJobs = runningJobs.filter((job) => {
-    if (!job.startedAt) {
-      return true;
+  const allJobs = await db.select().from(projectJobs);
+  let recoveredJobCount = 0;
+
+  for (const job of allJobs) {
+    if (job.status === "queued") {
+      recoveredJobCount += 1;
+      continue;
     }
 
-    const startedAt = job.startedAt instanceof Date ? job.startedAt : new Date(job.startedAt);
-    return startedAt.getTime() <= staleBefore.getTime();
-  });
+    if (job.status !== "running") {
+      continue;
+    }
 
-  for (const job of staleJobs) {
-    const recoveryMessage = "Recovered stale running job during server startup after an unexpected shutdown.";
+    const startedAt = job.startedAt instanceof Date ? job.startedAt : job.startedAt ? new Date(job.startedAt) : null;
+    const isStale = !startedAt || startedAt.getTime() <= staleBefore.getTime();
+    if (!isStale) {
+      continue;
+    }
+
     await db
       .update(projectJobs)
       .set({
-        status: "failed",
-        progress: 100,
-        completedAt: now,
-        errorCode: "PROJECT_JOB_STALE",
-        errorMessage: recoveryMessage,
+        status: "queued",
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        startedAt: null,
+        finishedAt: null,
       })
       .where(eq(projectJobs.id, job.id));
-
-    await db
-      .update(projects)
-      .set({
-        status: "failed",
-        errorMessage: recoveryMessage,
-        lastErrorCode: "PROJECT_JOB_STALE",
-        updatedAt: now,
-        ...(job.type === "analyze" ? { analysisProgress: 0 } : { importProgress: 0 }),
-      })
-      .where(eq(projects.id, job.projectId));
+    recoveredJobCount += 1;
   }
 
-  return staleJobs.length;
+  const projectRows = await db.select().from(projects);
+  for (const project of projectRows) {
+    if (project.status !== "importing" && project.status !== "analyzing") {
+      continue;
+    }
+
+    const hasActiveJob = allJobs.some((job) => job.projectId === project.id && isActiveProjectJobStatus(job.status));
+    if (hasActiveJob) {
+      continue;
+    }
+
+    const recoveryMessage =
+      project.status === "importing"
+        ? "Project import was left in an active state without a recoverable job after server startup."
+        : "Project analysis was left in an active state without a recoverable job after server startup.";
+    await markProjectAsRecoveryFailed(project.id, project.status, recoveryMessage, now);
+  }
+
+  if (recoveredJobCount > 0) {
+    void kickProjectJobWorker();
+  }
+
+  return recoveredJobCount;
 }
 
 export async function createProjectForUser(
@@ -503,8 +737,9 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
 }
 
 export async function queueImportProjectZip(projectId: number, userId: number, zipContent: string) {
-  return enqueueProjectJob(projectId, userId, "import_zip", async () => {
-    await importProjectZip(projectId, userId, zipContent);
+  return enqueueProjectJob(projectId, userId, {
+    type: "import_zip",
+    zipContent,
   });
 }
 
@@ -566,8 +801,9 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
 }
 
 export async function queueImportProjectGit(projectId: number, userId: number, gitUrl: string) {
-  return enqueueProjectJob(projectId, userId, "import_git", async () => {
-    await importProjectGit(projectId, userId, gitUrl);
+  return enqueueProjectJob(projectId, userId, {
+    type: "import_git",
+    gitUrl,
   });
 }
 
@@ -643,10 +879,39 @@ async function writeSuccessfulAnalysis(
   }
 
   const fieldIds = new Map<string, number>();
-  const uniqueFieldKeys = Array.from(new Set(result.fieldReferences.map((reference) => buildFieldIdentityKey(reference))));
+  const schemaFields = result.schemaFields ?? [];
+  const schemaFieldByKey = new Map(
+    schemaFields.map((field) => [
+      buildFieldIdentityKey({ table: field.table, field: field.field }),
+      field,
+    ])
+  );
+  const uniqueFieldKeys = Array.from(
+    new Set([
+      ...schemaFields.map((field) => buildFieldIdentityKey({ table: field.table, field: field.field })),
+      ...result.fieldReferences.map((reference) => buildFieldIdentityKey(reference)),
+    ])
+  );
   for (const fieldKey of uniqueFieldKeys) {
     const { table: tableName, field: fieldName } = parseFieldIdentityKey(fieldKey);
-    const insertResult = await tx.insert(fields).values({ projectId, tableName, fieldName });
+    const schemaField = schemaFieldByKey.get(fieldKey);
+    const description = schemaField
+      ? [
+          schemaField.nullable === false ? "NOT NULL" : schemaField.nullable === true ? "NULL" : null,
+          schemaField.primaryKey ? "PRIMARY KEY" : null,
+          schemaField.defaultValue ? `DEFAULT ${schemaField.defaultValue}` : null,
+          schemaField.comment ? `COMMENT ${schemaField.comment}` : null,
+        ]
+          .filter(Boolean)
+          .join("; ") || null
+      : null;
+    const insertResult = await tx.insert(fields).values({
+      projectId,
+      tableName,
+      fieldName,
+      fieldType: schemaField?.fieldType ?? null,
+      description,
+    });
     const fieldId = Number((insertResult as { insertId?: number }).insertId ?? 0);
     if (fieldId > 0) {
       fieldIds.set(fieldKey, fieldId);
@@ -718,6 +983,7 @@ async function writeSuccessfulAnalysis(
     analysisProgress: 100,
     errorMessage: result.status === "partial" ? "Analysis completed with warnings." : null,
     lastErrorCode: null,
+    lastAnalyzedAt: new Date(),
   });
 }
 
@@ -743,7 +1009,7 @@ async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: Ap
 
 export async function analyzeProject(projectId: number, userId: number) {
   const project = await getOwnedProject(projectId, userId);
-  if (!["ready", "completed", "failed"].includes(project.status)) {
+  if (!["ready", "completed", "failed", "analyzing"].includes(project.status)) {
     throw new AppError("INVALID_PROJECT_STATE", `Project is currently "${projectStatusLabels[project.status]}".`);
   }
 
@@ -826,8 +1092,8 @@ export async function analyzeProject(projectId: number, userId: number) {
 }
 
 export async function queueAnalyzeProject(projectId: number, userId: number) {
-  return enqueueProjectJob(projectId, userId, "analyze", async () => {
-    await analyzeProject(projectId, userId);
+  return enqueueProjectJob(projectId, userId, {
+    type: "analyze",
   });
 }
 
@@ -1833,19 +2099,42 @@ export async function getProjectJob(jobId: number, userId: number): Promise<Proj
 
 export async function getLatestJobsByProjectIds(projectIds: number[], userId: number) {
   const db = await requireDb();
-  const rows = await db.select().from(projectJobs).where(eq(projectJobs.userId, userId));
-  const jobByProjectId = new Map<number, ProjectJobRecord>();
+  if (projectIds.length === 0) {
+    return new Map<number, ProjectJobRecord>();
+  }
 
-  rows
-    .filter((row) => projectIds.includes(row.projectId))
-    .sort((left, right) => Number(right.id) - Number(left.id))
-    .forEach((row) => {
-      if (!jobByProjectId.has(row.projectId)) {
-        jobByProjectId.set(row.projectId, row);
-      }
-    });
+  if (isInMemoryDb(db)) {
+    const rows = await db.select().from(projectJobs).where(eq(projectJobs.userId, userId));
+    const jobByProjectId = new Map<number, ProjectJobRecord>();
 
-  return jobByProjectId;
+    rows
+      .filter((row) => projectIds.includes(row.projectId))
+      .sort((left, right) => Number(right.id) - Number(left.id))
+      .forEach((row) => {
+        if (!jobByProjectId.has(row.projectId)) {
+          jobByProjectId.set(row.projectId, row);
+        }
+      });
+
+    return jobByProjectId;
+  }
+
+  const latestIds = await db
+    .select({
+      projectId: projectJobs.projectId,
+      latestId: sql<number>`max(${projectJobs.id})`,
+    })
+    .from(projectJobs)
+    .where(and(eq(projectJobs.userId, userId), inArray(projectJobs.projectId, projectIds)))
+    .groupBy(projectJobs.projectId);
+
+  const ids = latestIds.map((row) => Number(row.latestId)).filter((value) => value > 0);
+  if (ids.length === 0) {
+    return new Map<number, ProjectJobRecord>();
+  }
+
+  const rows = await db.select().from(projectJobs).where(inArray(projectJobs.id, ids));
+  return new Map(rows.map((row) => [row.projectId, row]));
 }
 
 export async function deleteProjectCascade(projectId: number, userId: number) {

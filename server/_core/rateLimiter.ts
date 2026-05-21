@@ -1,3 +1,4 @@
+import { COOKIE_NAME } from "@shared/const";
 import type { Express, Request, Response, NextFunction } from "express";
 import { logger } from "./logger";
 
@@ -30,6 +31,14 @@ export interface RateLimiterConfig {
 export interface CreateRateLimiterOptions {
   skipInTest?: boolean;
 }
+
+export type ProcedureRateLimitBucket = "upload" | "clone" | "analysis" | "heavyRead" | "api";
+type ProcedureRateLimitIdentity = {
+  path: string;
+  userId?: number | null;
+  sessionId?: string | null;
+  ip?: string | null;
+};
 
 type TrustProxyValue = boolean | number | string | string[];
 
@@ -154,6 +163,88 @@ const heavyReadPaths = [
   "/api/trpc/analysis.getImpact",
   "/api/projects/:projectId/report.zip",
 ] as const;
+
+const procedureBucketByPath: Record<string, ProcedureRateLimitBucket> = {
+  "projects.uploadFiles": "upload",
+  "projects.cloneGit": "clone",
+  "analysis.trigger": "analysis",
+  "analysis.getSnapshot": "heavyRead",
+  "analysis.getSymbolsPage": "heavyRead",
+  "analysis.getFieldsPage": "heavyRead",
+  "analysis.getRisksPage": "heavyRead",
+  "analysis.getRulesPage": "heavyRead",
+  "analysis.getDependenciesPage": "heavyRead",
+  "analysis.getFieldDependenciesPage": "heavyRead",
+  "analysis.getImpact": "heavyRead",
+};
+
+const procedureLimiterStore = new Map<string, { count: number; resetAt: number }>();
+
+function parseSessionIdFromCookieHeader(cookieHeader: string | undefined) {
+  const match = String(cookieHeader ?? "")
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${COOKIE_NAME}=`));
+
+  return match ? decodeURIComponent(match.slice(COOKIE_NAME.length + 1)) : null;
+}
+
+function getProcedureRateLimitMessage(bucket: ProcedureRateLimitBucket) {
+  return defaultConfigs[bucket].message ?? defaultConfigs.api.message ?? "Too many requests, please try again later";
+}
+
+export function getProcedureRateLimitBucket(path: string): ProcedureRateLimitBucket {
+  return procedureBucketByPath[path] ?? "api";
+}
+
+export function buildProcedureRateLimitKey(identity: ProcedureRateLimitIdentity) {
+  const bucket = getProcedureRateLimitBucket(identity.path);
+  const sessionPart = identity.sessionId ? `session:${identity.sessionId}` : null;
+  const userPart = identity.userId ? `user:${identity.userId}` : null;
+  const ipPart = identity.ip ? `ip:${identity.ip}` : "ip:anonymous";
+  return `${bucket}:${userPart ?? sessionPart ?? ipPart}:${identity.path}`;
+}
+
+export function consumeProcedureRateLimit(identity: ProcedureRateLimitIdentity, now = Date.now()) {
+  const bucket = getProcedureRateLimitBucket(identity.path);
+  const config = defaultConfigs[bucket];
+  const key = buildProcedureRateLimitKey(identity);
+  const existing = procedureLimiterStore.get(key);
+
+  if (!existing || existing.resetAt <= now) {
+    procedureLimiterStore.set(key, {
+      count: 1,
+      resetAt: now + config.windowMs,
+    });
+    return { allowed: true, bucket };
+  }
+
+  if (existing.count >= config.max) {
+    return {
+      allowed: false,
+      bucket,
+      retryAfterMs: Math.max(existing.resetAt - now, 0),
+      message: getProcedureRateLimitMessage(bucket),
+    };
+  }
+
+  existing.count += 1;
+  procedureLimiterStore.set(key, existing);
+  return { allowed: true, bucket };
+}
+
+export function resetProcedureRateLimiterStore() {
+  procedureLimiterStore.clear();
+}
+
+export function buildProcedureRateLimitIdentityFromRequest(request: Request, path: string, userId?: number | null): ProcedureRateLimitIdentity {
+  return {
+    path,
+    userId,
+    sessionId: parseSessionIdFromCookieHeader(request.headers.cookie),
+    ip: getClientIp(request),
+  };
+}
 
 export function createRateLimiter(configName: keyof typeof defaultConfigs = "api", options: CreateRateLimiterOptions = {}) {
   const config = defaultConfigs[configName];

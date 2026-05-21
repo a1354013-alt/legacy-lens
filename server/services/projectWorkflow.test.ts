@@ -322,9 +322,10 @@ describe("project workflow", () => {
       ],
       dependencies: [{ from: "main.go::main::1", to: "repo.sql::query_1::1", fromName: "main", toName: "query_1", type: "calls", line: 3 }],
       fieldReferences: [{ table: "orders", field: "amount", type: "read", file: "repo.sql", line: 1, symbolStableKey: "repo.sql::query_1::1", context: "SELECT amount FROM orders" }],
+      schemaFields: [],
       risks: [{ title: "Date literal", description: "hard-coded date", severity: "medium", category: "magic_value", sourceFile: "main.go", lineNumber: 2, suggestion: "Use a constant." }],
       rules: [{ ruleType: "magic_value", name: "externalize_main_go_2", description: "Date literal", condition: "hard-coded date", sourceFile: "main.go", lineNumber: 2 }],
-      warnings: [{ code: "LANGUAGE_UNSUPPORTED", message: "Skipped 1 file", filePath: "legacy.txt" }],
+      warnings: [{ code: "LANGUAGE_UNSUPPORTED", message: "Skipped 1 file", level: "warning", filePath: "legacy.txt" }],
       flowDocument: "# FLOW",
       dataDependencyDocument: "# DATA_DEPENDENCY",
       risksDocument: "# RISKS",
@@ -468,7 +469,7 @@ describe("project workflow", () => {
         errorMessage: null,
         createdAt: new Date("2026-01-01T00:00:00.000Z"),
         startedAt: new Date("2026-01-01T00:00:00.000Z"),
-        completedAt: null,
+        finishedAt: null,
       },
       {
         id: 2,
@@ -481,7 +482,7 @@ describe("project workflow", () => {
         errorMessage: null,
         createdAt: new Date("2026-01-02T00:00:00.000Z"),
         startedAt: new Date("2026-01-02T00:14:00.000Z"),
-        completedAt: null,
+        finishedAt: null,
       }
     );
 
@@ -489,15 +490,77 @@ describe("project workflow", () => {
 
     expect(recovered).toBe(1);
     expect(fakeDb.store.projectJobs[0]).toMatchObject({
-      status: "failed",
-      errorCode: "PROJECT_JOB_STALE",
+      status: "queued",
+      errorCode: null,
     });
-    expect(fakeDb.store.projects[0]).toMatchObject({
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "analyzing" });
+    expect(fakeDb.store.projectJobs[1]).toMatchObject({ status: "running" });
+  });
+
+  it("replays queued analyze jobs on startup and fails stuck project states without active jobs", async () => {
+    const { recoverStaleProjectJobsOnStartup, waitForProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "analyzing", analysisProgress: 0 });
+    seedProject(2, { status: "importing", importProgress: 50 });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "go",
+      symbols: [],
+      dependencies: [],
+      fieldReferences: [],
+      schemaFields: [],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA_DEPENDENCY",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 1,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 0,
+        dependencyCount: 0,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-02T00:16:00.000Z"), 15 * 60 * 1000);
+    await waitForProjectJobForTests(1);
+
+    expect(recovered).toBe(1);
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({ status: "completed", activeKey: null });
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed" });
+    expect(fakeDb.store.projects[1]).toMatchObject({
       status: "failed",
       lastErrorCode: "PROJECT_JOB_STALE",
-      analysisProgress: 0,
+      importProgress: 0,
     });
-    expect(fakeDb.store.projectJobs[1]).toMatchObject({ status: "running" });
   });
 
   it("creates async jobs, persists success/failure, and rejects duplicate analyze jobs", async () => {
@@ -511,6 +574,7 @@ describe("project workflow", () => {
       symbols: [],
       dependencies: [],
       fieldReferences: [],
+      schemaFields: [],
       risks: [],
       rules: [],
       warnings: [],
@@ -537,7 +601,7 @@ describe("project workflow", () => {
     };
 
     const queued = await queueAnalyzeProject(1, 7);
-    await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "INVALID_PROJECT_STATE" });
+    await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
     await waitForProjectJobForTests(queued.jobId);
     const completedJob = await getProjectJob(queued.jobId, 7);
     expect(completedJob.status).toBe("completed");
@@ -551,6 +615,7 @@ describe("project workflow", () => {
       symbols: [],
       dependencies: [],
       fieldReferences: [],
+      schemaFields: [],
       risks: [],
       rules: [],
       warnings: [],
@@ -584,6 +649,56 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_FAILED" });
   });
 
+  it("rejects overlapping import and analyze jobs for the same project", async () => {
+    const { queueAnalyzeProject, queueImportProjectGit, queueImportProjectZip } = await import("./projectWorkflow");
+    seedProject(1, { status: "ready" });
+
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", zipContent: "encoded" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+    fakeDb.store.projects[0] = { ...fakeDb.store.projects[0], status: "importing" };
+
+    await expect(queueImportProjectZip(1, 7, "encoded")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+    await expect(queueImportProjectGit(1, 7, "https://example.com/repo.git")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+    await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+
+    fakeDb.store.projectJobs = [];
+    fakeDb.store.projects[0] = { ...fakeDb.store.projects[0], status: "ready", importProgress: 0, analysisProgress: 0 };
+
+    fakeDb.store.projectJobs.push({
+      id: 2,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "running",
+      progress: 50,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+    });
+    fakeDb.store.projects[0] = { ...fakeDb.store.projects[0], status: "analyzing" };
+
+    await expect(queueImportProjectGit(1, 7, "https://example.com/repo.git")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+    await expect(queueImportProjectZip(1, 7, "encoded")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+    await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+  });
+
   it("enforces ownership on paged reads and job reads", async () => {
     const { getProjectJob, getSymbolsPage, queueAnalyzeProject, waitForProjectJobForTests } = await import("./projectWorkflow");
     seedProject(1, { userId: 7 });
@@ -595,6 +710,7 @@ describe("project workflow", () => {
       symbols: [],
       dependencies: [],
       fieldReferences: [],
+      schemaFields: [],
       risks: [],
       rules: [],
       warnings: [],

@@ -41,6 +41,19 @@ type ProjectRow = {
   } | null;
 };
 
+function hasActiveProjectWork(project: ProjectRow) {
+  return (
+    project.status === "importing" ||
+    project.status === "analyzing" ||
+    project.latestJob?.status === "queued" ||
+    project.latestJob?.status === "running"
+  );
+}
+
+export function getProjectsPollingInterval(projects: ProjectRow[]) {
+  return projects.some(hasActiveProjectWork) ? 2000 : 15000;
+}
+
 function getBadgeVariant(status: ProjectStatus | AnalysisStatus | "queued" | "running") {
   if (status === "failed") return "destructive" as const;
   if (status === "completed") return "default" as const;
@@ -54,7 +67,10 @@ export default function Home() {
   const projectsQuery = trpc.projects.list.useQuery(undefined, {
     enabled: isAuthenticated,
     refetchOnWindowFocus: false,
-    refetchInterval: 2000,
+    refetchInterval: (query) => {
+      const projects = (query.state.data ?? []) as ProjectRow[];
+      return getProjectsPollingInterval(projects);
+    },
   });
 
   const deleteProjectMutation = trpc.projects.delete.useMutation({

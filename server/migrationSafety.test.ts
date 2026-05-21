@@ -90,6 +90,16 @@ maybeDescribe("Drizzle migration smoke", () => {
       await expect(tableExists(connection, dbName, "risks")).resolves.toBe(true);
       await expect(tableExists(connection, dbName, "rules")).resolves.toBe(true);
       await expect(tableExists(connection, dbName, "projectJobs")).resolves.toBe(true);
+
+      const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
+      const [jobColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'");
+      const [payloadColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'payloadJson'");
+      const [activeKeyColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
+
+      expect(projectColumns).toHaveLength(1);
+      expect(jobColumns).toHaveLength(1);
+      expect(payloadColumns).toHaveLength(1);
+      expect(activeKeyColumns).toHaveLength(1);
     } finally {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
@@ -128,6 +138,9 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [dependencyRows] = await connection.query<mysql.RowDataPacket[]>("SELECT `targetSymbolId`, `targetKind` FROM `dependencies` WHERE `id` = 1");
       const [fileColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `files` LIKE 'content'");
       const [analysisColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'flowMarkdown'");
+      const [jobColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'");
+      const [activeKeyColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
+      const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
 
       expect(projectRows[0]?.status).toBe("completed");
       expect(projectRows[0]?.importWarningsJson).toBeDefined();
@@ -137,6 +150,9 @@ maybeDescribe("Drizzle migration smoke", () => {
       expect(String(fileColumns[0]?.Type ?? "")).toBe("mediumtext");
       expect(String(analysisColumns[0]?.Type ?? "")).toBe("mediumtext");
       await expect(tableExists(connection, dbName, "projectJobs")).resolves.toBe(true);
+      expect(jobColumns).toHaveLength(1);
+      expect(activeKeyColumns).toHaveLength(1);
+      expect(projectColumns).toHaveLength(1);
     } finally {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);

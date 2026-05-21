@@ -8,6 +8,7 @@ export const analysisStatuses = ["pending", "processing", "completed", "partial"
 export const reportFormats = ["zip"] as const;
 export const projectJobTypes = ["import_zip", "import_git", "analyze"] as const;
 export const projectJobStatuses = ["queued", "running", "completed", "failed"] as const;
+export const analysisWarningLevels = ["note", "warning", "error"] as const;
 export const symbolKinds = ["function", "procedure", "method", "query", "table", "class"] as const;
 export const dependencyKinds = ["calls", "reads", "writes", "references"] as const;
 export const dependencyTargetKinds = ["internal", "external", "unresolved"] as const;
@@ -31,6 +32,7 @@ export const analysisStatusSchema = z.enum(analysisStatuses);
 export const reportFormatSchema = z.enum(reportFormats);
 export const projectJobTypeSchema = z.enum(projectJobTypes);
 export const projectJobStatusSchema = z.enum(projectJobStatuses);
+export const analysisWarningLevelSchema = z.enum(analysisWarningLevels);
 export const symbolKindSchema = z.enum(symbolKinds);
 export const dependencyKindSchema = z.enum(dependencyKinds);
 export const dependencyTargetKindSchema = z.enum(dependencyTargetKinds);
@@ -47,6 +49,7 @@ export type AnalysisStatus = z.infer<typeof analysisStatusSchema>;
 export type ReportFormat = z.infer<typeof reportFormatSchema>;
 export type ProjectJobType = z.infer<typeof projectJobTypeSchema>;
 export type ProjectJobStatus = z.infer<typeof projectJobStatusSchema>;
+export type AnalysisWarningLevel = z.infer<typeof analysisWarningLevelSchema>;
 export type SymbolKind = z.infer<typeof symbolKindSchema>;
 export type DependencyKind = z.infer<typeof dependencyKindSchema>;
 export type DependencyTargetKind = z.infer<typeof dependencyTargetKindSchema>;
@@ -64,6 +67,7 @@ export const importWarningSchema = z.object({
 export const analysisWarningSchema = z.object({
   code: z.string(),
   message: z.string(),
+  level: analysisWarningLevelSchema.default("warning"),
   filePath: z.string().optional(),
   heuristic: z.boolean().optional(),
 });
@@ -184,6 +188,8 @@ export const appErrorCodes = [
   "DATABASE_UNAVAILABLE",
   "PROJECT_NOT_FOUND",
   "PROJECT_JOB_NOT_FOUND",
+  "PROJECT_JOB_ACTIVE",
+  "PROJECT_JOB_STALE",
   "INVALID_PROJECT_STATE",
   "INVALID_GIT_URL",
   "GIT_CLONE_FAILED",
@@ -213,6 +219,7 @@ export const projectRecordSummarySchema = z.object({
   errorMessage: z.string().nullable(),
   lastErrorCode: z.string().nullable(),
   importWarningsJson: z.array(importWarningSchema),
+  lastAnalyzedAt: z.date().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
   analysisStatus: analysisStatusSchema,
@@ -400,7 +407,7 @@ export const projectJobSchema = z.object({
   errorMessage: z.string().nullable(),
   createdAt: z.date(),
   startedAt: z.date().nullable(),
-  completedAt: z.date().nullable(),
+  finishedAt: z.date().nullable(),
 });
 
 export type ProjectJobRecord = z.infer<typeof projectJobSchema>;

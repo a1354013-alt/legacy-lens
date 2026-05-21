@@ -3,6 +3,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { AppError } from "../appError";
 import type { TrpcContext } from "./context";
+import { buildProcedureRateLimitIdentityFromRequest, consumeProcedureRateLimit } from "./rateLimiter";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -20,7 +21,25 @@ const t = initTRPC.context<TrpcContext>().create({
 });
 
 export const router = t.router;
-export const publicProcedure = t.procedure;
+
+const procedureRateLimitMiddleware = t.middleware(async (opts) => {
+  if (process.env.NODE_ENV !== "test") {
+    const result = consumeProcedureRateLimit(
+      buildProcedureRateLimitIdentityFromRequest(opts.ctx.req, opts.path, opts.ctx.user?.id ?? null)
+    );
+
+    if (!result.allowed) {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: result.message,
+      });
+    }
+  }
+
+  return opts.next();
+});
+
+export const publicProcedure = t.procedure.use(procedureRateLimitMiddleware);
 
 const requireUser = t.middleware(async (opts) => {
   const { ctx, next } = opts;

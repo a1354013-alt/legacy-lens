@@ -1,4 +1,6 @@
 import JSZip from "jszip";
+import { Readable } from "node:stream";
+import unzipper from "unzipper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_EXTRACTED_BYTES, MAX_FILE_COUNT, MAX_SINGLE_FILE_BYTES, MAX_ZIP_RAW_BYTES } from "../../shared/const";
 import {
@@ -131,10 +133,15 @@ describe("zipHandler", () => {
   });
 
   it("rejects archives with unsafe paths instead of silently skipping them", async () => {
-    vi.spyOn(JSZip, "loadAsync").mockResolvedValue({
-      files: {
-        "../evil.go": { dir: false, async: vi.fn(async () => Buffer.from("package main\n")) },
-      },
+    vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
+      files: [
+        {
+          path: "../evil.go",
+          type: "File",
+          vars: { uncompressedSize: 13 },
+          stream: () => Readable.from([Buffer.from("package main\n")]),
+        },
+      ],
     } as any);
 
     await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
@@ -143,18 +150,25 @@ describe("zipHandler", () => {
     });
   });
 
+  it("rejects archives with absolute paths", async () => {
+    const zip = new JSZip();
+    zip.file("/absolute/main.go", "package main\n");
+
+    await expect(extractFilesFromZip(await zip.generateAsync({ type: "base64" }))).rejects.toMatchObject({
+      code: "ZIP_INVALID",
+      message: expect.stringContaining("unsafe path"),
+    });
+  });
+
   it("rejects archives whose extracted supported-source bytes exceed the limit", async () => {
     const nearSingleFileLimitBuffer = Buffer.alloc(MAX_SINGLE_FILE_BYTES, "a");
-
-    const files = Object.fromEntries(
-      Array.from({ length: 101 }, (_, index) => [
-        `src/file-${index}.go`,
-        { dir: false, async: vi.fn(async () => nearSingleFileLimitBuffer) },
-      ])
-    );
-
-    const loadAsyncSpy = vi.spyOn(JSZip, "loadAsync").mockResolvedValue({
-      files,
+    const openBufferSpy = vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
+      files: Array.from({ length: 101 }, (_, index) => ({
+        path: `src/file-${index}.go`,
+        type: "File",
+        vars: { uncompressedSize: nearSingleFileLimitBuffer.length },
+        stream: () => Readable.from([nearSingleFileLimitBuffer]),
+      })),
     } as any);
 
     await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
@@ -162,7 +176,7 @@ describe("zipHandler", () => {
       message: expect.stringContaining("allowed size limit"),
     });
 
-    expect(loadAsyncSpy).toHaveBeenCalled();
+    expect(openBufferSpy).toHaveBeenCalled();
   });
 
   it("skips oversize files and keeps importing the remaining supported files", async () => {
@@ -178,5 +192,21 @@ describe("zipHandler", () => {
       message: "The file was skipped because it exceeds the maximum supported size (5MB).",
       filePath: "src/huge.go",
     });
+  });
+
+  it("blocks highly compressed source files that expand beyond the single-file limit before they are imported", async () => {
+    const zip = new JSZip();
+    zip.file("src/bomb.go", "a".repeat(MAX_SINGLE_FILE_BYTES + 1024));
+    zip.file("src/main.go", "package main\nfunc main() {}\n");
+
+    const result = await extractFilesFromZip(await zip.generateAsync({ type: "base64", compression: "DEFLATE" }));
+
+    expect(result.files.map((file) => file.path)).toEqual(["src/main.go"]);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        code: "IMPORT_FILE_TOO_LARGE",
+        filePath: "src/bomb.go",
+      })
+    );
   });
 });

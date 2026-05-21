@@ -40,6 +40,18 @@ export interface FieldReference {
   context?: string;
 }
 
+export interface SchemaField {
+  table: string;
+  field: string;
+  fieldType?: string;
+  nullable?: boolean;
+  primaryKey?: boolean;
+  defaultValue?: string;
+  comment?: string;
+  file: string;
+  line: number;
+}
+
 export interface DetectedRisk {
   title: string;
   description: string;
@@ -68,6 +80,7 @@ export interface FileAnalysisResult {
   symbols: AnalyzedSymbol[];
   dependencies: SymbolDependency[];
   fieldReferences: FieldReference[];
+  schemaFields: SchemaField[];
   risks: DetectedRisk[];
   warnings: AnalysisWarning[];
 }
@@ -79,6 +92,7 @@ export interface ProjectAnalysisResult {
   symbols: AnalyzedSymbol[];
   dependencies: SymbolDependency[];
   fieldReferences: FieldReference[];
+  schemaFields: SchemaField[];
   risks: DetectedRisk[];
   rules: DetectedRule[];
   warnings: AnalysisWarning[];

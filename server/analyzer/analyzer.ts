@@ -170,6 +170,7 @@ export class Analyzer {
     const symbols = parser.parseSymbols();
     const dependencies = parser.parseDependencies(symbols);
     const fieldReferences = parser.parseFieldReferences(symbols);
+    const schemaFields = parser.parseSchemaFields();
     const warnings = parser.collectWarnings();
     const sqlSnippets = collectSqlSnippets(file.content, file.path);
 
@@ -183,11 +184,12 @@ export class Analyzer {
     return {
       eligible,
       analyzed: eligible,
-      degraded: warnings.length > 0,
+      degraded: warnings.some((warning) => warning.level !== "note"),
       heuristic: warnings.some((warning) => warning.heuristic),
       symbols,
       dependencies,
       fieldReferences,
+      schemaFields,
       risks,
       warnings,
     };
@@ -197,6 +199,7 @@ export class Analyzer {
     const symbols = [];
     const dependencies = [];
     const fieldReferences = [];
+    const schemaFields = [];
     const risks = [];
     const warnings: AnalysisWarning[] = [];
     let eligibleFileCount = 0;
@@ -213,6 +216,7 @@ export class Analyzer {
       symbols.push(...result.symbols);
       dependencies.push(...result.dependencies);
       fieldReferences.push(...result.fieldReferences);
+      schemaFields.push(...result.schemaFields);
       risks.push(...result.risks);
       warnings.push(...result.warnings);
     }
@@ -224,6 +228,7 @@ export class Analyzer {
       {
         code: "HEURISTIC_ANALYSIS",
         message: "Analysis results are heuristic for Go, SQL, and Delphi; review before using them as source-of-truth.",
+        level: "note",
         heuristic: true,
       },
     ]);
@@ -238,7 +243,10 @@ export class Analyzer {
       degradedFileCount,
       symbolCount: symbols.length,
       dependencyCount: combinedDependencies.length,
-      fieldCount: new Set(fieldReferences.map((reference) => buildFieldIdentityKey(reference))).size,
+      fieldCount: new Set([
+        ...fieldReferences.map((reference) => buildFieldIdentityKey(reference)),
+        ...schemaFields.map((field) => buildFieldIdentityKey({ table: field.table, field: field.field })),
+      ]).size,
       fieldDependencyCount: fieldReferences.length,
       riskCount: combinedRisks.length,
       ruleCount: rules.length,
@@ -248,7 +256,7 @@ export class Analyzer {
     const status: AnalysisStatus =
       metrics.eligibleFileCount === 0 || metrics.analyzedFileCount === 0
         ? "failed"
-        : metrics.skippedFileCount > 0 || metrics.heuristicFileCount > 0 || metrics.degradedFileCount > 0
+        : metrics.skippedFileCount > 0 || metrics.degradedFileCount > 0
           ? "partial"
           : "completed";
 
@@ -259,6 +267,7 @@ export class Analyzer {
       symbols,
       dependencies: combinedDependencies,
       fieldReferences,
+      schemaFields,
       risks: combinedRisks,
       rules,
       warnings: combinedWarnings,

@@ -23,6 +23,12 @@ const mediumtext = customType<{ data: string }>({
   },
 });
 
+const longtext = customType<{ data: string }>({
+  dataType() {
+    return "longtext";
+  },
+});
+
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
   openId: varchar("openId", { length: 64 }).notNull().unique(),
@@ -54,6 +60,7 @@ export const projects = mysqlTable(
     errorMessage: text("errorMessage"),
     lastErrorCode: varchar("lastErrorCode", { length: 64 }),
     importWarningsJson: json("importWarningsJson").$type<ImportWarning[]>().default([]).notNull(),
+    lastAnalyzedAt: timestamp("lastAnalyzedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -229,14 +236,17 @@ export const projectJobs = mysqlTable(
     progress: int("progress").default(0).notNull(),
     errorCode: varchar("errorCode", { length: 64 }),
     errorMessage: text("errorMessage"),
+    payloadJson: longtext("payloadJson"),
+    activeKey: varchar("activeKey", { length: 32 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     startedAt: timestamp("startedAt"),
-    completedAt: timestamp("completedAt"),
+    finishedAt: timestamp("finishedAt"),
   },
   (table) => ({
     projectIdIdx: index("projectJobs_projectId_idx").on(table.projectId),
     userIdIdx: index("projectJobs_userId_idx").on(table.userId),
     statusIdx: index("projectJobs_status_idx").on(table.status),
+    activeProjectUniqueIdx: uniqueIndex("projectJobs_active_project_unique").on(table.projectId, table.activeKey),
   })
 );
 

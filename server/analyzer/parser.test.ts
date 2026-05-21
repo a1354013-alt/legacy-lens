@@ -226,8 +226,48 @@ describe("DelphiParser", () => {
 
     expect(symbols).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "Run", startLine: 5, endLine: 9, type: "method" }),
+        expect.objectContaining({ name: "Run", qualifiedName: "Service.Run", startLine: 5, endLine: 9, type: "method" }),
         expect.objectContaining({ name: "main", startLine: 11, endLine: 15, type: "function" }),
+      ])
+    );
+  });
+
+  it("keeps Go methods receiver-qualified and distinguishes them from same-name functions", () => {
+    const parser = new GoParser(
+      [
+        "package main",
+        "",
+        "type UserRepo struct {}",
+        "type ProjectService struct {}",
+        "",
+        "func Save() {}",
+        "func (repo *UserRepo) Save() {}",
+        "func (svc ProjectService) Save() {}",
+        "",
+        "func Run(repo UserRepo, svc ProjectService) {",
+        "  repo.Save()",
+        "  svc.Save()",
+        "  Save()",
+        "}",
+      ].join("\n"),
+      "repo.go"
+    );
+
+    const symbols = parser.parseSymbols();
+    const dependencies = parser.parseDependencies(symbols);
+
+    expect(symbols).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Save", qualifiedName: "Save", type: "function" }),
+        expect.objectContaining({ name: "Save", qualifiedName: "UserRepo.Save", type: "method" }),
+        expect.objectContaining({ name: "Save", qualifiedName: "ProjectService.Save", type: "method" }),
+      ])
+    );
+    expect(dependencies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fromName: "Run", toName: "UserRepo.Save" }),
+        expect.objectContaining({ fromName: "Run", toName: "ProjectService.Save" }),
+        expect.objectContaining({ fromName: "Run", toName: "Save" }),
       ])
     );
   });
@@ -467,6 +507,40 @@ describe("SQLParser", () => {
       expect.arrayContaining([
         expect.objectContaining({ table: "dbo.Users", field: "UserId", type: "read" }),
         expect.objectContaining({ table: "dbo.Users", field: "User Name", type: "read" }),
+      ])
+    );
+  });
+
+  it("extracts CREATE TABLE schema fields for SQL Server and MySQL definitions without treating constraints as columns", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "CREATE TABLE [dbo].[Users] (",
+        "  [UserId] INT NOT NULL,",
+        "  [UserName] NVARCHAR(255) NULL,",
+        "  [Amount] DECIMAL(18,2) DEFAULT (0),",
+        "  CONSTRAINT [PK_Users] PRIMARY KEY ([UserId])",
+        ");",
+        "",
+        "CREATE TABLE `orders` (",
+        "  `order_id` bigint NOT NULL,",
+        "  `user_id` bigint NOT NULL,",
+        "  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,",
+        "  PRIMARY KEY (`order_id`, `user_id`),",
+        "  CONSTRAINT `fk_orders_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)",
+        ");",
+      ].join("\n"),
+      "schema.sql"
+    );
+
+    expect(parser.parseSchemaFields()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "UserId", fieldType: "INT", nullable: false, primaryKey: true }),
+        expect.objectContaining({ table: "dbo.Users", field: "UserName", fieldType: "NVARCHAR(255)", nullable: true }),
+        expect.objectContaining({ table: "dbo.Users", field: "Amount", fieldType: "DECIMAL(18,2)", defaultValue: "(0)" }),
+        expect.objectContaining({ table: "orders", field: "order_id", fieldType: "bigint", primaryKey: true }),
+        expect.objectContaining({ table: "orders", field: "user_id", fieldType: "bigint", primaryKey: true }),
+        expect.objectContaining({ table: "orders", field: "created_at", fieldType: "datetime", defaultValue: "CURRENT_TIMESTAMP" }),
       ])
     );
   });

@@ -2,6 +2,25 @@ import { describe, expect, it } from "vitest";
 import { Analyzer } from "./analyzer";
 
 describe("Analyzer", () => {
+  it("marks clean supported analysis as completed when there are no skipped or degraded files", async () => {
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "repo.sql",
+          language: "sql",
+          content: "SELECT u.Name FROM dbo.Users u WHERE u.Id = 1;",
+        },
+      ],
+      1
+    );
+
+    expect(result.status).toBe("completed");
+    expect(result.warnings.every((warning) => warning.level === "note" || warning.level === "warning")).toBe(true);
+    expect(result.metrics.skippedFileCount).toBe(0);
+    expect(result.metrics.degradedFileCount).toBe(0);
+  });
+
   it("marks dynamic and multi-line SQL extraction as degraded heuristic output", async () => {
     const analyzer = new Analyzer();
     const result = await analyzer.analyzeProject(
@@ -111,5 +130,23 @@ describe("Analyzer", () => {
     expect(missingWhereRisks.map((risk) => risk.codeSnippet)).toEqual(
       expect.arrayContaining(["UPDATE dbo.Users SET Name = 'A'", "DELETE FROM dbo.Users"])
     );
+  });
+
+  it("fails when there are no analyzable files at all", async () => {
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "legacy.txt",
+          language: "txt",
+          content: "plain text",
+        },
+      ],
+      1
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.metrics.eligibleFileCount).toBe(0);
+    expect(result.metrics.analyzedFileCount).toBe(0);
   });
 });

@@ -1,8 +1,21 @@
 import express from "express";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it, vi } from "vitest";
-import { configureTrustProxy, createRateLimiter, defaultConfigs, registerRateLimiters } from "./rateLimiter";
+import { createTRPCProxyClient, httpBatchLink, TRPCClientError } from "@trpc/client";
+import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import superjson from "superjson";
+import { z } from "zod";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { publicProcedure, router } from "./trpc";
+import {
+  buildProcedureRateLimitKey,
+  configureTrustProxy,
+  createRateLimiter,
+  defaultConfigs,
+  getProcedureRateLimitBucket,
+  registerRateLimiters,
+  resetProcedureRateLimiterStore,
+} from "./rateLimiter";
 
 type RateLimitFactoryOptions = {
   max: number;
@@ -43,6 +56,10 @@ vi.mock("express-rate-limit", () => ({
 }));
 
 describe("createRateLimiter", () => {
+  afterEach(() => {
+    resetProcedureRateLimiterStore();
+  });
+
   it("creates the underlying limiter only once per middleware instance", async () => {
     const middleware = createRateLimiter("api");
     const next = vi.fn();
@@ -170,6 +187,54 @@ describe("createRateLimiter", () => {
       message: defaultConfigs.heavyRead.message,
     });
   });
+
+  it("applies per-procedure buckets to batched tRPC requests so heavy reads cannot bypass limits", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    resetProcedureRateLimiterStore();
+
+    const testRouter = router({
+      projects: router({
+        list: publicProcedure.query(() => ({ ok: true })),
+      }),
+      analysis: router({
+        getSnapshot: publicProcedure.input(z.number()).query(() => ({ ok: true })),
+      }),
+    });
+
+    const app = express();
+    app.use(
+      "/api/trpc",
+      createExpressMiddleware({
+        router: testRouter,
+        createContext: ({ req, res }) => ({ req, res, user: null }),
+      })
+    );
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const client = createTRPCProxyClient<typeof testRouter>({
+      links: [
+        httpBatchLink({
+          url: `http://127.0.0.1:${port}/api/trpc`,
+          transformer: superjson,
+          fetch: (input, init) => fetch(input, init),
+        }),
+      ],
+    });
+
+    try {
+      for (let index = 0; index < defaultConfigs.heavyRead.max; index += 1) {
+        await Promise.all([client.projects.list.query(), client.analysis.getSnapshot.query(1)]);
+      }
+
+      await expect(Promise.all([client.projects.list.query(), client.analysis.getSnapshot.query(1)])).rejects.toBeInstanceOf(TRPCClientError);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
 });
 
 describe("configureTrustProxy", () => {
@@ -177,5 +242,21 @@ describe("configureTrustProxy", () => {
     const app = express();
     configureTrustProxy(app, { LEGACY_LENS_TRUST_PROXY: "loopback, linklocal, uniquelocal" });
     expect(app.get("trust proxy")).toEqual(["loopback", "linklocal", "uniquelocal"]);
+  });
+
+  it("derives stable per-procedure bucket keys for upload, clone, analysis, heavy read, and general routes", () => {
+    expect(getProcedureRateLimitBucket("projects.uploadFiles")).toBe("upload");
+    expect(getProcedureRateLimitBucket("projects.cloneGit")).toBe("clone");
+    expect(getProcedureRateLimitBucket("analysis.trigger")).toBe("analysis");
+    expect(getProcedureRateLimitBucket("analysis.getSnapshot")).toBe("heavyRead");
+    expect(getProcedureRateLimitBucket("projects.list")).toBe("api");
+    expect(
+      buildProcedureRateLimitKey({
+        path: "analysis.getSnapshot",
+        userId: 7,
+        sessionId: "session-1",
+        ip: "198.51.100.10",
+      })
+    ).toBe("heavyRead:user:7:analysis.getSnapshot");
   });
 });

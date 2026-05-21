@@ -84,13 +84,33 @@ export default function ImportProject() {
 
   const projectQuery = trpc.projects.getById.useQuery(projectId ?? -1, {
     enabled: projectId !== null,
-    refetchInterval: projectId !== null ? 1500 : false,
+    refetchInterval: (query) => {
+      if (projectId === null) {
+        return false;
+      }
+
+      const project = query.state.data;
+      const isActive =
+        project?.status === "importing" ||
+        project?.status === "analyzing" ||
+        project?.latestJob?.status === "queued" ||
+        project?.latestJob?.status === "running";
+
+      return isActive ? 1500 : false;
+    },
     refetchOnWindowFocus: false,
   });
 
   const activeJobQuery = trpc.jobs.getById.useQuery(activeJobId ?? -1, {
     enabled: activeJobId !== null,
-    refetchInterval: activeJobId !== null ? 1500 : false,
+    refetchInterval: (query) => {
+      if (activeJobId === null) {
+        return false;
+      }
+
+      const status = query.state.data?.status;
+      return status === "queued" || status === "running" || status === undefined ? 1500 : false;
+    },
     refetchOnWindowFocus: false,
   });
 

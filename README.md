@@ -69,6 +69,7 @@ MySQL (Drizzle ORM)
   -> fields / fieldDependencies
   -> risks / rules
   -> analysisResults (documents + metrics + warnings)
+  -> projectJobs (DB-backed import/analyze queue + recovery state)
 ```
 
 ## Architecture Snapshot (Data Flow)
@@ -314,9 +315,12 @@ Report downloads should use `GET /api/projects/:projectId/report.zip` so large r
 ### Job Model
 
 - ZIP import, Git import, and analysis are queued as persisted `projectJobs` records.
+- `projectJobs` is the single source of truth for queued/running/completed/failed work; process memory is only a local execution aid.
 - Job status values: `queued`, `running`, `completed`, `failed`.
+- The queue is DB-backed and restart-safe: startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks stuck `importing` / `analyzing` projects as failed when no active job still exists.
+- `PROJECT_JOB_STALE_MS` controls when a running job is treated as stale during startup recovery (default `900000` / 15 minutes).
 - The UI polls project state plus the latest job state instead of waiting on a single long-running request.
-- Duplicate running analysis jobs for the same project are rejected.
+- The backend enforces one active job per project across `import_zip`, `import_git`, and `analyze`; conflicting requests fail with a stable conflict error instead of relying on disabled buttons.
 
 ### Snapshot / Pagination Model
 
@@ -324,6 +328,7 @@ Report downloads should use `GET /api/projects/:projectId/report.zip` so large r
 - Symbols, Fields, Risks, Rules, Dependencies, and FieldDependencies are fetched through dedicated paged APIs.
 - Page input is bounded to `pageSize <= 100`.
 - Heavy read endpoints have their own rate limiter and a consistent `429` message.
+- Procedure-level tRPC middleware applies rate-limit buckets per procedure path, so `httpBatchLink` batching cannot bypass upload/import, clone, analysis-trigger, or heavy-read limits.
 
 ## Samples
 
@@ -390,6 +395,7 @@ Import pipeline is intentionally bounded:
 - HTTP JSON body limit is derived from the same raw ZIP limit with base64 overhead headroom (`JSON_UPLOAD_BODY_LIMIT_BYTES`)
 - ZIP: max 10,000 total archive entries, max 2,000 supported source files, max 5MB per source file, max 500MB expanded supported source content
 - Git: max 2,000 supported source files, max 5MB per source file, max 500MB total supported source content
+- ZIP extraction does not trust compressed size alone: central-directory metadata and streaming extraction enforce per-file extracted bytes and total extracted bytes before content can grow unbounded in memory
 - Oversize individual source files are skipped with a stable `IMPORT_FILE_TOO_LARGE` warning so the rest of the import can continue
 - ZIP and Git imports both preserve import warnings in the persisted project snapshot and exported report
 - Large result sets are never returned from the summary snapshot; the UI reads detail pages through backend pagination
@@ -409,6 +415,13 @@ Import pipeline is intentionally bounded:
 - Git path traversal / symlink escape defense: unsafe resolved paths are skipped and recorded as import warnings
 - Imported source content is persisted in MySQL `MEDIUMTEXT`, which comfortably covers the 5MB per-file import ceiling
 
+## Analysis Status Semantics
+
+- `completed`: analysis produced a usable result and no files were skipped or degraded.
+- `partial`: analysis produced a usable result, but at least one file was skipped, degraded, or only partially parsed.
+- `failed`: analysis produced no usable result, or the core workflow failed.
+- Heuristic notes remain visible in warnings, but heuristic analysis alone does not force `partial`.
+
 ## Limitations (Honest)
 
 - Parsing is **heuristic static analysis**, not a compiler, language server, or full semantic index.
@@ -421,6 +434,11 @@ Import pipeline is intentionally bounded:
 - Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
 - Import is capped at 5MB per file and 500MB total extracted content by design.
 - Analysis and impact output remain heuristic even when the status is `completed`; review warnings, skipped files, and degraded files before treating results as source-of-truth.
+
+## Additional Docs
+
+- Architecture notes: [docs/architecture.md](/D:/git/legacy-lens/docs/architecture.md)
+- Accepted audit risks: [docs/security-audit-accepted-risks.md](/D:/git/legacy-lens/docs/security-audit-accepted-risks.md)
 
 ## Demo vs Production
 

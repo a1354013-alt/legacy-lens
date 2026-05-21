@@ -1,5 +1,5 @@
 import type { FocusLanguage, ImportWarning } from "../../shared/contracts";
-import JSZip from "jszip";
+import unzipper from "unzipper";
 import {
   MAX_EXTRACTED_BYTES,
   MAX_FILE_COUNT,
@@ -64,6 +64,15 @@ export interface ExtractedSourceBundle {
   files: ExtractedFile[];
   warnings: ImportWarning[];
 }
+
+type ZipDirectoryEntry = {
+  path: string;
+  type?: string;
+  vars?: {
+    uncompressedSize?: number;
+  };
+  stream(): NodeJS.ReadableStream;
+};
 
 export function assertZipRawSize(byteLength: number) {
   if (byteLength === 0) {
@@ -174,7 +183,7 @@ export async function validateZipFile(base64Content: string): Promise<boolean> {
     const buffer = Buffer.from(base64Content, "base64");
     assertZipRawSize(buffer.length);
 
-    await JSZip.loadAsync(buffer);
+    await unzipper.Open.buffer(buffer);
     return true;
   } catch (error) {
     if (error instanceof AppError) {
@@ -184,24 +193,44 @@ export async function validateZipFile(base64Content: string): Promise<boolean> {
   }
 }
 
+async function readZipEntryBuffer(entry: ZipDirectoryEntry, filePath: string) {
+  const chunks: Buffer[] = [];
+  let extractedBytes = 0;
+
+  for await (const chunk of entry.stream() as AsyncIterable<Buffer | string>) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    extractedBytes += buffer.length;
+    if (extractedBytes > MAX_SINGLE_FILE_BYTES) {
+      throw new AppError(
+        "ZIP_INVALID",
+        `Archive contains a source file larger than the allowed single-file limit (${formatBytes(MAX_SINGLE_FILE_BYTES)}): ${filePath}.`
+      );
+    }
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks);
+}
+
 export async function extractFilesFromZip(base64Content: string): Promise<ExtractedSourceBundle> {
   try {
     const buffer = Buffer.from(base64Content, "base64");
     assertZipRawSize(buffer.length);
 
-    const zip = await JSZip.loadAsync(buffer);
+    const zip = await unzipper.Open.buffer(buffer);
     const extractedFiles: ExtractedFile[] = [];
     const warnings: ImportWarning[] = [];
     let totalExtractedSize = 0;
     let sourceCandidateCount = 0;
 
-    const entries = Object.entries(zip.files);
+    const entries = zip.files as ZipDirectoryEntry[];
     if (entries.length > MAX_TOTAL_ARCHIVE_ENTRIES) {
       throw new AppError("ZIP_INVALID", `Archive contains too many entries (${entries.length}). Limit: ${MAX_TOTAL_ARCHIVE_ENTRIES}.`);
     }
 
-    for (const [rawPath, entry] of entries) {
-      if (entry.dir) {
+    for (const entry of entries) {
+      const rawPath = entry.path;
+      if (entry.type === "Directory") {
         continue;
       }
 
@@ -232,7 +261,26 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       sourceCandidateCount += 1;
       assertSourceFileCount(sourceCandidateCount);
 
-      const fileBuffer = await entry.async("nodebuffer");
+      const declaredSize = Number(entry.vars?.uncompressedSize ?? 0);
+      if (declaredSize > MAX_SINGLE_FILE_BYTES) {
+        warnings.push(createSingleFileSizeWarning(normalizedPath));
+        continue;
+      }
+
+      if (declaredSize > 0) {
+        assertExtractedSize(totalExtractedSize + declaredSize);
+      }
+
+      let fileBuffer: Buffer;
+      try {
+        fileBuffer = await readZipEntryBuffer(entry, normalizedPath);
+      } catch (error) {
+        if (error instanceof AppError && error.message.includes("single-file limit")) {
+          warnings.push(createSingleFileSizeWarning(normalizedPath));
+          continue;
+        }
+        throw error;
+      }
       const fileSize = fileBuffer.length;
       if (fileSize > MAX_SINGLE_FILE_BYTES) {
         warnings.push(createSingleFileSizeWarning(normalizedPath));
@@ -302,12 +350,13 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
 export async function countCodeFilesInZip(base64Content: string): Promise<number> {
   try {
     const buffer = Buffer.from(base64Content, "base64");
-    const zip = await JSZip.loadAsync(buffer);
+    const zip = await unzipper.Open.buffer(buffer);
     let count = 0;
 
-    for (const [rawPath, entry] of Object.entries(zip.files)) {
-      if (entry.dir) continue;
+    for (const entry of zip.files as ZipDirectoryEntry[]) {
+      if (entry.type === "Directory") continue;
 
+      const rawPath = entry.path;
       const normalizedPath = normalizePath(rawPath);
       if (shouldIgnoreFile(normalizedPath) || !isSupportedFile(normalizedPath)) continue;
 
