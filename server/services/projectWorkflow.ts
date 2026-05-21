@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { and, eq } from "drizzle-orm";
+import { and, asc, count, eq, inArray, like, or, sql } from "drizzle-orm";
 import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
   AnalysisSnapshot,
@@ -73,6 +73,7 @@ type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 type JobRunner = () => Promise<void>;
 
 const queuedJobPromises = new Map<number, Promise<void>>();
+const STALE_PROJECT_JOB_MS = 15 * 60 * 1000;
 
 function assertProjectTransition(current: ProjectStatus, next: ProjectStatus) {
   if (current === next) {
@@ -92,20 +93,92 @@ function normalizeSearch(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-function paginateItems<T>(items: T[], page: number, pageSize: number): PagedResult<T> {
-  const total = items.length;
+function normalizeLikeSearch(value: string | null | undefined) {
+  const normalized = String(value ?? "").trim();
+  return normalized ? `%${normalized}%` : "";
+}
+
+function normalizePagination(page: number, pageSize: number, total: number) {
   const safePageSize = Math.min(Math.max(pageSize, 1), 100);
   const pageCount = total === 0 ? 0 : Math.ceil(total / safePageSize);
   const safePage = pageCount === 0 ? 1 : Math.min(Math.max(page, 1), pageCount);
-  const startIndex = (safePage - 1) * safePageSize;
 
   return {
-    items: items.slice(startIndex, startIndex + safePageSize),
-    total,
     page: safePage,
     pageSize: safePageSize,
     pageCount,
+    offset: (safePage - 1) * safePageSize,
   };
+}
+
+function andAll(conditions: any[]) {
+  return conditions.length === 1 ? conditions[0] : and(conditions[0], ...conditions.slice(1));
+}
+
+function orAll(conditions: any[]) {
+  return conditions.length === 1 ? conditions[0] : or(conditions[0], ...conditions.slice(1));
+}
+
+function paginateItems<T>(items: T[], page: number, pageSize: number): PagedResult<T> {
+  const total = items.length;
+  const pagination = normalizePagination(page, pageSize, total);
+
+  return {
+    items: items.slice(pagination.offset, pagination.offset + pagination.pageSize),
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    pageCount: pagination.pageCount,
+  };
+}
+
+function isInMemoryDb(db: DbHandle): db is DbHandle & { store: Record<string, Array<Record<string, unknown>>> } {
+  return typeof db === "object" && db !== null && "store" in db;
+}
+
+async function countRows(
+  table: typeof files | typeof symbols | typeof dependencies | typeof fields | typeof fieldDependencies | typeof risks | typeof rules,
+  condition: any
+) {
+  const db = await requireDb();
+  const [row] = await db.select({ value: count() }).from(table).where(condition);
+  return Number(row?.value ?? 0);
+}
+
+async function listMatchingFileIds(projectId: number, searchLike: string) {
+  const db = await requireDb();
+  if (!searchLike) return [];
+
+  const rows = await db
+    .select({ id: files.id })
+    .from(files)
+    .where(and(eq(files.projectId, projectId), like(files.filePath, searchLike)));
+
+  return rows.map((row) => row.id);
+}
+
+async function listMatchingSymbolIds(projectId: number, searchLike: string) {
+  const db = await requireDb();
+  if (!searchLike) return [];
+
+  const rows = await db
+    .select({ id: symbols.id })
+    .from(symbols)
+    .where(and(eq(symbols.projectId, projectId), like(symbols.name, searchLike)));
+
+  return rows.map((row) => row.id);
+}
+
+async function listMatchingFieldIds(projectId: number, searchLike: string) {
+  const db = await requireDb();
+  if (!searchLike) return [];
+
+  const rows = await db
+    .select({ id: fields.id })
+    .from(fields)
+    .where(and(eq(fields.projectId, projectId), or(like(fields.tableName, searchLike), like(fields.fieldName, searchLike))));
+
+  return rows.map((row) => row.id);
 }
 
 async function clearProjectAnalysisGraph(db: DbHandle, projectId: number, includeFiles = false) {
@@ -273,6 +346,47 @@ export async function waitForProjectJobForTests(jobId: number) {
 
 export async function waitForAllProjectJobsForTests() {
   await Promise.all(Array.from(queuedJobPromises.values()));
+}
+
+export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAfterMs = STALE_PROJECT_JOB_MS) {
+  const db = await requireDb();
+  const staleBefore = new Date(now.getTime() - staleAfterMs);
+  const runningJobs = await db.select().from(projectJobs).where(eq(projectJobs.status, "running"));
+  const staleJobs = runningJobs.filter((job) => {
+    if (!job.startedAt) {
+      return true;
+    }
+
+    const startedAt = job.startedAt instanceof Date ? job.startedAt : new Date(job.startedAt);
+    return startedAt.getTime() <= staleBefore.getTime();
+  });
+
+  for (const job of staleJobs) {
+    const recoveryMessage = "Recovered stale running job during server startup after an unexpected shutdown.";
+    await db
+      .update(projectJobs)
+      .set({
+        status: "failed",
+        progress: 100,
+        completedAt: now,
+        errorCode: "PROJECT_JOB_STALE",
+        errorMessage: recoveryMessage,
+      })
+      .where(eq(projectJobs.id, job.id));
+
+    await db
+      .update(projects)
+      .set({
+        status: "failed",
+        errorMessage: recoveryMessage,
+        lastErrorCode: "PROJECT_JOB_STALE",
+        updatedAt: now,
+        ...(job.type === "analyze" ? { analysisProgress: 0 } : { importProgress: 0 }),
+      })
+      .where(eq(projects.id, job.projectId));
+  }
+
+  return staleJobs.length;
 }
 
 export async function createProjectForUser(
@@ -851,53 +965,197 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
   const project = await getOwnedProject(projectId, userId);
   const db = await requireDb();
   const report = await getProjectAnalysisRecord(db, projectId);
-  const [fileRows, symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
-    db.select().from(files).where(eq(files.projectId, projectId)),
-    db.select().from(symbols).where(eq(symbols.projectId, projectId)),
-    db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
-    db.select().from(fields).where(eq(fields.projectId, projectId)),
-    db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, projectId)),
-    db.select().from(risks).where(eq(risks.projectId, projectId)),
-    db.select().from(rules).where(eq(rules.projectId, projectId)),
+  if (isInMemoryDb(db)) {
+    const [fileRows, symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
+      db.select().from(files).where(eq(files.projectId, projectId)),
+      db.select().from(symbols).where(eq(symbols.projectId, projectId)),
+      db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
+      db.select().from(fields).where(eq(fields.projectId, projectId)),
+      db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, projectId)),
+      db.select().from(risks).where(eq(risks.projectId, projectId)),
+      db.select().from(rules).where(eq(rules.projectId, projectId)),
+    ]);
+
+    const sortedFields = sortProjectFields(fieldRows);
+    const sortedFieldDependencies = sortFieldDependencies(fieldDependencyRows);
+    const fieldUsageById = buildFieldUsageSummary(sortedFieldDependencies);
+    const fieldSummaryByTable = new Map<string, { fieldCount: number; readCount: number; writeCount: number; referenceCount: number }>();
+
+    for (const field of sortedFields) {
+      const usage = fieldUsageById.get(field.id) ?? { readCount: 0, writeCount: 0, referenceCount: 0 };
+      const current = fieldSummaryByTable.get(field.tableName) ?? {
+        fieldCount: 0,
+        readCount: 0,
+        writeCount: 0,
+        referenceCount: 0,
+      };
+      current.fieldCount += 1;
+      current.readCount += usage.readCount;
+      current.writeCount += usage.writeCount;
+      current.referenceCount += usage.referenceCount;
+      fieldSummaryByTable.set(field.tableName, current);
+    }
+
+    const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
+
+    return {
+      report: report ? mapSnapshotReport(report) : null,
+      importWarnings: project.importWarningsJson ?? [],
+      totals: {
+        files: fileRows.length,
+        symbols: symbolRows.length,
+        dependencies: dependencyRows.length,
+        fields: fieldRows.length,
+        fieldDependencies: fieldDependencyRows.length,
+        risks: riskRows.length,
+        rules: ruleRows.length,
+        importWarnings: project.importWarningsJson?.length ?? 0,
+      },
+      topSymbols: sortProjectSymbols(symbolRows)
+        .slice(0, 10)
+        .map((row) => ({
+          id: row.id,
+          name: row.name,
+          type: row.type,
+          filePath: filePathById.get(row.fileId) ?? null,
+          startLine: row.startLine,
+          endLine: row.endLine,
+        })),
+      topRisks: sortProjectRisks(riskRows)
+        .slice(0, 10)
+        .map((row) => ({
+          id: row.id,
+          riskType: row.riskType,
+          severity: row.severity,
+          title: row.title,
+          sourceFile: row.sourceFile,
+          lineNumber: row.lineNumber,
+        })),
+      topRules: sortProjectRules(ruleRows)
+        .slice(0, 10)
+        .map((row) => ({
+          id: row.id,
+          ruleType: row.ruleType,
+          name: row.name,
+          sourceFile: row.sourceFile,
+          lineNumber: row.lineNumber,
+        })),
+      fieldTables: Array.from(fieldSummaryByTable.entries())
+        .map(([tableName, summary]) => ({ tableName, ...summary }))
+        .sort((left, right) => left.tableName.localeCompare(right.tableName)),
+    };
+  }
+
+  const [
+    fileTotal,
+    symbolTotal,
+    dependencyTotal,
+    fieldTotal,
+    fieldDependencyTotal,
+    riskTotal,
+    ruleTotal,
+    topSymbolRows,
+    topRiskRows,
+    topRuleRows,
+    fieldCountRows,
+    fieldUsageRows,
+  ] = await Promise.all([
+    countRows(files, eq(files.projectId, projectId)),
+    countRows(symbols, eq(symbols.projectId, projectId)),
+    countRows(dependencies, eq(dependencies.projectId, projectId)),
+    countRows(fields, eq(fields.projectId, projectId)),
+    countRows(fieldDependencies, eq(fieldDependencies.projectId, projectId)),
+    countRows(risks, eq(risks.projectId, projectId)),
+    countRows(rules, eq(rules.projectId, projectId)),
+    db
+      .select()
+      .from(symbols)
+      .where(eq(symbols.projectId, projectId))
+      .orderBy(asc(symbols.name), asc(symbols.fileId), asc(symbols.startLine), asc(symbols.id))
+      .limit(10),
+    db
+      .select()
+      .from(risks)
+      .where(eq(risks.projectId, projectId))
+      .orderBy(
+        sql`case ${risks.severity} when 'critical' then 4 when 'high' then 3 when 'medium' then 2 when 'low' then 1 else 0 end desc`,
+        asc(risks.title),
+        asc(risks.sourceFile),
+        asc(risks.lineNumber),
+        asc(risks.id)
+      )
+      .limit(10),
+    db
+      .select()
+      .from(rules)
+      .where(eq(rules.projectId, projectId))
+      .orderBy(asc(rules.ruleType), asc(rules.name), asc(rules.sourceFile), asc(rules.lineNumber), asc(rules.id))
+      .limit(10),
+    db
+      .select({
+        tableName: fields.tableName,
+        fieldCount: count(),
+      })
+      .from(fields)
+      .where(eq(fields.projectId, projectId))
+      .groupBy(fields.tableName),
+    db
+      .select({
+        tableName: fields.tableName,
+        readCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'read' then 1 else 0 end)`,
+        writeCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'write' then 1 else 0 end)`,
+        referenceCount: count(),
+      })
+      .from(fieldDependencies)
+      .innerJoin(fields, eq(fieldDependencies.fieldId, fields.id))
+      .where(eq(fieldDependencies.projectId, projectId))
+      .groupBy(fields.tableName),
   ]);
 
-  const sortedFields = sortProjectFields(fieldRows);
-  const sortedFieldDependencies = sortFieldDependencies(fieldDependencyRows);
-  const fieldUsageById = buildFieldUsageSummary(sortedFieldDependencies);
+  const topSymbolFileIds = Array.from(new Set(topSymbolRows.map((row) => row.fileId)));
+  const topSymbolFiles =
+    topSymbolFileIds.length > 0
+      ? await db.select({ id: files.id, filePath: files.filePath }).from(files).where(inArray(files.id, topSymbolFileIds))
+      : [];
+  const filePathById = new Map(topSymbolFiles.map((row) => [row.id, row.filePath]));
   const fieldSummaryByTable = new Map<string, { fieldCount: number; readCount: number; writeCount: number; referenceCount: number }>();
 
-  for (const field of sortedFields) {
-    const usage = fieldUsageById.get(field.id) ?? { readCount: 0, writeCount: 0, referenceCount: 0 };
-    const current = fieldSummaryByTable.get(field.tableName) ?? {
+  for (const row of fieldCountRows) {
+    fieldSummaryByTable.set(row.tableName, {
+      fieldCount: Number(row.fieldCount ?? 0),
+      readCount: 0,
+      writeCount: 0,
+      referenceCount: 0,
+    });
+  }
+
+  for (const row of fieldUsageRows) {
+    const current = fieldSummaryByTable.get(row.tableName) ?? {
       fieldCount: 0,
       readCount: 0,
       writeCount: 0,
       referenceCount: 0,
     };
-    current.fieldCount += 1;
-    current.readCount += usage.readCount;
-    current.writeCount += usage.writeCount;
-    current.referenceCount += usage.referenceCount;
-    fieldSummaryByTable.set(field.tableName, current);
+    current.readCount = Number(row.readCount ?? 0);
+    current.writeCount = Number(row.writeCount ?? 0);
+    current.referenceCount = Number(row.referenceCount ?? 0);
+    fieldSummaryByTable.set(row.tableName, current);
   }
-
-  const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
 
   return {
     report: report ? mapSnapshotReport(report) : null,
     importWarnings: project.importWarningsJson ?? [],
     totals: {
-      files: fileRows.length,
-      symbols: symbolRows.length,
-      dependencies: dependencyRows.length,
-      fields: fieldRows.length,
-      fieldDependencies: fieldDependencyRows.length,
-      risks: riskRows.length,
-      rules: ruleRows.length,
+      files: fileTotal,
+      symbols: symbolTotal,
+      dependencies: dependencyTotal,
+      fields: fieldTotal,
+      fieldDependencies: fieldDependencyTotal,
+      risks: riskTotal,
+      rules: ruleTotal,
       importWarnings: project.importWarningsJson?.length ?? 0,
     },
-    topSymbols: sortProjectSymbols(symbolRows)
-      .slice(0, 10)
+    topSymbols: topSymbolRows
       .map((row) => ({
         id: row.id,
         name: row.name,
@@ -906,8 +1164,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
         startLine: row.startLine,
         endLine: row.endLine,
       })),
-    topRisks: sortProjectRisks(riskRows)
-      .slice(0, 10)
+    topRisks: topRiskRows
       .map((row) => ({
         id: row.id,
         riskType: row.riskType,
@@ -916,8 +1173,7 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
         sourceFile: row.sourceFile,
         lineNumber: row.lineNumber,
       })),
-    topRules: sortProjectRules(ruleRows)
-      .slice(0, 10)
+    topRules: topRuleRows
       .map((row) => ({
         id: row.id,
         ruleType: row.ruleType,
@@ -934,15 +1190,67 @@ export async function getAnalysisSnapshot(projectId: number, userId: number): Pr
 export async function getSymbolsPage(input: SymbolsPageInput, userId: number): Promise<PagedResult<SymbolListItem>> {
   await getOwnedProject(input.projectId, userId);
   const db = await requireDb();
-  const [symbolRows, fileRows] = await Promise.all([
-    db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
-    db.select().from(files).where(eq(files.projectId, input.projectId)),
-  ]);
-  const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
-  const search = normalizeSearch(input.search);
+  if (isInMemoryDb(db)) {
+    const [symbolRows, fileRows] = await Promise.all([
+      db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
+      db.select().from(files).where(eq(files.projectId, input.projectId)),
+    ]);
+    const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
+    const search = normalizeSearch(input.search);
 
-  const items = sortProjectSymbols(symbolRows)
-    .map((row) => ({
+    const items = sortProjectSymbols(symbolRows)
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        fileId: row.fileId,
+        filePath: filePathById.get(row.fileId) ?? null,
+        startLine: row.startLine,
+        endLine: row.endLine,
+        signature: row.signature,
+        description: row.description,
+      }))
+      .filter((row) => (input.kind ? row.type === input.kind : true))
+      .filter((row) => {
+        if (!search) return true;
+        return normalizeSearch(row.name).includes(search) || normalizeSearch(row.filePath).includes(search);
+      });
+
+    return paginateItems(items, input.page, input.pageSize);
+  }
+
+  const searchLike = normalizeLikeSearch(input.search);
+  const matchingFileIds = await listMatchingFileIds(input.projectId, searchLike);
+  const conditions = [eq(symbols.projectId, input.projectId)];
+
+  if (input.kind) {
+    conditions.push(eq(symbols.type, input.kind));
+  }
+
+  if (searchLike) {
+    const searchClauses = [like(symbols.name, searchLike)];
+    if (matchingFileIds.length > 0) {
+      searchClauses.push(inArray(symbols.fileId, matchingFileIds));
+    }
+    conditions.push(orAll(searchClauses));
+  }
+
+  const whereCondition = andAll(conditions);
+  const total = await countRows(symbols, whereCondition);
+  const pagination = normalizePagination(input.page, input.pageSize, total);
+  const symbolRows = await db
+    .select()
+    .from(symbols)
+    .where(whereCondition)
+    .orderBy(asc(symbols.name), asc(symbols.fileId), asc(symbols.startLine), asc(symbols.id))
+    .limit(pagination.pageSize)
+    .offset(pagination.offset);
+  const fileIds = Array.from(new Set(symbolRows.map((row) => row.fileId)));
+  const fileRows = fileIds.length > 0 ? await db.select({ id: files.id, filePath: files.filePath }).from(files).where(inArray(files.id, fileIds)) : [];
+  const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
+
+  return {
+    items: symbolRows.map((row) => ({
       id: row.id,
       name: row.name,
       type: row.type,
@@ -952,54 +1260,170 @@ export async function getSymbolsPage(input: SymbolsPageInput, userId: number): P
       endLine: row.endLine,
       signature: row.signature,
       description: row.description,
-    }))
-    .filter((row) => (input.kind ? row.type === input.kind : true))
-    .filter((row) => {
-      if (!search) return true;
-      return normalizeSearch(row.name).includes(search) || normalizeSearch(row.filePath).includes(search);
-    });
-
-  return paginateItems(items, input.page, input.pageSize);
+    })),
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    pageCount: pagination.pageCount,
+  };
 }
 
 export async function getFieldsPage(input: FieldsPageInput, userId: number): Promise<PagedResult<FieldListItem>> {
   await getOwnedProject(input.projectId, userId);
   const db = await requireDb();
-  const [fieldRows, fieldDependencyRows] = await Promise.all([
-    db.select().from(fields).where(eq(fields.projectId, input.projectId)),
-    db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
-  ]);
-  const fieldUsageById = buildFieldUsageSummary(sortFieldDependencies(fieldDependencyRows));
-  const search = normalizeSearch(input.search);
+  if (isInMemoryDb(db)) {
+    const [fieldRows, fieldDependencyRows] = await Promise.all([
+      db.select().from(fields).where(eq(fields.projectId, input.projectId)),
+      db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
+    ]);
+    const fieldUsageById = buildFieldUsageSummary(sortFieldDependencies(fieldDependencyRows));
+    const search = normalizeSearch(input.search);
 
-  const items = sortProjectFields(fieldRows)
-    .map((row) => ({
+    const items = sortProjectFields(fieldRows)
+      .map((row) => ({
+        id: row.id,
+        tableName: row.tableName,
+        fieldName: row.fieldName,
+        fieldType: row.fieldType,
+        description: row.description,
+        readCount: fieldUsageById.get(row.id)?.readCount ?? 0,
+        writeCount: fieldUsageById.get(row.id)?.writeCount ?? 0,
+        referenceCount: fieldUsageById.get(row.id)?.referenceCount ?? 0,
+      }))
+      .filter((row) => (input.tableName ? row.tableName === input.tableName : true))
+      .filter((row) => {
+        if (!search) return true;
+        return normalizeSearch(row.tableName).includes(search) || normalizeSearch(row.fieldName).includes(search);
+      });
+
+    return paginateItems(items, input.page, input.pageSize);
+  }
+
+  const searchLike = normalizeLikeSearch(input.search);
+  const conditions = [eq(fields.projectId, input.projectId)];
+
+  if (input.tableName) {
+    conditions.push(eq(fields.tableName, input.tableName));
+  }
+
+  if (searchLike) {
+    conditions.push(orAll([like(fields.tableName, searchLike), like(fields.fieldName, searchLike)]));
+  }
+
+  const whereCondition = andAll(conditions);
+  const total = await countRows(fields, whereCondition);
+  const pagination = normalizePagination(input.page, input.pageSize, total);
+  const fieldRows = await db
+    .select()
+    .from(fields)
+    .where(whereCondition)
+    .orderBy(asc(fields.tableName), asc(fields.fieldName), asc(fields.id))
+    .limit(pagination.pageSize)
+    .offset(pagination.offset);
+  const fieldIds = fieldRows.map((row) => row.id);
+  const usageRows =
+    fieldIds.length > 0
+      ? await db
+          .select({
+            fieldId: fieldDependencies.fieldId,
+            readCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'read' then 1 else 0 end)`,
+            writeCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'write' then 1 else 0 end)`,
+            referenceCount: count(),
+          })
+          .from(fieldDependencies)
+          .where(and(eq(fieldDependencies.projectId, input.projectId), inArray(fieldDependencies.fieldId, fieldIds)))
+          .groupBy(fieldDependencies.fieldId)
+      : [];
+  const usageById = new Map(
+    usageRows.map((row) => [
+      row.fieldId,
+      {
+        readCount: Number(row.readCount ?? 0),
+        writeCount: Number(row.writeCount ?? 0),
+        referenceCount: Number(row.referenceCount ?? 0),
+      },
+    ])
+  );
+
+  return {
+    items: fieldRows.map((row) => ({
       id: row.id,
       tableName: row.tableName,
       fieldName: row.fieldName,
       fieldType: row.fieldType,
       description: row.description,
-      readCount: fieldUsageById.get(row.id)?.readCount ?? 0,
-      writeCount: fieldUsageById.get(row.id)?.writeCount ?? 0,
-      referenceCount: fieldUsageById.get(row.id)?.referenceCount ?? 0,
-    }))
-    .filter((row) => (input.tableName ? row.tableName === input.tableName : true))
-    .filter((row) => {
-      if (!search) return true;
-      return normalizeSearch(row.tableName).includes(search) || normalizeSearch(row.fieldName).includes(search);
-    });
-
-  return paginateItems(items, input.page, input.pageSize);
+      readCount: usageById.get(row.id)?.readCount ?? 0,
+      writeCount: usageById.get(row.id)?.writeCount ?? 0,
+      referenceCount: usageById.get(row.id)?.referenceCount ?? 0,
+    })),
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    pageCount: pagination.pageCount,
+  };
 }
 
 export async function getRisksPage(input: RisksPageInput, userId: number): Promise<PagedResult<RiskListItem>> {
   await getOwnedProject(input.projectId, userId);
   const db = await requireDb();
-  const riskRows = await db.select().from(risks).where(eq(risks.projectId, input.projectId));
-  const search = normalizeSearch(input.search);
+  if (isInMemoryDb(db)) {
+    const riskRows = await db.select().from(risks).where(eq(risks.projectId, input.projectId));
+    const search = normalizeSearch(input.search);
 
-  const items = sortProjectRisks(riskRows)
-    .map((row) => ({
+    const items = sortProjectRisks(riskRows)
+      .map((row) => ({
+        id: row.id,
+        riskType: row.riskType,
+        severity: row.severity,
+        title: row.title,
+        description: row.description,
+        sourceFile: row.sourceFile,
+        lineNumber: row.lineNumber,
+        recommendation: row.recommendation,
+      }))
+      .filter((row) => (input.severity ? row.severity === input.severity : true))
+      .filter((row) => {
+        if (!search) return true;
+        return (
+          normalizeSearch(row.title).includes(search) ||
+          normalizeSearch(row.description).includes(search) ||
+          normalizeSearch(row.sourceFile).includes(search)
+        );
+      });
+
+    return paginateItems(items, input.page, input.pageSize);
+  }
+
+  const searchLike = normalizeLikeSearch(input.search);
+  const conditions = [eq(risks.projectId, input.projectId)];
+
+  if (input.severity) {
+    conditions.push(eq(risks.severity, input.severity));
+  }
+
+  if (searchLike) {
+    conditions.push(orAll([like(risks.title, searchLike), like(risks.description, searchLike), like(risks.sourceFile, searchLike)]));
+  }
+
+  const whereCondition = andAll(conditions);
+  const total = await countRows(risks, whereCondition);
+  const pagination = normalizePagination(input.page, input.pageSize, total);
+  const riskRows = await db
+    .select()
+    .from(risks)
+    .where(whereCondition)
+    .orderBy(
+      sql`case ${risks.severity} when 'critical' then 4 when 'high' then 3 when 'medium' then 2 when 'low' then 1 else 0 end desc`,
+      asc(risks.title),
+      asc(risks.sourceFile),
+      asc(risks.lineNumber),
+      asc(risks.id)
+    )
+    .limit(pagination.pageSize)
+    .offset(pagination.offset);
+
+  return {
+    items: riskRows.map((row) => ({
       id: row.id,
       riskType: row.riskType,
       severity: row.severity,
@@ -1008,28 +1432,64 @@ export async function getRisksPage(input: RisksPageInput, userId: number): Promi
       sourceFile: row.sourceFile,
       lineNumber: row.lineNumber,
       recommendation: row.recommendation,
-    }))
-    .filter((row) => (input.severity ? row.severity === input.severity : true))
-    .filter((row) => {
-      if (!search) return true;
-      return (
-        normalizeSearch(row.title).includes(search) ||
-        normalizeSearch(row.description).includes(search) ||
-        normalizeSearch(row.sourceFile).includes(search)
-      );
-    });
-
-  return paginateItems(items, input.page, input.pageSize);
+    })),
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    pageCount: pagination.pageCount,
+  };
 }
 
 export async function getRulesPage(input: RulesPageInput, userId: number): Promise<PagedResult<RuleListItem>> {
   await getOwnedProject(input.projectId, userId);
   const db = await requireDb();
-  const ruleRows = await db.select().from(rules).where(eq(rules.projectId, input.projectId));
-  const search = normalizeSearch(input.search);
+  if (isInMemoryDb(db)) {
+    const ruleRows = await db.select().from(rules).where(eq(rules.projectId, input.projectId));
+    const search = normalizeSearch(input.search);
 
-  const items = sortProjectRules(ruleRows)
-    .map((row) => ({
+    const items = sortProjectRules(ruleRows)
+      .map((row) => ({
+        id: row.id,
+        ruleType: row.ruleType,
+        name: row.name,
+        description: row.description,
+        condition: row.condition,
+        sourceFile: row.sourceFile,
+        lineNumber: row.lineNumber,
+      }))
+      .filter((row) => (input.ruleType ? row.ruleType === input.ruleType : true))
+      .filter((row) => {
+        if (!search) return true;
+        return normalizeSearch(row.name).includes(search) || normalizeSearch(row.description).includes(search);
+      });
+
+    return paginateItems(items, input.page, input.pageSize);
+  }
+
+  const searchLike = normalizeLikeSearch(input.search);
+  const conditions = [eq(rules.projectId, input.projectId)];
+
+  if (input.ruleType) {
+    conditions.push(eq(rules.ruleType, input.ruleType));
+  }
+
+  if (searchLike) {
+    conditions.push(orAll([like(rules.name, searchLike), like(rules.description, searchLike)]));
+  }
+
+  const whereCondition = andAll(conditions);
+  const total = await countRows(rules, whereCondition);
+  const pagination = normalizePagination(input.page, input.pageSize, total);
+  const ruleRows = await db
+    .select()
+    .from(rules)
+    .where(whereCondition)
+    .orderBy(asc(rules.ruleType), asc(rules.name), asc(rules.sourceFile), asc(rules.lineNumber), asc(rules.id))
+    .limit(pagination.pageSize)
+    .offset(pagination.offset);
+
+  return {
+    items: ruleRows.map((row) => ({
       id: row.id,
       ruleType: row.ruleType,
       name: row.name,
@@ -1037,14 +1497,12 @@ export async function getRulesPage(input: RulesPageInput, userId: number): Promi
       condition: row.condition,
       sourceFile: row.sourceFile,
       lineNumber: row.lineNumber,
-    }))
-    .filter((row) => (input.ruleType ? row.ruleType === input.ruleType : true))
-    .filter((row) => {
-      if (!search) return true;
-      return normalizeSearch(row.name).includes(search) || normalizeSearch(row.description).includes(search);
-    });
-
-  return paginateItems(items, input.page, input.pageSize);
+    })),
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    pageCount: pagination.pageCount,
+  };
 }
 
 export async function getDependenciesPage(
@@ -1053,37 +1511,97 @@ export async function getDependenciesPage(
 ): Promise<PagedResult<DependencyListItem>> {
   await getOwnedProject(input.projectId, userId);
   const db = await requireDb();
-  const [dependencyRows, symbolRows] = await Promise.all([
-    db.select().from(dependencies).where(eq(dependencies.projectId, input.projectId)),
-    db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
-  ]);
-  const symbolById = new Map(symbolRows.map((row) => [row.id, row]));
-  const search = normalizeSearch(input.search);
+  if (isInMemoryDb(db)) {
+    const [dependencyRows, symbolRows] = await Promise.all([
+      db.select().from(dependencies).where(eq(dependencies.projectId, input.projectId)),
+      db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
+    ]);
+    const symbolById = new Map(symbolRows.map((row) => [row.id, row]));
+    const search = normalizeSearch(input.search);
 
-  const items = sortProjectDependencies(dependencyRows)
-    .map((row) => ({
+    const items = sortProjectDependencies(dependencyRows)
+      .map((row) => ({
+        id: row.id,
+        sourceSymbolId: row.sourceSymbolId,
+        sourceSymbolName: symbolById.get(row.sourceSymbolId)?.name ?? `symbol:${row.sourceSymbolId}`,
+        targetSymbolId: row.targetSymbolId,
+        targetSymbolName: row.targetSymbolId ? symbolById.get(row.targetSymbolId)?.name ?? null : null,
+        targetExternalName: row.targetExternalName,
+        targetKind: row.targetKind,
+        dependencyType: row.dependencyType,
+        lineNumber: row.lineNumber,
+      }))
+      .filter((row) => (input.dependencyType ? row.dependencyType === input.dependencyType : true))
+      .filter((row) => (input.targetKind ? row.targetKind === input.targetKind : true))
+      .filter((row) => {
+        if (!search) return true;
+        return (
+          normalizeSearch(row.sourceSymbolName).includes(search) ||
+          normalizeSearch(row.targetSymbolName).includes(search) ||
+          normalizeSearch(row.targetExternalName).includes(search)
+        );
+      });
+
+    return paginateItems(items, input.page, input.pageSize);
+  }
+
+  const searchLike = normalizeLikeSearch(input.search);
+  const matchingSymbolIds = await listMatchingSymbolIds(input.projectId, searchLike);
+  const conditions = [eq(dependencies.projectId, input.projectId)];
+
+  if (input.dependencyType) {
+    conditions.push(eq(dependencies.dependencyType, input.dependencyType));
+  }
+
+  if (input.targetKind) {
+    conditions.push(eq(dependencies.targetKind, input.targetKind));
+  }
+
+  if (searchLike) {
+    const searchClauses = [like(dependencies.targetExternalName, searchLike)];
+    if (matchingSymbolIds.length > 0) {
+      searchClauses.push(inArray(dependencies.sourceSymbolId, matchingSymbolIds));
+      searchClauses.push(inArray(dependencies.targetSymbolId, matchingSymbolIds));
+    }
+    conditions.push(orAll(searchClauses));
+  }
+
+  const whereCondition = andAll(conditions);
+  const total = await countRows(dependencies, whereCondition);
+  const pagination = normalizePagination(input.page, input.pageSize, total);
+  const dependencyRows = await db
+    .select()
+    .from(dependencies)
+    .where(whereCondition)
+    .orderBy(asc(dependencies.sourceSymbolId), asc(dependencies.targetSymbolId), asc(dependencies.lineNumber), asc(dependencies.id))
+    .limit(pagination.pageSize)
+    .offset(pagination.offset);
+  const symbolIds = Array.from(
+    new Set(
+      dependencyRows.flatMap((row) => [row.sourceSymbolId, row.targetSymbolId].filter((value): value is number => typeof value === "number"))
+    )
+  );
+  const symbolRows =
+    symbolIds.length > 0 ? await db.select({ id: symbols.id, name: symbols.name }).from(symbols).where(inArray(symbols.id, symbolIds)) : [];
+  const symbolById = new Map(symbolRows.map((row) => [row.id, row.name]));
+
+  return {
+    items: dependencyRows.map((row) => ({
       id: row.id,
       sourceSymbolId: row.sourceSymbolId,
-      sourceSymbolName: symbolById.get(row.sourceSymbolId)?.name ?? `symbol:${row.sourceSymbolId}`,
+      sourceSymbolName: symbolById.get(row.sourceSymbolId) ?? `symbol:${row.sourceSymbolId}`,
       targetSymbolId: row.targetSymbolId,
-      targetSymbolName: row.targetSymbolId ? symbolById.get(row.targetSymbolId)?.name ?? null : null,
+      targetSymbolName: row.targetSymbolId ? symbolById.get(row.targetSymbolId) ?? null : null,
       targetExternalName: row.targetExternalName,
       targetKind: row.targetKind,
       dependencyType: row.dependencyType,
       lineNumber: row.lineNumber,
-    }))
-    .filter((row) => (input.dependencyType ? row.dependencyType === input.dependencyType : true))
-    .filter((row) => (input.targetKind ? row.targetKind === input.targetKind : true))
-    .filter((row) => {
-      if (!search) return true;
-      return (
-        normalizeSearch(row.sourceSymbolName).includes(search) ||
-        normalizeSearch(row.targetSymbolName).includes(search) ||
-        normalizeSearch(row.targetExternalName).includes(search)
-      );
-    });
-
-  return paginateItems(items, input.page, input.pageSize);
+    })),
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    pageCount: pagination.pageCount,
+  };
 }
 
 export async function getFieldDependenciesPage(
@@ -1092,40 +1610,121 @@ export async function getFieldDependenciesPage(
 ): Promise<PagedResult<FieldDependencyListItem>> {
   await getOwnedProject(input.projectId, userId);
   const db = await requireDb();
-  const [fieldDependencyRows, fieldRows, symbolRows] = await Promise.all([
-    db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
-    db.select().from(fields).where(eq(fields.projectId, input.projectId)),
-    db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
+  if (isInMemoryDb(db)) {
+    const [fieldDependencyRows, fieldRows, symbolRows] = await Promise.all([
+      db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
+      db.select().from(fields).where(eq(fields.projectId, input.projectId)),
+      db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
+    ]);
+    const fieldById = new Map(fieldRows.map((row) => [row.id, row]));
+    const symbolById = new Map(symbolRows.map((row) => [row.id, row]));
+    const search = normalizeSearch(input.search);
+
+    const items = sortFieldDependencies(fieldDependencyRows)
+      .map((row) => ({
+        id: row.id,
+        fieldId: row.fieldId,
+        tableName: fieldById.get(row.fieldId)?.tableName ?? "unknown",
+        fieldName: fieldById.get(row.fieldId)?.fieldName ?? "unknown",
+        symbolId: row.symbolId,
+        symbolName: symbolById.get(row.symbolId)?.name ?? `symbol:${row.symbolId}`,
+        operationType: row.operationType,
+        lineNumber: row.lineNumber,
+        context: row.context,
+      }))
+      .filter((row) => (input.tableName ? row.tableName === input.tableName : true))
+      .filter((row) => (input.operationType ? row.operationType === input.operationType : true))
+      .filter((row) => {
+        if (!search) return true;
+        return (
+          normalizeSearch(row.tableName).includes(search) ||
+          normalizeSearch(row.fieldName).includes(search) ||
+          normalizeSearch(row.symbolName).includes(search) ||
+          normalizeSearch(row.context).includes(search)
+        );
+      });
+
+    return paginateItems(items, input.page, input.pageSize);
+  }
+
+  const searchLike = normalizeLikeSearch(input.search);
+  const tableFieldIds = input.tableName
+    ? (
+        await db
+          .select({ id: fields.id })
+          .from(fields)
+          .where(and(eq(fields.projectId, input.projectId), eq(fields.tableName, input.tableName)))
+      ).map((row) => row.id)
+    : [];
+
+  if (input.tableName && tableFieldIds.length === 0) {
+    return paginateItems([], input.page, input.pageSize);
+  }
+
+  const [searchFieldIds, searchSymbolIds] = await Promise.all([
+    listMatchingFieldIds(input.projectId, searchLike),
+    listMatchingSymbolIds(input.projectId, searchLike),
+  ]);
+
+  const conditions = [eq(fieldDependencies.projectId, input.projectId)];
+
+  if (input.operationType) {
+    conditions.push(eq(fieldDependencies.operationType, input.operationType));
+  }
+
+  if (input.tableName) {
+    conditions.push(inArray(fieldDependencies.fieldId, tableFieldIds));
+  }
+
+  if (searchLike) {
+    const searchClauses = [like(fieldDependencies.context, searchLike)];
+    if (searchFieldIds.length > 0) {
+      searchClauses.push(inArray(fieldDependencies.fieldId, searchFieldIds));
+    }
+    if (searchSymbolIds.length > 0) {
+      searchClauses.push(inArray(fieldDependencies.symbolId, searchSymbolIds));
+    }
+    conditions.push(orAll(searchClauses));
+  }
+
+  const whereCondition = andAll(conditions);
+  const total = await countRows(fieldDependencies, whereCondition);
+  const pagination = normalizePagination(input.page, input.pageSize, total);
+  const fieldDependencyRows = await db
+    .select()
+    .from(fieldDependencies)
+    .where(whereCondition)
+    .orderBy(asc(fieldDependencies.fieldId), asc(fieldDependencies.symbolId), asc(fieldDependencies.lineNumber), asc(fieldDependencies.id))
+    .limit(pagination.pageSize)
+    .offset(pagination.offset);
+  const fieldIds = Array.from(new Set(fieldDependencyRows.map((row) => row.fieldId)));
+  const symbolIds = Array.from(new Set(fieldDependencyRows.map((row) => row.symbolId)));
+  const [fieldRows, symbolRows] = await Promise.all([
+    fieldIds.length > 0
+      ? db.select({ id: fields.id, tableName: fields.tableName, fieldName: fields.fieldName }).from(fields).where(inArray(fields.id, fieldIds))
+      : Promise.resolve([]),
+    symbolIds.length > 0 ? db.select({ id: symbols.id, name: symbols.name }).from(symbols).where(inArray(symbols.id, symbolIds)) : Promise.resolve([]),
   ]);
   const fieldById = new Map(fieldRows.map((row) => [row.id, row]));
-  const symbolById = new Map(symbolRows.map((row) => [row.id, row]));
-  const search = normalizeSearch(input.search);
+  const symbolById = new Map(symbolRows.map((row) => [row.id, row.name]));
 
-  const items = sortFieldDependencies(fieldDependencyRows)
-    .map((row) => ({
+  return {
+    items: fieldDependencyRows.map((row) => ({
       id: row.id,
       fieldId: row.fieldId,
       tableName: fieldById.get(row.fieldId)?.tableName ?? "unknown",
       fieldName: fieldById.get(row.fieldId)?.fieldName ?? "unknown",
       symbolId: row.symbolId,
-      symbolName: symbolById.get(row.symbolId)?.name ?? `symbol:${row.symbolId}`,
+      symbolName: symbolById.get(row.symbolId) ?? `symbol:${row.symbolId}`,
       operationType: row.operationType,
       lineNumber: row.lineNumber,
       context: row.context,
-    }))
-    .filter((row) => (input.tableName ? row.tableName === input.tableName : true))
-    .filter((row) => (input.operationType ? row.operationType === input.operationType : true))
-    .filter((row) => {
-      if (!search) return true;
-      return (
-        normalizeSearch(row.tableName).includes(search) ||
-        normalizeSearch(row.fieldName).includes(search) ||
-        normalizeSearch(row.symbolName).includes(search) ||
-        normalizeSearch(row.context).includes(search)
-      );
-    });
-
-  return paginateItems(items, input.page, input.pageSize);
+    })),
+    total,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    pageCount: pagination.pageCount,
+  };
 }
 
 function buildReportFileName(projectId: number) {

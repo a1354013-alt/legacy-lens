@@ -15,6 +15,7 @@ import { logger } from "./logger";
 import { registerHealthEndpoint } from "./health";
 import { configureTrustProxy, registerRateLimiters } from "./rateLimiter";
 import { registerReportDownloadRoute } from "./reportRoute";
+import { recoverStaleProjectJobsOnStartup } from "../services/projectWorkflow";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -49,6 +50,7 @@ async function gracefulShutdown(signal: string) {
 async function startServer() {
   validateRuntimeConfig();
   await validateDbConfig();
+  const recoveredJobCount = await recoverStaleProjectJobsOnStartup();
 
   const app = express();
   const server = createServer(app);
@@ -119,6 +121,7 @@ async function startServer() {
       status: "ok",
       port,
       env: process.env.NODE_ENV || "development",
+      recoveredJobCount,
     });
     
     // Log health endpoint availability

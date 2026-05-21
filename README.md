@@ -152,9 +152,9 @@ IMPORT_FILE_TOO_LARGE: big.sql - The file was skipped because it exceeds the max
 - Legacy encoding awareness during import (explicit detection + human-readable warnings)
 - Exportable review artifact (ZIP report with stable structure + `metadata.json` for audit/replay)
 
-## Verified Environment
+## Target Environment
 
-Legacy Lens is currently verified in CI and local acceptance with:
+Legacy Lens currently targets CI and local acceptance with:
 - Node.js `22.18.0` in CI and Docker
 - pnpm `10.4.1`
 
@@ -381,6 +381,7 @@ Docker equivalents:
 - `package.json` keeps a small `pnpm.overrides` block for transitive packages that were still flagged by `pnpm audit --audit-level high` after the direct dependency upgrades.
 - Current overrides are intentionally limited to security patches for `path-to-regexp`, `rollup`, `picomatch`, `tar`, `lodash`, and `lodash-es`.
 - When upstream packages adopt the patched transitive versions directly, prefer removing the override instead of letting the list grow.
+- Moderate findings are tracked in [docs/security-audit-accepted-risks.md](/D:/git/legacy-lens/docs/security-audit-accepted-risks.md).
 
 ## Import Safety Boundaries
 

@@ -107,7 +107,7 @@ maybeDescribe("Drizzle migration smoke", () => {
         "INSERT INTO `users` (`id`, `openId`, `role`) VALUES (1, 'user-1', 'user')"
       );
       await connection.query(
-        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`, `importWarningsJson`) VALUES (1, 1, 'legacy-project', 'go', 'upload', 'completed', 100, 100, JSON_ARRAY())"
+        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (1, 1, 'legacy-project', 'go', 'upload', 'completed', 100, 100)"
       );
       await connection.query(
         "INSERT INTO `files` (`id`, `projectId`, `filePath`, `fileName`, `fileType`, `status`, `content`) VALUES (1, 1, 'main.go', 'main.go', '.go', 'stored', 'package main')"
@@ -131,6 +131,7 @@ maybeDescribe("Drizzle migration smoke", () => {
 
       expect(projectRows[0]?.status).toBe("completed");
       expect(projectRows[0]?.importWarningsJson).toBeDefined();
+      expect(projectRows[0]?.importWarningsJson).toBe("[]");
       expect(dependencyRows[0]?.targetSymbolId).toBe(2);
       expect(dependencyRows[0]?.targetKind).toBe("internal");
       expect(String(fileColumns[0]?.Type ?? "")).toBe("mediumtext");

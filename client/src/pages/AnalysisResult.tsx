@@ -3,6 +3,9 @@ import { useLocation, useRoute } from "wouter";
 import { ArrowLeft, Download, FileText, Loader2, RefreshCcw, ShieldAlert } from "lucide-react";
 import {
   analysisStatusLabels,
+  dependencyKinds,
+  dependencyTargetKinds,
+  fieldDependencyOperationTypes,
   projectJobStatusLabels,
   projectJobTypeLabels,
   projectStatusLabels,
@@ -83,6 +86,14 @@ export default function AnalysisResult() {
   const [ruleSearch, setRuleSearch] = useState("");
   const [ruleType, setRuleType] = useState<string>("all");
   const [rulePage, setRulePage] = useState(1);
+  const [dependencySearch, setDependencySearch] = useState("");
+  const [dependencyType, setDependencyType] = useState<string>("all");
+  const [dependencyTargetKind, setDependencyTargetKind] = useState<string>("all");
+  const [dependencyPage, setDependencyPage] = useState(1);
+  const [fieldDependencySearch, setFieldDependencySearch] = useState("");
+  const [fieldDependencyTable, setFieldDependencyTable] = useState<string>("all");
+  const [fieldDependencyOperationType, setFieldDependencyOperationType] = useState<string>("all");
+  const [fieldDependencyPage, setFieldDependencyPage] = useState(1);
   const [isReportDownloading, setIsReportDownloading] = useState(false);
   const utils = trpc.useUtils();
 
@@ -144,6 +155,33 @@ export default function AnalysisResult() {
       pageSize: RESULT_LIST_PAGE_SIZE,
       search: ruleSearch || undefined,
       ruleType: ruleType === "all" ? undefined : (ruleType as (typeof ruleTypes)[number]),
+    },
+    { enabled: Number.isFinite(projectId) }
+  );
+
+  const dependenciesQuery = trpc.analysis.getDependenciesPage.useQuery(
+    {
+      projectId,
+      page: dependencyPage,
+      pageSize: RESULT_LIST_PAGE_SIZE,
+      search: dependencySearch || undefined,
+      dependencyType: dependencyType === "all" ? undefined : (dependencyType as (typeof dependencyKinds)[number]),
+      targetKind: dependencyTargetKind === "all" ? undefined : (dependencyTargetKind as (typeof dependencyTargetKinds)[number]),
+    },
+    { enabled: Number.isFinite(projectId) }
+  );
+
+  const fieldDependenciesQuery = trpc.analysis.getFieldDependenciesPage.useQuery(
+    {
+      projectId,
+      page: fieldDependencyPage,
+      pageSize: RESULT_LIST_PAGE_SIZE,
+      search: fieldDependencySearch || undefined,
+      tableName: fieldDependencyTable === "all" ? undefined : fieldDependencyTable,
+      operationType:
+        fieldDependencyOperationType === "all"
+          ? undefined
+          : (fieldDependencyOperationType as (typeof fieldDependencyOperationTypes)[number]),
     },
     { enabled: Number.isFinite(projectId) }
   );
@@ -329,6 +367,8 @@ export default function AnalysisResult() {
             <TabsTrigger value="impact">影響分析</TabsTrigger>
             <TabsTrigger value="symbols">Symbols</TabsTrigger>
             <TabsTrigger value="fields">Fields</TabsTrigger>
+            <TabsTrigger value="dependencies">Dependencies</TabsTrigger>
+            <TabsTrigger value="field-dependencies">Field Dependencies</TabsTrigger>
             <TabsTrigger value="risks">Risks</TabsTrigger>
             <TabsTrigger value="rules">Rules</TabsTrigger>
             <TabsTrigger value="documents">文件預覽</TabsTrigger>
@@ -525,6 +565,164 @@ export default function AnalysisResult() {
                 </div>
               ))}
               emptyText="查無符合條件的欄位。"
+            />
+          </TabsContent>
+
+          <TabsContent value="dependencies" className="space-y-4">
+            <FilterCard title="Dependencies" description="分頁檢視符號依賴，支援依賴型別、目標型別與關鍵字搜尋。">
+              <div className="grid gap-3 md:grid-cols-3">
+                <Input
+                  value={dependencySearch}
+                  onChange={(event) => {
+                    setDependencySearch(event.target.value);
+                    setDependencyPage(1);
+                  }}
+                  placeholder="搜尋 source / target / external name"
+                />
+                <Select
+                  value={dependencyType}
+                  onValueChange={(value) => {
+                    setDependencyType(value);
+                    setDependencyPage(1);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="依賴型別" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部依賴型別</SelectItem>
+                    {dependencyKinds.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={dependencyTargetKind}
+                  onValueChange={(value) => {
+                    setDependencyTargetKind(value);
+                    setDependencyPage(1);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="目標型別" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部目標型別</SelectItem>
+                    {dependencyTargetKinds.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </FilterCard>
+            <PagedListState
+              total={dependenciesQuery.data?.total ?? 0}
+              page={dependenciesQuery.data?.page ?? dependencyPage}
+              pageCount={dependenciesQuery.data?.pageCount ?? 0}
+              onPrev={() => setDependencyPage((value) => Math.max(1, value - 1))}
+              onNext={() => setDependencyPage((value) => value + 1)}
+            />
+            <ListCard
+              loading={dependenciesQuery.isLoading}
+              items={(dependenciesQuery.data?.items ?? []).map((dependency) => (
+                <div key={dependency.id} className="rounded-lg border px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium text-slate-950">{dependency.sourceSymbolName}</span>
+                    <Badge variant="outline">{dependency.dependencyType}</Badge>
+                  </div>
+                  <p className="text-slate-600">
+                    target: {dependency.targetSymbolName ?? dependency.targetExternalName ?? "unknown"}
+                  </p>
+                  <p className="text-slate-500">
+                    {dependency.targetKind}
+                    {dependency.lineNumber ? ` / line ${dependency.lineNumber}` : ""}
+                  </p>
+                </div>
+              ))}
+              emptyText="目前沒有符合條件的 dependency。"
+            />
+          </TabsContent>
+
+          <TabsContent value="field-dependencies" className="space-y-4">
+            <FilterCard title="Field Dependencies" description="分頁檢視資料欄位讀寫依賴，支援 table 與 operation 篩選。">
+              <div className="grid gap-3 md:grid-cols-3">
+                <Input
+                  value={fieldDependencySearch}
+                  onChange={(event) => {
+                    setFieldDependencySearch(event.target.value);
+                    setFieldDependencyPage(1);
+                  }}
+                  placeholder="搜尋 table / field / symbol / context"
+                />
+                <Select
+                  value={fieldDependencyTable}
+                  onValueChange={(value) => {
+                    setFieldDependencyTable(value);
+                    setFieldDependencyPage(1);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Table" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部 Table</SelectItem>
+                    {(snapshot?.fieldTables ?? []).map((table) => (
+                      <SelectItem key={table.tableName} value={table.tableName}>
+                        {table.tableName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={fieldDependencyOperationType}
+                  onValueChange={(value) => {
+                    setFieldDependencyOperationType(value);
+                    setFieldDependencyPage(1);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Operation" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部 Operation</SelectItem>
+                    {fieldDependencyOperationTypes.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </FilterCard>
+            <PagedListState
+              total={fieldDependenciesQuery.data?.total ?? 0}
+              page={fieldDependenciesQuery.data?.page ?? fieldDependencyPage}
+              pageCount={fieldDependenciesQuery.data?.pageCount ?? 0}
+              onPrev={() => setFieldDependencyPage((value) => Math.max(1, value - 1))}
+              onNext={() => setFieldDependencyPage((value) => value + 1)}
+            />
+            <ListCard
+              loading={fieldDependenciesQuery.isLoading}
+              items={(fieldDependenciesQuery.data?.items ?? []).map((item) => (
+                <div key={item.id} className="rounded-lg border px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium text-slate-950">
+                      {item.tableName}.{item.fieldName}
+                    </span>
+                    <Badge variant="outline">{item.operationType}</Badge>
+                  </div>
+                  <p className="text-slate-600">{item.symbolName}</p>
+                  <p className="text-slate-500">
+                    {item.context ?? "no context"}
+                    {item.lineNumber ? ` / line ${item.lineNumber}` : ""}
+                  </p>
+                </div>
+              ))}
+              emptyText="目前沒有符合條件的 field dependency。"
             />
           </TabsContent>
 

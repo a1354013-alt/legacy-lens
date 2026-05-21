@@ -401,8 +401,8 @@ describe("project workflow", () => {
     expect("symbols" in snapshot).toBe(false);
   });
 
-  it("pages and filters symbols, fields, and risks on the backend", async () => {
-    const { getFieldsPage, getRisksPage, getSymbolsPage } = await import("./projectWorkflow");
+  it("pages and filters symbols, fields, risks, dependencies, and field dependencies on the backend", async () => {
+    const { getDependenciesPage, getFieldDependenciesPage, getFieldsPage, getRisksPage, getSymbolsPage } = await import("./projectWorkflow");
     seedProject();
     fakeDb.store.files.push(
       { id: 1, projectId: 1, filePath: "src/users.pas", fileName: "users.pas", fileType: ".pas", status: "stored" },
@@ -431,10 +431,16 @@ describe("project workflow", () => {
       { id: 1, projectId: 1, riskType: "magic_value", severity: "high", title: "Shared risk", description: "message one", sourceFile: "src/users.pas", lineNumber: 10, recommendation: null },
       { id: 2, projectId: 1, riskType: "other", severity: "low", title: "Minor issue", description: "message two", sourceFile: "src/orders.pas", lineNumber: 20, recommendation: null }
     );
+    fakeDb.store.dependencies.push(
+      { id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: 2, targetExternalName: null, targetKind: "internal", dependencyType: "calls", lineNumber: 11 },
+      { id: 2, projectId: 1, sourceSymbolId: 2, targetSymbolId: null, targetExternalName: "LegacyApi", targetKind: "external", dependencyType: "references", lineNumber: 22 }
+    );
 
     const symbolsPage = await getSymbolsPage({ projectId: 1, page: 2, pageSize: 10, search: "loaduser", kind: "procedure" }, 7);
     const fieldsPage = await getFieldsPage({ projectId: 1, page: 1, pageSize: 25, tableName: "ERP.SIGNB", search: "mark" }, 7);
     const risksPage = await getRisksPage({ projectId: 1, page: 1, pageSize: 25, severity: "high", search: "shared" }, 7);
+    const dependenciesPage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25, targetKind: "external", search: "legacy" }, 7);
+    const fieldDependenciesPage = await getFieldDependenciesPage({ projectId: 1, page: 1, pageSize: 25, tableName: "ERP.SIGNB", operationType: "write", search: "mark" }, 7);
 
     expect(symbolsPage.total).toBe(15);
     expect(symbolsPage.page).toBe(2);
@@ -442,6 +448,56 @@ describe("project workflow", () => {
     expect(symbolsPage.items[0]?.name).toContain("LoadUser");
     expect(fieldsPage.items).toEqual([expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2", writeCount: 1 })]);
     expect(risksPage.items).toEqual([expect.objectContaining({ title: "Shared risk", severity: "high" })]);
+    expect(dependenciesPage.items).toEqual([expect.objectContaining({ targetExternalName: "LegacyApi", targetKind: "external" })]);
+    expect(fieldDependenciesPage.items).toEqual([expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2", operationType: "write" })]);
+  });
+
+  it("recovers stale running jobs during server startup", async () => {
+    const { recoverStaleProjectJobsOnStartup } = await import("./projectWorkflow");
+    seedProject(1, { status: "analyzing", analysisProgress: 42 });
+    seedProject(2, { status: "ready", analysisProgress: 0 });
+    fakeDb.store.projectJobs.push(
+      {
+        id: 1,
+        projectId: 1,
+        userId: 7,
+        type: "analyze",
+        status: "running",
+        progress: 70,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        startedAt: new Date("2026-01-01T00:00:00.000Z"),
+        completedAt: null,
+      },
+      {
+        id: 2,
+        projectId: 2,
+        userId: 7,
+        type: "analyze",
+        status: "running",
+        progress: 20,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+        startedAt: new Date("2026-01-02T00:14:00.000Z"),
+        completedAt: null,
+      }
+    );
+
+    const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-02T00:16:00.000Z"), 15 * 60 * 1000);
+
+    expect(recovered).toBe(1);
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "failed",
+      errorCode: "PROJECT_JOB_STALE",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "failed",
+      lastErrorCode: "PROJECT_JOB_STALE",
+      analysisProgress: 0,
+    });
+    expect(fakeDb.store.projectJobs[1]).toMatchObject({ status: "running" });
   });
 
   it("creates async jobs, persists success/failure, and rejects duplicate analyze jobs", async () => {
