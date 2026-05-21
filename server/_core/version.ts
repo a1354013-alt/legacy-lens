@@ -6,7 +6,7 @@ let cachedCommitHash: string | null = null;
 
 function readPackageVersionFromDisk(): string | null {
   try {
-    const candidate = path.resolve(import.meta.dirname, "..", "..", "package.json");
+    const candidate = path.resolve(process.cwd(), "package.json");
     const raw = fs.readFileSync(candidate, "utf-8");
     const parsed = JSON.parse(raw) as { version?: unknown };
     return typeof parsed.version === "string" ? parsed.version : null;

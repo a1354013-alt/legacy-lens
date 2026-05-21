@@ -1,4 +1,4 @@
-import type { analysisResults, dependencies, fieldDependencies, fields, files, projects, risks, rules, symbols, users } from "../drizzle/schema";
+import type { analysisResults, dependencies, fieldDependencies, fields, files, projectJobs, projects, risks, rules, symbols, users } from "../drizzle/schema";
 import type { getDb } from "./db";
 
 export type UserRecord = typeof users.$inferSelect;
@@ -14,5 +14,6 @@ export type FieldDependencyRecord = typeof fieldDependencies.$inferSelect;
 export type RiskRecord = typeof risks.$inferSelect;
 export type RuleRecord = typeof rules.$inferSelect;
 export type AnalysisResultRecord = typeof analysisResults.$inferSelect;
+export type ProjectJobRecord = typeof projectJobs.$inferSelect;
 
 export type DatabaseClient = NonNullable<Awaited<ReturnType<typeof getDb>>>;

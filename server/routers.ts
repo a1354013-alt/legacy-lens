@@ -1,27 +1,46 @@
 import { COOKIE_NAME, MAX_ZIP_RAW_BYTES, formatBytes } from "@shared/const";
-import { focusLanguageSchema, projectSourceTypeSchema, type AnalysisStatus, type ProjectStatus } from "@shared/contracts";
+import {
+  dependenciesPageInputSchema,
+  fieldDependenciesPageInputSchema,
+  fieldsPageInputSchema,
+  focusLanguageSchema,
+  impactTargetTypeSchema,
+  projectSourceTypeSchema,
+  risksPageInputSchema,
+  rulesPageInputSchema,
+  symbolsPageInputSchema,
+  type AnalysisStatus,
+  type ProjectStatus,
+} from "@shared/contracts";
 import { TRPCError } from "@trpc/server";
 import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
-import { analysisResults, projects, risks, symbols } from "../drizzle/schema";
+import { analysisResults, projects } from "../drizzle/schema";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { AppError } from "./appError";
 import { getDb } from "./db";
 import {
-  analyzeProject,
   buildReportArchive,
   createProjectForUser,
   deleteProjectCascade,
   getAnalysisResult,
   getAnalysisSnapshot,
+  getDependenciesPage,
+  getFieldDependenciesPage,
+  getFieldsPage,
+  getLatestJobsByProjectIds,
   getOwnedProject,
-  importProjectGit,
-  importProjectZip,
+  getProjectJob,
+  getRisksPage,
+  getRulesPage,
+  getSymbolsPage,
+  queueAnalyzeProject,
+  queueImportProjectGit,
+  queueImportProjectZip,
   runImpactAnalysis,
 } from "./services/projectWorkflow";
-import { impactTargetTypeSchema } from "@shared/contracts";
 
 const projectIdSchema = z.number().int().positive();
 
@@ -70,6 +89,7 @@ function raiseAsTrpc(error: unknown): never {
     const codeMap: Record<AppError["code"], TRPCError["code"]> = {
       DATABASE_UNAVAILABLE: "INTERNAL_SERVER_ERROR",
       PROJECT_NOT_FOUND: "NOT_FOUND",
+      PROJECT_JOB_NOT_FOUND: "NOT_FOUND",
       INVALID_PROJECT_STATE: "BAD_REQUEST",
       INVALID_GIT_URL: "BAD_REQUEST",
       GIT_CLONE_FAILED: "BAD_REQUEST",
@@ -78,6 +98,7 @@ function raiseAsTrpc(error: unknown): never {
       IMPORT_FAILED: "BAD_REQUEST",
       ANALYSIS_FAILED: "BAD_REQUEST",
       REPORT_NOT_READY: "BAD_REQUEST",
+      REPORT_TOO_LARGE: "PAYLOAD_TOO_LARGE",
       DELETE_FAILED: "BAD_REQUEST",
     };
 
@@ -123,9 +144,12 @@ export const appRouter = router({
           .where(inArray(analysisResults.projectId, projectRows.map((project) => project.id)));
 
         const analysisStatusByProjectId = new Map(reportRows.map((row) => [row.projectId, row.status]));
+        const latestJobsByProjectId = await getLatestJobsByProjectIds(projectRows.map((project) => project.id), ctx.user.id);
+
         return projectRows.map((project) => ({
           ...project,
           analysisStatus: deriveProjectAnalysisStatus(project.status, analysisStatusByProjectId.get(project.id)),
+          latestJob: latestJobsByProjectId.get(project.id) ?? null,
         }));
       } catch (error) {
         raiseAsTrpc(error);
@@ -144,9 +168,12 @@ export const appRouter = router({
           .where(eq(analysisResults.projectId, input))
           .limit(1);
 
+        const latestJobsByProjectId = await getLatestJobsByProjectIds([input], ctx.user.id);
+
         return {
           ...project,
           analysisStatus: deriveProjectAnalysisStatus(project.status, report?.status),
+          latestJob: latestJobsByProjectId.get(input) ?? null,
         };
       } catch (error) {
         raiseAsTrpc(error);
@@ -178,14 +205,7 @@ export const appRouter = router({
 
     uploadFiles: protectedProcedure.input(uploadFilesSchema).mutation(async ({ ctx, input }) => {
       try {
-        const result = await importProjectZip(input.projectId, ctx.user.id, input.zipContent);
-        return {
-          success: true,
-          fileCount: result.files.length,
-          fileIds: result.fileIds,
-          files: result.files,
-          warnings: result.warnings,
-        };
+        return await queueImportProjectZip(input.projectId, ctx.user.id, input.zipContent);
       } catch (error) {
         raiseAsTrpc(error);
       }
@@ -193,14 +213,17 @@ export const appRouter = router({
 
     cloneGit: protectedProcedure.input(cloneGitSchema).mutation(async ({ ctx, input }) => {
       try {
-        const result = await importProjectGit(input.projectId, ctx.user.id, input.gitUrl);
-        return {
-          success: true,
-          fileCount: result.files.length,
-          fileIds: result.fileIds,
-          files: result.files,
-          warnings: result.warnings,
-        };
+        return await queueImportProjectGit(input.projectId, ctx.user.id, input.gitUrl);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+  }),
+
+  jobs: router({
+    getById: protectedProcedure.input(z.number().int().positive()).query(async ({ ctx, input }) => {
+      try {
+        return await getProjectJob(input, ctx.user.id);
       } catch (error) {
         raiseAsTrpc(error);
       }
@@ -210,14 +233,7 @@ export const appRouter = router({
   analysis: router({
     trigger: protectedProcedure.input(projectIdSchema).mutation(async ({ ctx, input }) => {
       try {
-        const result = await analyzeProject(input, ctx.user.id);
-        return {
-          success: true,
-          status: result.status,
-          riskScore: result.riskScore,
-          metrics: result.metrics,
-          warnings: result.warnings,
-        };
+        return await queueAnalyzeProject(input, ctx.user.id);
       } catch (error) {
         raiseAsTrpc(error);
       }
@@ -239,23 +255,49 @@ export const appRouter = router({
       }
     }),
 
-    getRisks: protectedProcedure.input(projectIdSchema).query(async ({ ctx, input }) => {
+    getSymbolsPage: protectedProcedure.input(symbolsPageInputSchema).query(async ({ ctx, input }) => {
       try {
-        const db = await getDb();
-        if (!db) return [];
-        await getOwnedProject(input, ctx.user.id);
-        return await db.select().from(risks).where(eq(risks.projectId, input)).orderBy(desc(risks.id));
+        return await getSymbolsPage(input, ctx.user.id);
       } catch (error) {
         raiseAsTrpc(error);
       }
     }),
 
-    getSymbols: protectedProcedure.input(projectIdSchema).query(async ({ ctx, input }) => {
+    getFieldsPage: protectedProcedure.input(fieldsPageInputSchema).query(async ({ ctx, input }) => {
       try {
-        const db = await getDb();
-        if (!db) return [];
-        await getOwnedProject(input, ctx.user.id);
-        return await db.select().from(symbols).where(eq(symbols.projectId, input)).orderBy(symbols.startLine);
+        return await getFieldsPage(input, ctx.user.id);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getRisksPage: protectedProcedure.input(risksPageInputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getRisksPage(input, ctx.user.id);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getRulesPage: protectedProcedure.input(rulesPageInputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getRulesPage(input, ctx.user.id);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getDependenciesPage: protectedProcedure.input(dependenciesPageInputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getDependenciesPage(input, ctx.user.id);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getFieldDependenciesPage: protectedProcedure.input(fieldDependenciesPageInputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getFieldDependenciesPage(input, ctx.user.id);
       } catch (error) {
         raiseAsTrpc(error);
       }
@@ -265,7 +307,6 @@ export const appRouter = router({
       .input(z.object({ projectId: projectIdSchema, format: z.literal("zip").default("zip") }))
       .query(async ({ ctx, input }) => {
         try {
-          // Deprecated: prefer GET /api/projects/:projectId/report.zip for binary ZIP downloads.
           return await buildReportArchive(input.projectId, ctx.user.id);
         } catch (error) {
           raiseAsTrpc(error);

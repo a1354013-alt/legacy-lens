@@ -1,60 +1,56 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, GitBranch, Loader2, Upload } from "lucide-react";
-import { focusLanguages, projectSourceTypes, type FocusLanguage, type ProjectSourceType } from "@shared/contracts";
+import {
+  focusLanguages,
+  projectJobStatusLabels,
+  projectJobTypeLabels,
+  projectStatusLabels,
+  type FocusLanguage,
+  type ProjectJobType,
+  type ProjectSourceType,
+} from "@shared/contracts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
 
-type WorkflowPhase = "idle" | "creating" | "importing" | "analyzing" | "redirecting";
-
-type ImportedFile = {
-  path: string;
-  fileName: string;
-  language: string;
-  size: number;
-};
-
-type ImportWarning = {
-  code: string;
-  message: string;
-  filePath?: string;
-};
+type WorkflowPhase = "idle" | "creating" | "waiting-import" | "waiting-analysis" | "redirecting";
 
 function getPhaseLabel(phase: WorkflowPhase) {
   switch (phase) {
     case "creating":
-      return "Creating project";
-    case "importing":
-      return "Importing source";
-    case "analyzing":
-      return "Running analysis";
+      return "建立專案";
+    case "waiting-import":
+      return "等待匯入完成";
+    case "waiting-analysis":
+      return "等待分析完成";
     case "redirecting":
-      return "Opening result";
+      return "開啟分析結果";
     default:
-      return "Waiting";
+      return "尚未開始";
   }
 }
 
 function getPhaseDescription(phase: WorkflowPhase) {
   switch (phase) {
     case "creating":
-      return "The server is creating a project record and reserving its identifier.";
-    case "importing":
-      return "The server is validating the source package and storing imported files.";
-    case "analyzing":
-      return "The analyzer is producing persisted artifacts. Results are heuristic and should be reviewed.";
+      return "正在建立專案紀錄。";
+    case "waiting-import":
+      return "匯入工作已送出，頁面會輪詢工作狀態，不會把整個流程綁在單一 HTTP request。";
+    case "waiting-analysis":
+      return "分析工作已送出，完成後會自動導向結果頁。";
     case "redirecting":
-      return "The latest persisted analysis result is ready and the UI is opening the report page.";
+      return "分析結果已完成，正在切換頁面。";
     default:
-      return "Fill out the form to start.";
+      return "填寫資料後即可開始。";
   }
 }
 
@@ -65,7 +61,7 @@ async function fileToBase64(file: File) {
       const value = typeof reader.result === "string" ? reader.result : "";
       resolve(value.split(",")[1] ?? value);
     };
-    reader.onerror = () => reject(new Error("Failed to read the selected file."));
+    reader.onerror = () => reject(new Error("讀取 ZIP 檔案失敗。"));
     reader.readAsDataURL(file);
   });
 }
@@ -80,14 +76,21 @@ export default function ImportProject() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<WorkflowPhase>("idle");
   const [projectId, setProjectId] = useState<number | null>(null);
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
+  const [activeJobType, setActiveJobType] = useState<ProjectJobType | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [importedFiles, setImportedFiles] = useState<ImportedFile[]>([]);
-  const [importWarnings, setImportWarnings] = useState<ImportWarning[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const analysisQueuedRef = useRef(false);
 
   const projectQuery = trpc.projects.getById.useQuery(projectId ?? -1, {
-    enabled: projectId !== null && phase !== "idle",
-    refetchInterval: phase === "idle" ? false : 1500,
+    enabled: projectId !== null,
+    refetchInterval: projectId !== null ? 1500 : false,
+    refetchOnWindowFocus: false,
+  });
+
+  const activeJobQuery = trpc.jobs.getById.useQuery(activeJobId ?? -1, {
+    enabled: activeJobId !== null,
+    refetchInterval: activeJobId !== null ? 1500 : false,
     refetchOnWindowFocus: false,
   });
 
@@ -97,72 +100,117 @@ export default function ImportProject() {
   const analyzeMutation = trpc.analysis.trigger.useMutation();
 
   const isBusy =
-    createProjectMutation.isPending ||
-    uploadFilesMutation.isPending ||
-    cloneGitMutation.isPending ||
-    analyzeMutation.isPending;
+    createProjectMutation.isPending || uploadFilesMutation.isPending || cloneGitMutation.isPending || analyzeMutation.isPending;
+
+  useEffect(() => {
+    const job = activeJobQuery.data;
+    if (!job || !projectId || !activeJobType) {
+      return;
+    }
+
+    if (job.status === "failed") {
+      const message = job.errorMessage ?? "工作執行失敗。";
+      setError(message);
+      setPhase("idle");
+      setActiveJobId(null);
+      setActiveJobType(null);
+      toast.error(message);
+      return;
+    }
+
+    if (job.status !== "completed") {
+      return;
+    }
+
+    if (activeJobType === "import_zip" || activeJobType === "import_git") {
+      if (analysisQueuedRef.current) {
+        return;
+      }
+
+      analysisQueuedRef.current = true;
+      setPhase("waiting-analysis");
+      void analyzeMutation
+        .mutateAsync(projectId)
+        .then((result) => {
+          setActiveJobId(result.jobId);
+          setActiveJobType("analyze");
+        })
+        .catch((caughtError) => {
+          const message = caughtError instanceof Error ? caughtError.message : "建立分析工作失敗。";
+          setError(message);
+          setPhase("idle");
+          setActiveJobId(null);
+          setActiveJobType(null);
+          analysisQueuedRef.current = false;
+          toast.error(message);
+        });
+      return;
+    }
+
+    if (activeJobType === "analyze") {
+      setPhase("redirecting");
+      toast.success("分析完成，正在開啟結果頁。");
+      setLocation(`/projects/${projectId}/analysis`);
+    }
+  }, [activeJobQuery.data, activeJobType, analyzeMutation, projectId, setLocation]);
 
   const validateForm = () => {
     if (!projectName.trim()) {
-      throw new Error("Project name is required.");
+      throw new Error("請輸入專案名稱。");
     }
     if (sourceType === "upload" && !uploadedFile) {
-      throw new Error("Please choose a ZIP archive.");
+      throw new Error("請選擇 ZIP 檔案。");
     }
     if (sourceType === "git" && !gitUrl.trim()) {
-      throw new Error("Repository URL is required.");
+      throw new Error("請輸入 Git 儲存庫網址。");
     }
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
+    analysisQueuedRef.current = false;
 
     try {
       validateForm();
       setPhase("creating");
 
-      const createResult = await createProjectMutation.mutateAsync({
+      const created = await createProjectMutation.mutateAsync({
         name: projectName.trim(),
         description: description.trim() || undefined,
         focusLanguage,
         sourceType,
       });
 
-      setProjectId(createResult.projectId);
-      setPhase("importing");
+      setProjectId(created.projectId);
+      setPhase("waiting-import");
 
-      const importResult =
+      const job =
         sourceType === "upload"
           ? await uploadFilesMutation.mutateAsync({
-              projectId: createResult.projectId,
+              projectId: created.projectId,
               zipContent: await fileToBase64(uploadedFile as File),
             })
           : await cloneGitMutation.mutateAsync({
-              projectId: createResult.projectId,
+              projectId: created.projectId,
               gitUrl: gitUrl.trim(),
             });
 
-      setImportedFiles(importResult.files);
-      setImportWarnings(importResult.warnings);
-      setPhase("analyzing");
-
-      const analysisResult = await analyzeMutation.mutateAsync(createResult.projectId);
-      setPhase("redirecting");
-
-      toast.success(
-        analysisResult.status === "partial"
-          ? "Analysis completed with warnings. Review the result before using it as source-of-truth."
-          : "Analysis completed."
-      );
-      setLocation(`/projects/${createResult.projectId}/analysis`);
+      setActiveJobId(job.jobId);
+      setActiveJobType(sourceType === "upload" ? "import_zip" : "import_git");
+      toast.success("匯入工作已送出。");
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : "Import failed.";
+      const message = caughtError instanceof Error ? caughtError.message : "建立專案失敗。";
       setError(message);
       setPhase("idle");
+      setActiveJobId(null);
+      setActiveJobType(null);
       toast.error(message);
     }
   };
+
+  const activeJob = activeJobQuery.data;
+  const latestJob = projectQuery.data?.latestJob ?? activeJob ?? null;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -170,11 +218,11 @@ export default function ImportProject() {
         <div className="mx-auto flex max-w-4xl items-center gap-4 px-6 py-4">
           <Button variant="ghost" onClick={() => setLocation("/")}>
             <ArrowLeft className="mr-2 size-4" />
-            Back to projects
+            返回專案列表
           </Button>
           <div>
-            <h1 className="text-2xl font-semibold text-slate-950">Create project</h1>
-            <p className="text-sm text-slate-600">Source import and analysis remain server-owned. This screen shows the current workflow phase rather than a fake percentage.</p>
+            <h1 className="text-2xl font-semibold text-slate-950">建立專案</h1>
+            <p className="text-sm text-slate-600">匯入與分析改為工作佇列執行，頁面只輪詢狀態，不會被單一 request 卡住。</p>
           </div>
         </div>
       </header>
@@ -182,75 +230,84 @@ export default function ImportProject() {
       <main className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-8">
         {error ? (
           <Alert variant="destructive">
-            <AlertTitle>Workflow failed</AlertTitle>
+            <AlertTitle>流程失敗</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
 
-        {phase !== "idle" ? (
+        {(phase !== "idle" || latestJob) && (
           <Card>
             <CardHeader>
               <CardTitle>{getPhaseLabel(phase)}</CardTitle>
               <CardDescription>{getPhaseDescription(phase)}</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3 text-sm text-slate-600">
-              <p>Server project status: {projectQuery.data?.status ?? "pending"}</p>
-              <p>Analysis status: {projectQuery.data?.analysisStatus ?? "pending"}</p>
-              {importedFiles.length > 0 ? <p>Imported files: {importedFiles.length}</p> : null}
-              {importWarnings.length > 0 ? <p>Import warnings: {importWarnings.length}</p> : null}
+            <CardContent className="space-y-4 text-sm text-slate-700">
+              <div className="grid gap-2 md:grid-cols-2">
+                <p>專案狀態：{projectQuery.data ? projectStatusLabels[projectQuery.data.status] : "讀取中"}</p>
+                <p>目前工作：{latestJob ? projectJobTypeLabels[latestJob.type] : "尚未建立"}</p>
+                <p>工作狀態：{latestJob ? projectJobStatusLabels[latestJob.status] : "尚未建立"}</p>
+                <p>進度：{latestJob ? `${latestJob.progress}%` : "0%"}</p>
+              </div>
+              <Progress value={latestJob?.progress ?? 0} />
+              {latestJob?.errorMessage ? <p className="text-red-600">{latestJob.errorMessage}</p> : null}
             </CardContent>
           </Card>
-        ) : null}
-
-        {importWarnings.length > 0 ? (
-          <Alert>
-            <AlertTitle>Some files were skipped during import</AlertTitle>
-            <AlertDescription>
-              {importWarnings
-                .slice(0, 5)
-                .map((warning) => `${warning.code}: ${warning.filePath ?? "(no file)"} - ${warning.message}`)
-                .join(" | ")}
-              {importWarnings.length > 5 ? " | (more warnings omitted)" : ""}
-            </AlertDescription>
-          </Alert>
-        ) : null}
+        )}
 
         <form className="space-y-6" onSubmit={handleSubmit}>
           <Card>
             <CardHeader>
-              <CardTitle>Import source</CardTitle>
-              <CardDescription>Choose the source type first, then provide the project metadata and import payload.</CardDescription>
+              <CardTitle>匯入來源</CardTitle>
+              <CardDescription>先選擇來源型態，再提供專案資訊與匯入內容。</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
-              {projectSourceTypes.map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => setSourceType(value)}
-                  className={`rounded-lg border p-4 text-left transition ${sourceType === value ? "border-slate-950 bg-slate-950 text-white" : "border-slate-200 bg-white text-slate-900 hover:border-slate-400"}`}
-                >
-                  <div className="mb-3 flex items-center gap-2">
-                    {value === "upload" ? <Upload className="size-5" /> : <GitBranch className="size-5" />}
-                    <span className="font-medium">{value === "upload" ? "ZIP upload" : "Git clone"}</span>
-                  </div>
-                  <p className={`text-sm ${sourceType === value ? "text-slate-100" : "text-slate-600"}`}>
-                    {value === "upload"
-                      ? "Upload a ZIP archive and let the server validate and persist supported source files."
-                      : "Clone a Git repository on the server and import supported source files."}
-                  </p>
-                </button>
-              ))}
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => setSourceType("upload")}
+                className={`rounded-lg border p-4 text-left transition ${
+                  sourceType === "upload"
+                    ? "border-slate-950 bg-slate-950 text-white"
+                    : "border-slate-200 bg-white text-slate-900 hover:border-slate-400"
+                }`}
+              >
+                <div className="mb-3 flex items-center gap-2">
+                  <Upload className="size-5" />
+                  <span className="font-medium">ZIP 上傳</span>
+                </div>
+                <p className={`text-sm ${sourceType === "upload" ? "text-slate-100" : "text-slate-600"}`}>
+                  上傳 ZIP 後由伺服器驗證、解壓、過濾檔案並建立匯入工作。
+                </p>
+              </button>
+
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => setSourceType("git")}
+                className={`rounded-lg border p-4 text-left transition ${
+                  sourceType === "git"
+                    ? "border-slate-950 bg-slate-950 text-white"
+                    : "border-slate-200 bg-white text-slate-900 hover:border-slate-400"
+                }`}
+              >
+                <div className="mb-3 flex items-center gap-2">
+                  <GitBranch className="size-5" />
+                  <span className="font-medium">Git 匯入</span>
+                </div>
+                <p className={`text-sm ${sourceType === "git" ? "text-slate-100" : "text-slate-600"}`}>
+                  在伺服器端 clone 儲存庫，建立可追蹤的匯入工作。
+                </p>
+              </button>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Project details</CardTitle>
+              <CardTitle>專案資訊</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="project-name">Project name</Label>
+                <Label htmlFor="project-name">專案名稱</Label>
                 <Input
                   id="project-name"
                   value={projectName}
@@ -261,18 +318,18 @@ export default function ImportProject() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="project-description">Description</Label>
+                <Label htmlFor="project-description">描述</Label>
                 <Textarea
                   id="project-description"
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
-                  placeholder="Optional context about the imported system or validation scope."
+                  placeholder="補充系統背景、驗收範圍或風險說明。"
                   disabled={isBusy}
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="project-language">Focus language</Label>
+                <Label htmlFor="project-language">焦點語言</Label>
                 <Select value={focusLanguage} onValueChange={(value) => setFocusLanguage(value as FocusLanguage)} disabled={isBusy}>
                   <SelectTrigger id="project-language">
                     <SelectValue />
@@ -285,9 +342,7 @@ export default function ImportProject() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-slate-500">
-                  Sets the default lens for navigation and summaries. Analysis still runs across all supported languages found in the import.
-                </p>
+                <p className="text-xs text-slate-500">這會影響預設摘要視角，但分析仍會涵蓋支援的原始檔類型。</p>
               </div>
             </CardContent>
           </Card>
@@ -295,8 +350,8 @@ export default function ImportProject() {
           {sourceType === "upload" ? (
             <Card>
               <CardHeader>
-                <CardTitle>Upload ZIP archive</CardTitle>
-                <CardDescription>The server accepts supported source files and skips ignored build or dependency directories. Delphi import includes .pas/.dpr/.delphi and related files such as .dfm, .inc, .dpk, and .fmx.</CardDescription>
+                <CardTitle>上傳 ZIP</CardTitle>
+                <CardDescription>伺服器會過濾不支援的建置或相依目錄，並保留匯入警告供後續檢視。</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <button
@@ -306,7 +361,7 @@ export default function ImportProject() {
                   className="flex w-full flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-sm text-slate-600 transition hover:border-slate-500"
                 >
                   <Upload className="size-8" />
-                  <span>{uploadedFile ? uploadedFile.name : "Choose a ZIP archive"}</span>
+                  <span>{uploadedFile ? uploadedFile.name : "選擇 ZIP 檔案"}</span>
                 </button>
                 <input
                   ref={fileInputRef}
@@ -333,16 +388,14 @@ export default function ImportProject() {
                     setUploadedFile(nextFile);
                   }}
                 />
-                <p className="text-xs text-slate-500">
-                  ZIP uploads are limited to {(MAX_UPLOAD_ZIP_SIZE / (1024 * 1024)).toFixed(0)}MB before base64 encoding.
-                </p>
+                <p className="text-xs text-slate-500">ZIP 原始檔上限 {(MAX_UPLOAD_ZIP_SIZE / (1024 * 1024)).toFixed(0)}MB。</p>
               </CardContent>
             </Card>
           ) : (
             <Card>
               <CardHeader>
-                <CardTitle>Git repository</CardTitle>
-                <CardDescription>Use an HTTP(S) or SSH repository URL that the server can clone directly.</CardDescription>
+                <CardTitle>Git 儲存庫</CardTitle>
+                <CardDescription>請輸入伺服器可直接 clone 的 Git URL。</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
                 <Label htmlFor="git-url">Repository URL</Label>
@@ -359,11 +412,11 @@ export default function ImportProject() {
 
           <div className="flex items-center gap-3">
             <Button type="button" variant="outline" onClick={() => setLocation("/")} disabled={isBusy}>
-              Cancel
+              取消
             </Button>
             <Button type="submit" disabled={isBusy}>
               {isBusy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-              Start import
+              建立並開始匯入
             </Button>
           </div>
         </form>

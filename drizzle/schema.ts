@@ -1,5 +1,20 @@
 import type { AnalysisMetrics, AnalysisWarning, ImportWarning } from "../shared/contracts";
-import { analysisStatuses, fileStatuses, focusLanguages, projectSourceTypes, projectStatuses } from "../shared/contracts";
+import {
+  analysisStatuses,
+  dependencyKinds,
+  dependencyTargetKinds,
+  fieldDependencyOperationTypes,
+  fileStatuses,
+  focusLanguages,
+  projectJobStatuses,
+  projectJobTypes,
+  projectSourceTypes,
+  projectStatuses,
+  riskSeverities,
+  riskTypes,
+  ruleTypes,
+  symbolKinds,
+} from "../shared/contracts";
 import { customType, index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 const mediumtext = customType<{ data: string }>({
@@ -78,7 +93,7 @@ export const symbols = mysqlTable(
     projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     fileId: int("fileId").notNull().references(() => files.id, { onDelete: "cascade", onUpdate: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
-    type: mysqlEnum("type", ["function", "procedure", "method", "query", "table", "class"]).notNull(),
+    type: mysqlEnum("type", symbolKinds).notNull(),
     startLine: int("startLine").notNull(),
     endLine: int("endLine").notNull(),
     signature: text("signature"),
@@ -103,8 +118,8 @@ export const dependencies = mysqlTable(
     sourceSymbolId: int("sourceSymbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
     targetSymbolId: int("targetSymbolId").references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
     targetExternalName: varchar("targetExternalName", { length: 255 }),
-    targetKind: mysqlEnum("targetKind", ["internal", "external", "unresolved"]).default("internal").notNull(),
-    dependencyType: mysqlEnum("dependencyType", ["calls", "reads", "writes", "references"]).notNull(),
+    targetKind: mysqlEnum("targetKind", dependencyTargetKinds).default("internal").notNull(),
+    dependencyType: mysqlEnum("dependencyType", dependencyKinds).notNull(),
     lineNumber: int("lineNumber"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -144,7 +159,7 @@ export const fieldDependencies = mysqlTable(
     projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
     fieldId: int("fieldId").notNull().references(() => fields.id, { onDelete: "cascade", onUpdate: "cascade" }),
     symbolId: int("symbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    operationType: mysqlEnum("operationType", ["read", "write", "calculate"]).notNull(),
+    operationType: mysqlEnum("operationType", fieldDependencyOperationTypes).notNull(),
     lineNumber: int("lineNumber"),
     context: text("context"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -164,15 +179,8 @@ export const risks = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    riskType: mysqlEnum("riskType", [
-      "magic_value",
-      "multiple_writes",
-      "missing_condition",
-      "format_conversion",
-      "inconsistent_logic",
-      "other",
-    ]).notNull(),
-    severity: mysqlEnum("severity", ["low", "medium", "high", "critical"]).notNull(),
+    riskType: mysqlEnum("riskType", riskTypes).notNull(),
+    severity: mysqlEnum("severity", riskSeverities).notNull(),
     title: varchar("title", { length: 255 }).notNull(),
     description: text("description"),
     sourceFile: varchar("sourceFile", { length: 512 }),
@@ -194,7 +202,7 @@ export const rules = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    ruleType: mysqlEnum("ruleType", ["validation", "format", "magic_value", "calculation"]).notNull(),
+    ruleType: mysqlEnum("ruleType", ruleTypes).notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
     condition: text("condition"),
@@ -209,6 +217,31 @@ export const rules = mysqlTable(
 
 export type Rule = typeof rules.$inferSelect;
 export type InsertRule = typeof rules.$inferInsert;
+
+export const projectJobs = mysqlTable(
+  "projectJobs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    type: mysqlEnum("type", projectJobTypes).notNull(),
+    status: mysqlEnum("status", projectJobStatuses).default("queued").notNull(),
+    progress: int("progress").default(0).notNull(),
+    errorCode: varchar("errorCode", { length: 64 }),
+    errorMessage: text("errorMessage"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    startedAt: timestamp("startedAt"),
+    completedAt: timestamp("completedAt"),
+  },
+  (table) => ({
+    projectIdIdx: index("projectJobs_projectId_idx").on(table.projectId),
+    userIdIdx: index("projectJobs_userId_idx").on(table.userId),
+    statusIdx: index("projectJobs_status_idx").on(table.status),
+  })
+);
+
+export type ProjectJob = typeof projectJobs.$inferSelect;
+export type InsertProjectJob = typeof projectJobs.$inferInsert;
 
 export const analysisResults = mysqlTable(
   "analysisResults",

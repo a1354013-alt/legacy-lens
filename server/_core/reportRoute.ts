@@ -5,12 +5,13 @@ import { createRateLimiter } from "./rateLimiter";
 import { sdk } from "./sdk";
 
 function sendAppError(res: Response, error: AppError) {
-  const status = error.code === "PROJECT_NOT_FOUND" ? 404 : error.code === "REPORT_NOT_READY" ? 409 : 400;
+  const status =
+    error.code === "PROJECT_NOT_FOUND" ? 404 : error.code === "REPORT_NOT_READY" ? 409 : error.code === "REPORT_TOO_LARGE" ? 413 : 400;
   res.status(status).json({ error: error.message, code: error.code });
 }
 
 export function registerReportDownloadRoute(app: Express) {
-  app.get("/api/projects/:projectId/report.zip", createRateLimiter("report"), async (req: Request, res: Response) => {
+  app.get("/api/projects/:projectId/report.zip", createRateLimiter("heavyRead"), async (req: Request, res: Response) => {
     const projectId = Number(req.params.projectId);
     if (!Number.isInteger(projectId) || projectId <= 0) {
       res.status(400).json({ error: "Project id must be a positive integer.", code: "INVALID_PROJECT_STATE" });

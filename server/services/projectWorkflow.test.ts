@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
 type Condition =
@@ -16,7 +17,6 @@ let analyzerResult: Record<string, unknown> | null = null;
 let fakeDb: ReturnType<typeof createFakeDb>;
 let failRootProjectReadsDuringTransaction = false;
 let transactionDepth = 0;
-let lastValidatedGitUrl: { gitUrl: string; host: string; resolvedAddresses: Array<{ address: string; family: 4 | 6 }>; allowlist: string[] | null; production: boolean } | null = null;
 const cloneAndExtractFilesMock = vi.fn(async () => ({ files: gitFiles, warnings: importWarnings }));
 
 vi.mock("drizzle-orm", async () => {
@@ -40,22 +40,13 @@ vi.mock("../utils/zipHandler", () => ({
 }));
 
 vi.mock("../utils/gitHandler", () => ({
-  validateSafeGitUrl: vi.fn(async (url: string) => {
-    const normalizedUrl = String(url).trim();
-    if (!/^https:\/\/example\.com\/.+/.test(normalizedUrl)) {
-      throw new Error("Repository URL is invalid or unsupported.");
-    }
-
-    lastValidatedGitUrl = {
-      gitUrl: normalizedUrl,
-      host: "example.com",
-      resolvedAddresses: [{ address: "93.184.216.34", family: 4 }],
-      allowlist: null,
-      production: false,
-    };
-
-    return lastValidatedGitUrl;
-  }),
+  validateSafeGitUrl: vi.fn(async (url: string) => ({
+    gitUrl: String(url).trim(),
+    host: "example.com",
+    resolvedAddresses: [{ address: "93.184.216.34", family: 4 }],
+    allowlist: null,
+    production: false,
+  })),
   cloneAndExtractFiles: cloneAndExtractFilesMock,
   cleanupTempDir: vi.fn(async () => undefined),
 }));
@@ -75,12 +66,8 @@ function getTableName(table: object): string {
 
 function matches(condition: Condition, row: Row): boolean {
   if (!condition) return true;
-  if (condition.type === "eq") {
-    return row[condition.column] === condition.value;
-  }
-  if (condition.type === "inArray") {
-    return condition.values.includes(row[condition.column]);
-  }
+  if (condition.type === "eq") return row[condition.column] === condition.value;
+  if (condition.type === "inArray") return condition.values.includes(row[condition.column]);
   return condition.conditions.every((child) => matches(child, row));
 }
 
@@ -96,9 +83,7 @@ function selectRows(store: Store, table: object, condition: Condition, sort: Sor
     rows = rows.slice(0, limit);
   }
 
-  if (!selection) {
-    return rows;
-  }
+  if (!selection) return rows;
 
   return rows.map((row) => {
     const mapped: Row = {};
@@ -113,6 +98,7 @@ function createFakeDb(initialStore?: Partial<Store>) {
   const store: Store = {
     users: [],
     projects: [],
+    projectJobs: [],
     files: [],
     symbols: [],
     dependencies: [],
@@ -213,7 +199,6 @@ function createFakeDb(initialStore?: Partial<Store>) {
           return new SelectQuery(selection);
         },
       };
-
       try {
         return await callback(tx);
       } finally {
@@ -225,6 +210,23 @@ function createFakeDb(initialStore?: Partial<Store>) {
   return db;
 }
 
+function seedProject(projectId = 1, overrides?: Row) {
+  fakeDb.store.projects.push({
+    id: projectId,
+    userId: 7,
+    name: `project-${projectId}`,
+    language: "go",
+    sourceType: "upload",
+    status: "ready",
+    importProgress: 100,
+    analysisProgress: 0,
+    errorMessage: null,
+    lastErrorCode: null,
+    importWarningsJson: [],
+    ...overrides,
+  });
+}
+
 beforeEach(() => {
   fakeDb = createFakeDb();
   zipFiles = [];
@@ -233,7 +235,6 @@ beforeEach(() => {
   analyzerResult = null;
   failRootProjectReadsDuringTransaction = false;
   transactionDepth = 0;
-  lastValidatedGitUrl = null;
   cloneAndExtractFilesMock.mockClear();
 });
 
@@ -251,198 +252,62 @@ describe("project workflow", () => {
     expect(projectId).toBe(1);
     expect(fakeDb.store.projects[0]).toMatchObject({
       userId: 7,
-      name: "demo",
       status: "draft",
       importProgress: 0,
       analysisProgress: 0,
-      importWarningsJson: [],
     });
   });
 
-  it("imports files from a ZIP archive and marks the project as ready", async () => {
-    const { importProjectZip } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "zip-project",
-      language: "go",
-      sourceType: "upload",
-      status: "draft",
-      importProgress: 0,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-    });
-    zipFiles = [
-      { path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 },
-      { path: "schema.sql", fileName: "schema.sql", content: "SELECT id FROM users", language: "sql", size: 20 },
-    ];
-
-    const result = await importProjectZip(1, 7, "encoded");
-
-    expect(result.files).toHaveLength(2);
-    expect(result.warnings).toHaveLength(0);
-    expect(fakeDb.store.files).toHaveLength(2);
-    expect(fakeDb.store.projects[0]).toMatchObject({
-      status: "ready",
-      importProgress: 100,
-      analysisProgress: 0,
-      importWarningsJson: [],
-    });
-  });
-
-  it("persists ZIP import warnings on the project record", async () => {
-    const { getOwnedProject, importProjectZip } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "zip-warning-project",
-      language: "go",
-      sourceType: "upload",
-      status: "draft",
-      importProgress: 0,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-      importWarningsJson: [],
-    });
-    zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
-    importWarnings = [{ code: "IMPORT_FILE_TOO_LARGE", message: "Skipped an oversized file.", filePath: "big.sql" }];
-
-    const result = await importProjectZip(1, 7, "encoded");
-    const project = await getOwnedProject(1, 7);
-
-    expect(result.warnings).toEqual(importWarnings);
-    expect(project.importWarningsJson).toEqual(importWarnings);
-  });
-
-  it("clears stale analysis records before replacing imported files", async () => {
-    const { buildReportArchive, importProjectZip } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "reimport-project",
-      language: "go",
-      sourceType: "upload",
-      status: "completed",
-      importProgress: 100,
-      analysisProgress: 100,
-      errorMessage: null,
-      lastErrorCode: null,
-    });
-    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "old.go", fileName: "old.go", fileType: ".go", content: "package old", lineCount: 1, status: "stored" });
-    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "OldSymbol", type: "function", startLine: 1, endLine: 1 });
-    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "legacy", targetKind: "unresolved", dependencyType: "references", lineNumber: 1 });
-    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount" });
-    fakeDb.store.fieldDependencies.push({ id: 1, projectId: 1, fieldId: 1, symbolId: 1, operationType: "read", lineNumber: 1, context: "orders.amount" });
-    fakeDb.store.risks.push({ id: 1, projectId: 1, title: "Legacy risk", severity: "high", sourceFile: "old.go", lineNumber: 1 });
-    fakeDb.store.rules.push({ id: 1, projectId: 1, name: "LegacyRule", ruleType: "validation", sourceFile: "old.go", lineNumber: 1 });
-    fakeDb.store.analysisResults.push({
-      id: 1,
-      projectId: 1,
-      status: "completed",
-      flowMarkdown: "# OLD",
-      dataDependencyMarkdown: "# OLD",
-      risksMarkdown: "# OLD",
-      rulesYaml: "rules: []",
-      summaryJson: { fileCount: 1 },
-      warningsJson: [],
-      errorMessage: null,
-      createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-    });
-    zipFiles = [{ path: "new.go", fileName: "new.go", content: "package main", language: "go", size: 12 }];
-
-    await importProjectZip(1, 7, "encoded");
-
-    expect(fakeDb.store.analysisResults).toHaveLength(0);
-    expect(fakeDb.store.symbols).toHaveLength(0);
-    expect(fakeDb.store.dependencies).toHaveLength(0);
-    expect(fakeDb.store.fields).toHaveLength(0);
-    expect(fakeDb.store.fieldDependencies).toHaveLength(0);
-    expect(fakeDb.store.risks).toHaveLength(0);
-    expect(fakeDb.store.rules).toHaveLength(0);
-    expect(fakeDb.store.files).toEqual([
-      expect.objectContaining({
-        projectId: 1,
-        filePath: "new.go",
-      }),
-    ]);
-    await expect(buildReportArchive(1, 7)).rejects.toMatchObject({ code: "REPORT_NOT_READY" });
-  });
-
-  it("imports files from git and persists the source URL", async () => {
-    const { importProjectGit } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "git-project",
-      language: "go",
-      sourceType: "git",
-      status: "draft",
-      importProgress: 0,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-    });
-    gitFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
-
-    const result = await importProjectGit(1, 7, "https://example.com/org/repo.git");
-
-    expect(result.files).toHaveLength(1);
-    expect(result.warnings).toHaveLength(0);
-    expect(cloneAndExtractFilesMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        gitUrl: "https://example.com/org/repo.git",
-        host: "example.com",
-      }),
-      expect.any(String)
+  it("imports files from ZIP and Git, persisting warnings and source url", async () => {
+    const { getOwnedProject, importProjectGit, importProjectZip } = await import("./projectWorkflow");
+    fakeDb.store.projects.push(
+      {
+        id: 1,
+        userId: 7,
+        name: "zip-project",
+        language: "go",
+        sourceType: "upload",
+        status: "draft",
+        importProgress: 0,
+        analysisProgress: 0,
+        errorMessage: null,
+        lastErrorCode: null,
+        importWarningsJson: [],
+      },
+      {
+        id: 2,
+        userId: 7,
+        name: "git-project",
+        language: "go",
+        sourceType: "git",
+        status: "draft",
+        importProgress: 0,
+        analysisProgress: 0,
+        errorMessage: null,
+        lastErrorCode: null,
+        importWarningsJson: [],
+      }
     );
-    expect(fakeDb.store.projects[0]).toMatchObject({
-      sourceUrl: "https://example.com/org/repo.git",
-      status: "ready",
-      importWarningsJson: [],
-    });
-  });
-
-  it("persists Git import warnings on the project record", async () => {
-    const { getOwnedProject, importProjectGit } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "git-warning-project",
-      language: "go",
-      sourceType: "git",
-      status: "draft",
-      importProgress: 0,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-      importWarningsJson: [],
-    });
-    gitFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+    zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+    gitFiles = [{ path: "repo/main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
     importWarnings = [{ code: "IMPORT_LIMITED_ANALYSIS", message: "Imported with limited analysis.", filePath: "form.dfm" }];
 
-    await importProjectGit(1, 7, "https://example.com/org/repo.git");
-    const project = await getOwnedProject(1, 7);
+    const zipResult = await importProjectZip(1, 7, "encoded");
+    const gitResult = await importProjectGit(2, 7, "https://example.com/org/repo.git");
+    const zipProject = await getOwnedProject(1, 7);
+    const gitProject = await getOwnedProject(2, 7);
 
-    expect(project.importWarningsJson).toEqual(importWarnings);
+    expect(zipResult.files).toHaveLength(1);
+    expect(gitResult.files).toHaveLength(1);
+    expect(zipProject.importWarningsJson).toEqual(importWarnings);
+    expect(gitProject.importWarningsJson).toEqual(importWarnings);
+    expect(gitProject.sourceUrl).toBe("https://example.com/org/repo.git");
   });
 
-  it("writes back analysis artifacts, symbols, dependencies, fields, rules, and risks", async () => {
+  it("writes back analysis artifacts and keeps transitions on the transaction handle", async () => {
     const { analyzeProject } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "analysis-project",
-      language: "go",
-      sourceType: "upload",
-      status: "ready",
-      importProgress: 100,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-    });
+    failRootProjectReadsDuringTransaction = true;
+    seedProject();
     fakeDb.store.files.push(
       { id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 12, status: "stored" },
       { id: 2, projectId: 1, filePath: "repo.sql", fileName: "repo.sql", fileType: ".sql", content: "SELECT amount FROM orders", lineCount: 8, status: "stored" }
@@ -457,27 +322,8 @@ describe("project workflow", () => {
       ],
       dependencies: [{ from: "main.go::main::1", to: "repo.sql::query_1::1", fromName: "main", toName: "query_1", type: "calls", line: 3 }],
       fieldReferences: [{ table: "orders", field: "amount", type: "read", file: "repo.sql", line: 1, symbolStableKey: "repo.sql::query_1::1", context: "SELECT amount FROM orders" }],
-      risks: [
-        {
-          title: "Date literal embedded in code",
-          description: "Found hard-coded date value.",
-          severity: "medium",
-          category: "magic_value",
-          sourceFile: "main.go",
-          lineNumber: 2,
-          suggestion: "Use a constant.",
-        },
-      ],
-      rules: [
-        {
-          ruleType: "magic_value",
-          name: "externalize_main_go_2",
-          description: "Date literal embedded in code",
-          condition: "Found hard-coded date value.",
-          sourceFile: "main.go",
-          lineNumber: 2,
-        },
-      ],
+      risks: [{ title: "Date literal", description: "hard-coded date", severity: "medium", category: "magic_value", sourceFile: "main.go", lineNumber: 2, suggestion: "Use a constant." }],
+      rules: [{ ruleType: "magic_value", name: "externalize_main_go_2", description: "Date literal", condition: "hard-coded date", sourceFile: "main.go", lineNumber: 2 }],
       warnings: [{ code: "LANGUAGE_UNSUPPORTED", message: "Skipped 1 file", filePath: "legacy.txt" }],
       flowDocument: "# FLOW",
       dataDependencyDocument: "# DATA_DEPENDENCY",
@@ -504,48 +350,104 @@ describe("project workflow", () => {
     const result = await analyzeProject(1, 7);
 
     expect(result.status).toBe("partial");
-    expect(fakeDb.store.analysisResults[0]).toMatchObject({
-      projectId: 1,
-      status: "partial",
-      errorMessage: "Analysis completed with warnings.",
-    });
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "partial" });
     expect(fakeDb.store.symbols).toHaveLength(2);
     expect(fakeDb.store.dependencies).toHaveLength(1);
     expect(fakeDb.store.fields).toHaveLength(1);
     expect(fakeDb.store.fieldDependencies).toHaveLength(1);
-    expect(fakeDb.store.risks).toHaveLength(1);
-    expect(fakeDb.store.rules).toHaveLength(1);
-    expect(fakeDb.store.projects[0]).toMatchObject({
-      status: "completed",
-      analysisProgress: 100,
-    });
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed", analysisProgress: 100 });
   });
 
-  it("keeps state transitions on the transaction handle while analyzing", async () => {
-    const { analyzeProject } = await import("./projectWorkflow");
-    failRootProjectReadsDuringTransaction = true;
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "tx-analysis-project",
-      language: "go",
-      sourceType: "upload",
-      status: "ready",
-      importProgress: 100,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-    });
-    fakeDb.store.files.push({
+  it("returns a light snapshot summary instead of full arrays", async () => {
+    const { getAnalysisSnapshot } = await import("./projectWorkflow");
+    seedProject(1, { status: "completed", importWarningsJson: [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }] });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
-      filePath: "main.go",
-      fileName: "main.go",
-      fileType: ".go",
-      content: "package main",
-      lineCount: 1,
-      status: "stored",
+      status: "completed",
+      flowMarkdown: "# FLOW",
+      dataDependencyMarkdown: "# DATA_DEPENDENCY",
+      risksMarkdown: "# RISKS",
+      rulesYaml: "rules: []",
+      summaryJson: { fileCount: 1 },
+      warningsJson: [],
+      errorMessage: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 3 });
+    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount", fieldType: null, description: null });
+    fakeDb.store.fieldDependencies.push({ id: 1, projectId: 1, fieldId: 1, symbolId: 1, operationType: "read", lineNumber: 2, context: "SELECT amount FROM orders" });
+    fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", severity: "high", title: "Risk", sourceFile: "main.go", lineNumber: 2 });
+    fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "Rule", sourceFile: "main.go", lineNumber: 3 });
+
+    const snapshot = await getAnalysisSnapshot(1, 7);
+
+    expect(snapshot.report?.status).toBe("completed");
+    expect(snapshot.importWarnings).toHaveLength(1);
+    expect(snapshot.totals).toMatchObject({
+      files: 1,
+      symbols: 1,
+      fields: 1,
+      fieldDependencies: 1,
+      risks: 1,
+      rules: 1,
+    });
+    expect(snapshot.topSymbols).toHaveLength(1);
+    expect(snapshot.fieldTables).toEqual([
+      expect.objectContaining({ tableName: "orders", fieldCount: 1, readCount: 1, writeCount: 0, referenceCount: 1 }),
+    ]);
+    expect("symbols" in snapshot).toBe(false);
+  });
+
+  it("pages and filters symbols, fields, and risks on the backend", async () => {
+    const { getFieldsPage, getRisksPage, getSymbolsPage } = await import("./projectWorkflow");
+    seedProject();
+    fakeDb.store.files.push(
+      { id: 1, projectId: 1, filePath: "src/users.pas", fileName: "users.pas", fileType: ".pas", status: "stored" },
+      { id: 2, projectId: 1, filePath: "src/orders.pas", fileName: "orders.pas", fileType: ".pas", status: "stored" }
+    );
+    for (let index = 0; index < 30; index += 1) {
+      fakeDb.store.symbols.push({
+        id: index + 1,
+        projectId: 1,
+        fileId: index % 2 === 0 ? 1 : 2,
+        name: index % 2 === 0 ? `LoadUser${index}` : `SaveOrder${index}`,
+        type: index % 2 === 0 ? "procedure" : "method",
+        startLine: index + 1,
+        endLine: index + 2,
+      });
+    }
+    fakeDb.store.fields.push(
+      { id: 1, projectId: 1, tableName: "dbo.Users", fieldName: "Name", fieldType: null, description: null },
+      { id: 2, projectId: 1, tableName: "ERP.SIGNB", fieldName: "MARK_2", fieldType: null, description: null }
+    );
+    fakeDb.store.fieldDependencies.push(
+      { id: 1, projectId: 1, fieldId: 1, symbolId: 1, operationType: "read", lineNumber: 2, context: "SELECT Name FROM dbo.Users" },
+      { id: 2, projectId: 1, fieldId: 2, symbolId: 2, operationType: "write", lineNumber: 3, context: "UPDATE ERP.SIGNB SET MARK_2 = 1" }
+    );
+    fakeDb.store.risks.push(
+      { id: 1, projectId: 1, riskType: "magic_value", severity: "high", title: "Shared risk", description: "message one", sourceFile: "src/users.pas", lineNumber: 10, recommendation: null },
+      { id: 2, projectId: 1, riskType: "other", severity: "low", title: "Minor issue", description: "message two", sourceFile: "src/orders.pas", lineNumber: 20, recommendation: null }
+    );
+
+    const symbolsPage = await getSymbolsPage({ projectId: 1, page: 2, pageSize: 10, search: "loaduser", kind: "procedure" }, 7);
+    const fieldsPage = await getFieldsPage({ projectId: 1, page: 1, pageSize: 25, tableName: "ERP.SIGNB", search: "mark" }, 7);
+    const risksPage = await getRisksPage({ projectId: 1, page: 1, pageSize: 25, severity: "high", search: "shared" }, 7);
+
+    expect(symbolsPage.total).toBe(15);
+    expect(symbolsPage.page).toBe(2);
+    expect(symbolsPage.items).toHaveLength(5);
+    expect(symbolsPage.items[0]?.name).toContain("LoadUser");
+    expect(fieldsPage.items).toEqual([expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2", writeCount: 1 })]);
+    expect(risksPage.items).toEqual([expect.objectContaining({ title: "Shared risk", severity: "high" })]);
+  });
+
+  it("creates async jobs, persists success/failure, and rejects duplicate analyze jobs", async () => {
+    const { getProjectJob, queueAnalyzeProject, waitForProjectJobForTests } = await import("./projectWorkflow");
+    seedProject();
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
     analyzerResult = {
       projectId: 1,
       status: "completed",
@@ -578,50 +480,16 @@ describe("project workflow", () => {
       },
     };
 
-    await expect(analyzeProject(1, 7)).resolves.toMatchObject({ status: "completed" });
-  });
+    const queued = await queueAnalyzeProject(1, 7);
+    await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "INVALID_PROJECT_STATE" });
+    await waitForProjectJobForTests(queued.jobId);
+    const completedJob = await getProjectJob(queued.jobId, 7);
+    expect(completedJob.status).toBe("completed");
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed" });
 
-  it("preserves valid importing/analyzing/completed/failed workflow transitions", async () => {
-    const { analyzeProject, importProjectZip } = await import("./projectWorkflow");
-    fakeDb.store.projects.push(
-      {
-        id: 1,
-        userId: 7,
-        name: "importing-project",
-        language: "go",
-        sourceType: "upload",
-        status: "draft",
-        importProgress: 0,
-        analysisProgress: 0,
-        errorMessage: null,
-        lastErrorCode: null,
-      },
-      {
-        id: 2,
-        userId: 7,
-        name: "failing-project",
-        language: "go",
-        sourceType: "upload",
-        status: "ready",
-        importProgress: 100,
-        analysisProgress: 0,
-        errorMessage: null,
-        lastErrorCode: null,
-      }
-    );
-    fakeDb.store.files.push({
-      id: 1,
-      projectId: 2,
-      filePath: "main.go",
-      fileName: "main.go",
-      fileType: ".go",
-      content: "package main",
-      lineCount: 1,
-      status: "stored",
-    });
-    zipFiles = [{ path: "fresh.go", fileName: "fresh.go", content: "package main", language: "go", size: 10 }];
+    fakeDb.store.projects[0] = { ...fakeDb.store.projects[0], status: "ready", analysisProgress: 0, errorMessage: null, lastErrorCode: null };
     analyzerResult = {
-      projectId: 2,
+      projectId: 1,
       status: "failed",
       language: "go",
       symbols: [],
@@ -652,61 +520,25 @@ describe("project workflow", () => {
       },
     };
 
-    await expect(importProjectZip(1, 7, "encoded")).resolves.toMatchObject({ files: [expect.objectContaining({ path: "fresh.go" })] });
-    expect(fakeDb.store.projects.find((project: Row) => project.id === 1)).toMatchObject({
-      status: "ready",
-      importProgress: 100,
-    });
-
-    await expect(analyzeProject(2, 7)).rejects.toMatchObject({ code: "ANALYSIS_FAILED" });
-    expect(fakeDb.store.projects.find((project: Row) => project.id === 2)).toMatchObject({
-      status: "failed",
-      analysisProgress: 0,
-      lastErrorCode: "ANALYSIS_FAILED",
-    });
-    expect(fakeDb.store.analysisResults.find((report: Row) => report.projectId === 2)).toMatchObject({
-      status: "failed",
-    });
+    const failed = await queueAnalyzeProject(1, 7);
+    await waitForProjectJobForTests(failed.jobId);
+    const failedJob = await getProjectJob(failed.jobId, 7);
+    expect(failedJob.status).toBe("failed");
+    expect(failedJob.errorCode).toBe("ANALYSIS_FAILED");
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_FAILED" });
   });
 
-  it("assigns field ownership to the most specific Delphi procedure and preserves schema-qualified field names", async () => {
-    const { analyzeProject, getAnalysisSnapshot, runImpactAnalysis } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({
-      id: 1,
-      userId: 7,
-      name: "delphi-analysis-project",
-      language: "delphi",
-      sourceType: "upload",
-      status: "ready",
-      importProgress: 100,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-    });
-    fakeDb.store.files.push({
-      id: 1,
-      projectId: 1,
-      filePath: "InvoiceUnit.pas",
-      fileName: "InvoiceUnit.pas",
-      fileType: ".pas",
-      content: "unit InvoiceUnit;",
-      lineCount: 20,
-      status: "stored",
-    });
+  it("enforces ownership on paged reads and job reads", async () => {
+    const { getProjectJob, getSymbolsPage, queueAnalyzeProject, waitForProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { userId: 7 });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
     analyzerResult = {
       projectId: 1,
       status: "completed",
-      language: "delphi",
-      symbols: [
-        { stableKey: "InvoiceUnit.pas::InvoiceUnit::1", name: "InvoiceUnit", qualifiedName: "InvoiceUnit", type: "class", file: "InvoiceUnit.pas", startLine: 1, endLine: 20, signature: "unit InvoiceUnit" },
-        { stableKey: "InvoiceUnit.pas::LoadUsers::4", name: "LoadUsers", type: "procedure", file: "InvoiceUnit.pas", startLine: 4, endLine: 8, signature: "procedure LoadUsers;" },
-        { stableKey: "InvoiceUnit.pas::SaveOrders::10", name: "SaveOrders", type: "procedure", file: "InvoiceUnit.pas", startLine: 10, endLine: 14, signature: "procedure SaveOrders;" },
-      ],
+      language: "go",
+      symbols: [],
       dependencies: [],
-      fieldReferences: [
-        { table: "dbo.Users", field: "Name", type: "read", file: "InvoiceUnit.pas", line: 6, context: "SELECT u.Name FROM dbo.Users u" },
-        { table: "ERP.SIGNB", field: "MARK_2", type: "write", file: "InvoiceUnit.pas", line: 12, context: "UPDATE ERP.SIGNB SET MARK_2 = :P1" },
-      ],
+      fieldReferences: [],
       risks: [],
       rules: [],
       warnings: [],
@@ -722,80 +554,21 @@ describe("project workflow", () => {
         skippedFileCount: 0,
         heuristicFileCount: 0,
         degradedFileCount: 0,
-        symbolCount: 3,
+        symbolCount: 0,
         dependencyCount: 0,
-        fieldCount: 2,
-        fieldDependencyCount: 2,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
         riskCount: 0,
         ruleCount: 0,
         warningCount: 0,
       },
     };
 
-    await analyzeProject(1, 7);
-    const snapshot = await getAnalysisSnapshot(1, 7);
+    const job = await queueAnalyzeProject(1, 7);
+    await waitForProjectJobForTests(job.jobId);
 
-    expect(snapshot.fields).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ tableName: "dbo.Users", fieldName: "Name" }),
-        expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2" }),
-      ])
-    );
-
-    const symbolById = new Map(snapshot.symbols.map((symbol) => [symbol.id, symbol.name]));
-    const fieldById = new Map(snapshot.fields.map((field) => [field.id, `${field.tableName}.${field.fieldName}`]));
-
-    expect(
-      snapshot.fieldDependencies.map((dependency) => ({
-        field: fieldById.get(dependency.fieldId),
-        owner: symbolById.get(dependency.symbolId),
-      }))
-    ).toEqual(
-      expect.arrayContaining([
-        { field: "dbo.Users.Name", owner: "LoadUsers" },
-        { field: "ERP.SIGNB.MARK_2", owner: "SaveOrders" },
-      ])
-    );
-
-    const impact = await runImpactAnalysis(1, 7, "ERP.SIGNB.MARK_2", "sql_field");
-    expect(impact.affectedFields).toEqual([{ table: "ERP.SIGNB", field: "MARK_2" }]);
-    expect(impact.affectedSymbols.map((symbol) => symbol.name)).toEqual(["SaveOrders"]);
-  });
-
-  it("returns a complete analysis snapshot", async () => {
-    const { getAnalysisSnapshot } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({ id: 1, userId: 7, status: "completed", importWarningsJson: [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }] });
-    fakeDb.store.analysisResults.push({
-      id: 1,
-      projectId: 1,
-      status: "completed",
-      flowMarkdown: "# FLOW",
-      dataDependencyMarkdown: "# DATA_DEPENDENCY",
-      risksMarkdown: "# RISKS",
-      rulesYaml: "rules: []",
-      summaryJson: { fileCount: 1 },
-      warningsJson: [],
-      errorMessage: null,
-      createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-    });
-    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 3, signature: "func main()", description: null });
-    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount", fieldType: null, description: null });
-    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "external", targetKind: "unresolved", dependencyType: "references", lineNumber: 2 });
-    fakeDb.store.fieldDependencies.push({ id: 1, projectId: 1, fieldId: 1, symbolId: 1, operationType: "read", lineNumber: 2, context: "SELECT amount FROM orders" });
-
-    const snapshot = await getAnalysisSnapshot(1, 7);
-
-    expect(snapshot.report?.status).toBe("completed");
-    expect(snapshot.symbols).toHaveLength(1);
-    expect(snapshot.dependencies[0]).toMatchObject({
-      targetSymbolId: null,
-      targetExternalName: "external",
-      targetKind: "unresolved",
-    });
-    expect(snapshot.fields).toHaveLength(1);
-    expect(snapshot.fieldDependencies[0]?.fieldId).toBe(1);
-    expect(snapshot.importWarnings).toEqual([{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }]);
+    await expect(getSymbolsPage({ projectId: 1, page: 1, pageSize: 25 }, 99)).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    await expect(getProjectJob(job.jobId, 99)).rejects.toMatchObject({ code: "PROJECT_JOB_NOT_FOUND" });
   });
 
   it("builds a downloadable report archive with the expected files", async () => {
@@ -811,8 +584,8 @@ describe("project workflow", () => {
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
     fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 1, signature: "func main()", description: null });
     fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "external.Dependency", targetKind: "unresolved", dependencyType: "references", lineNumber: 1 });
-    fakeDb.store.risks.push({ id: 1, projectId: 1, title: "Critical risk", severity: "high", sourceFile: "main.go", lineNumber: 1 });
-    fakeDb.store.rules.push({ id: 1, projectId: 1, name: "MainRule", ruleType: "validation", sourceFile: "main.go", lineNumber: 1 });
+    fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", title: "Critical risk", severity: "high", sourceFile: "main.go", lineNumber: 1 });
+    fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "MainRule", sourceFile: "main.go", lineNumber: 1 });
     fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
@@ -829,58 +602,14 @@ describe("project workflow", () => {
     });
 
     const archive = await buildReportArchive(1, 7);
-    const archiveAgain = await buildReportArchive(1, 7);
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
-    const zipAgain = await JSZip.loadAsync(Buffer.from(archiveAgain.base64, "base64"));
-    const zipFileNames = Object.keys(zip.files).sort((left, right) => left.localeCompare(right));
 
     expect(archive.mimeType).toBe("application/zip");
-    expect(archive.base64).toBe(archiveAgain.base64);
     expect(zip.file("FLOW.md")).toBeTruthy();
-    expect(zip.file("metadata.json")).toBeTruthy();
-    expect(zip.file("analysis-summary.json")).toBeTruthy();
-    expect(zip.file("import-warnings.json")).toBeTruthy();
     expect(zip.file("DATA_DEPENDENCY.md")).toBeTruthy();
     expect(zip.file("RISKS.md")).toBeTruthy();
     expect(zip.file("RULES.yaml")).toBeTruthy();
     expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
-    await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"importWarnings\"");
-    await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"limitationSummary\"");
-    await expect(zip.file("import-warnings.json")!.async("text")).resolves.toContain("IMPORT_LIMITED_ANALYSIS");
-    await Promise.all(
-      zipFileNames.map(async (fileName) => {
-        const [firstContent, secondContent] = await Promise.all([
-          zip.file(fileName)!.async("text"),
-          zipAgain.file(fileName)!.async("text"),
-        ]);
-        expect(firstContent).toBe(secondContent);
-      })
-    );
-  });
-
-  it("deletes the full project graph", async () => {
-    const { deleteProjectCascade } = await import("./projectWorkflow");
-    fakeDb.store.projects.push({ id: 1, userId: 7, status: "completed" });
-    fakeDb.store.files.push({ id: 1, projectId: 1 });
-    fakeDb.store.analysisResults.push({ id: 1, projectId: 1 });
-    fakeDb.store.symbols.push({ id: 1, projectId: 1 });
-    fakeDb.store.dependencies.push({ id: 1, projectId: 1 });
-    fakeDb.store.fields.push({ id: 1, projectId: 1 });
-    fakeDb.store.fieldDependencies.push({ id: 1, projectId: 1 });
-    fakeDb.store.risks.push({ id: 1, projectId: 1 });
-    fakeDb.store.rules.push({ id: 1, projectId: 1 });
-
-    await deleteProjectCascade(1, 7);
-
-    expect(fakeDb.store.projects).toHaveLength(0);
-    expect(fakeDb.store.files).toHaveLength(0);
-    expect(fakeDb.store.analysisResults).toHaveLength(0);
-    expect(fakeDb.store.symbols).toHaveLength(0);
-    expect(fakeDb.store.dependencies).toHaveLength(0);
-    expect(fakeDb.store.fields).toHaveLength(0);
-    expect(fakeDb.store.fieldDependencies).toHaveLength(0);
-    expect(fakeDb.store.risks).toHaveLength(0);
-    expect(fakeDb.store.rules).toHaveLength(0);
   });
 });

@@ -11,6 +11,7 @@ export const MAX_EXTRACTED_BYTES = 500 * BYTES_PER_MB;
 export const MAX_FILE_COUNT = 2_000;
 export const MAX_TOTAL_ARCHIVE_ENTRIES = 10_000;
 export const MAX_SINGLE_FILE_BYTES = 5 * BYTES_PER_MB;
+export const MAX_REPORT_ARCHIVE_BYTES = 25 * BYTES_PER_MB;
 export const JSON_UPLOAD_BODY_LIMIT_BYTES = Math.ceil(MAX_UPLOAD_BYTES * 1.5);
 
 export function formatBytes(bytes: number): string {

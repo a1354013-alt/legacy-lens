@@ -18,7 +18,7 @@ const appliedRequests: Array<{ message: string | undefined; url: string }> = [];
 const rateLimitFactory = vi.fn((options: RateLimitFactoryOptions) => {
   let count = 0;
 
-  return (req: any, _res: unknown, next: () => void) => {
+  return (req: any, res: any, next: () => void) => {
     if (options.skip(req)) {
       next();
       return;
@@ -28,7 +28,13 @@ const rateLimitFactory = vi.fn((options: RateLimitFactoryOptions) => {
     count += 1;
     if (count <= options.max) {
       next();
+      return;
     }
+
+    res.status?.(429)?.json?.({
+      error: options.message.error,
+      message: options.message.message,
+    });
   };
 });
 
@@ -75,27 +81,31 @@ describe("createRateLimiter", () => {
     ).toBe("api:198.51.100.10");
   });
 
-  it("uses separate limiter buckets for clone and analysis routes", async () => {
+  it("uses separate limiter buckets for clone, analysis, and heavy read routes", async () => {
     const cloneLimiter = createRateLimiter("clone");
     const analysisLimiter = createRateLimiter("analysis");
+    const heavyReadLimiter = createRateLimiter("heavyRead");
 
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = "development";
     try {
       await cloneLimiter({ path: "/api/trpc/projects.cloneGit", originalUrl: "/api/trpc/projects.cloneGit", headers: {}, ip: "198.51.100.10" } as any, {} as any, vi.fn());
       await analysisLimiter({ path: "/api/trpc/analysis.trigger", originalUrl: "/api/trpc/analysis.trigger", headers: {}, ip: "198.51.100.10" } as any, {} as any, vi.fn());
+      await heavyReadLimiter({ path: "/api/trpc/analysis.getSnapshot", originalUrl: "/api/trpc/analysis.getSnapshot", headers: {}, ip: "198.51.100.10" } as any, {} as any, vi.fn());
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
     }
 
     const cloneOptions = rateLimitFactory.mock.calls.find((call) => call[0].message.message === defaultConfigs.clone.message)?.[0];
     const analysisOptions = rateLimitFactory.mock.calls.find((call) => call[0].message.message === defaultConfigs.analysis.message)?.[0];
+    const heavyReadOptions = rateLimitFactory.mock.calls.find((call) => call[0].message.message === defaultConfigs.heavyRead.message)?.[0];
 
     expect(cloneOptions?.keyGenerator({ ip: "198.51.100.10" } as any)).toBe("clone:198.51.100.10");
     expect(analysisOptions?.keyGenerator({ ip: "198.51.100.10" } as any)).toBe("analysis:198.51.100.10");
+    expect(heavyReadOptions?.keyGenerator({ ip: "198.51.100.10" } as any)).toBe("heavyRead:198.51.100.10");
   });
 
-  it("skips the generic API limiter for dedicated upload/clone/analysis endpoints using originalUrl", async () => {
+  it("skips the generic API limiter for dedicated upload/clone/analysis/heavy read endpoints using originalUrl", async () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = "development";
     appliedRequests.length = 0;
@@ -107,6 +117,7 @@ describe("createRateLimiter", () => {
     app.post("/api/trpc/projects.uploadFiles", (_req, res) => res.status(200).json({ ok: true }));
     app.post("/api/trpc/projects.cloneGit", (_req, res) => res.status(200).json({ ok: true }));
     app.post("/api/trpc/analysis.trigger", (_req, res) => res.status(200).json({ ok: true }));
+    app.post("/api/trpc/analysis.getSnapshot", (_req, res) => res.status(200).json({ ok: true }));
     app.post("/api/trpc/system.health", (_req, res) => res.status(200).json({ ok: true }));
 
     const server = createServer(app);
@@ -117,6 +128,7 @@ describe("createRateLimiter", () => {
       await fetch(`http://127.0.0.1:${port}/api/trpc/projects.uploadFiles`, { method: "POST" });
       await fetch(`http://127.0.0.1:${port}/api/trpc/projects.cloneGit`, { method: "POST" });
       await fetch(`http://127.0.0.1:${port}/api/trpc/analysis.trigger`, { method: "POST" });
+      await fetch(`http://127.0.0.1:${port}/api/trpc/analysis.getSnapshot`, { method: "POST" });
       await fetch(`http://127.0.0.1:${port}/api/trpc/system.health`, { method: "POST" });
     } finally {
       process.env.NODE_ENV = previousNodeEnv;
@@ -133,8 +145,30 @@ describe("createRateLimiter", () => {
       appliedRequests.filter((entry) => entry.message === defaultConfigs.analysis.message).map((entry) => entry.url)
     ).toEqual(["/api/trpc/analysis.trigger"]);
     expect(
+      appliedRequests.filter((entry) => entry.message === defaultConfigs.heavyRead.message).map((entry) => entry.url)
+    ).toEqual(["/api/trpc/analysis.getSnapshot"]);
+    expect(
       appliedRequests.filter((entry) => entry.message === defaultConfigs.api.message).map((entry) => entry.url)
     ).toEqual(["/api/trpc/system.health"]);
+  });
+
+  it("can enforce heavy read limits during tests when requested", async () => {
+    const middleware = createRateLimiter("heavyRead", { skipInTest: false });
+    const next = vi.fn();
+    const json = vi.fn();
+    const response = { status: vi.fn(() => ({ json })) } as any;
+
+    for (let index = 0; index < defaultConfigs.heavyRead.max; index += 1) {
+      await middleware({ path: "/api/trpc/analysis.getSnapshot", originalUrl: "/api/trpc/analysis.getSnapshot", headers: {}, ip: "198.51.100.10" } as any, response, next);
+    }
+    await middleware({ path: "/api/trpc/analysis.getSnapshot", originalUrl: "/api/trpc/analysis.getSnapshot", headers: {}, ip: "198.51.100.10" } as any, response, next);
+
+    expect(next).toHaveBeenCalledTimes(defaultConfigs.heavyRead.max);
+    expect(response.status).toHaveBeenCalledWith(429);
+    expect(json).toHaveBeenCalledWith({
+      error: "Too Many Requests",
+      message: defaultConfigs.heavyRead.message,
+    });
   });
 });
 

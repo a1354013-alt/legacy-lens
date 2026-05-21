@@ -27,6 +27,10 @@ export interface RateLimiterConfig {
   keyPrefix?: string;
 }
 
+export interface CreateRateLimiterOptions {
+  skipInTest?: boolean;
+}
+
 type TrustProxyValue = boolean | number | string | string[];
 
 const defaultConfigs: Record<string, RateLimiterConfig> = {
@@ -90,10 +94,10 @@ const defaultConfigs: Record<string, RateLimiterConfig> = {
     skipFailedRequests: false,
   },
 
-  report: {
-    windowMs: 5 * 60 * 1000,
-    max: 20,
-    message: "Too many report downloads, please slow down before retrying",
+  heavyRead: {
+    windowMs: 1 * 60 * 1000,
+    max: 12,
+    message: "Request limit reached for analysis data. Please wait and try again.",
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false,
@@ -139,7 +143,19 @@ function getStableRequestPath(request: Request) {
   return stablePath || "/";
 }
 
-export function createRateLimiter(configName: keyof typeof defaultConfigs = "api") {
+const heavyReadPaths = [
+  "/api/trpc/analysis.getSnapshot",
+  "/api/trpc/analysis.getSymbolsPage",
+  "/api/trpc/analysis.getFieldsPage",
+  "/api/trpc/analysis.getRisksPage",
+  "/api/trpc/analysis.getRulesPage",
+  "/api/trpc/analysis.getDependenciesPage",
+  "/api/trpc/analysis.getFieldDependenciesPage",
+  "/api/trpc/analysis.getImpact",
+  "/api/projects/:projectId/report.zip",
+] as const;
+
+export function createRateLimiter(configName: keyof typeof defaultConfigs = "api", options: CreateRateLimiterOptions = {}) {
   const config = defaultConfigs[configName];
   let limiterPromise:
     | Promise<((req: Request, res: Response, next: NextFunction) => void) | null>
@@ -174,7 +190,7 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
           skip: (request: Request) => {
             const stablePath = getStableRequestPath(request);
 
-            if (process.env.NODE_ENV === "test") {
+            if (options.skipInTest !== false && process.env.NODE_ENV === "test") {
               return true;
             }
 
@@ -188,6 +204,14 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
                 "/api/trpc/projects.uploadFiles",
                 "/api/trpc/projects.cloneGit",
                 "/api/trpc/analysis.trigger",
+                "/api/trpc/analysis.getSnapshot",
+                "/api/trpc/analysis.getSymbolsPage",
+                "/api/trpc/analysis.getFieldsPage",
+                "/api/trpc/analysis.getRisksPage",
+                "/api/trpc/analysis.getRulesPage",
+                "/api/trpc/analysis.getDependenciesPage",
+                "/api/trpc/analysis.getFieldDependenciesPage",
+                "/api/trpc/analysis.getImpact",
               ].includes(stablePath)
             ) {
               return true;
@@ -217,7 +241,15 @@ export function registerRateLimiters(app: Express) {
   app.use("/api/trpc/projects.uploadFiles", createRateLimiter("upload"));
   app.use("/api/trpc/projects.cloneGit", createRateLimiter("clone"));
   app.use("/api/trpc/analysis.trigger", createRateLimiter("analysis"));
+  app.use("/api/trpc/analysis.getSnapshot", createRateLimiter("heavyRead"));
+  app.use("/api/trpc/analysis.getSymbolsPage", createRateLimiter("heavyRead"));
+  app.use("/api/trpc/analysis.getFieldsPage", createRateLimiter("heavyRead"));
+  app.use("/api/trpc/analysis.getRisksPage", createRateLimiter("heavyRead"));
+  app.use("/api/trpc/analysis.getRulesPage", createRateLimiter("heavyRead"));
+  app.use("/api/trpc/analysis.getDependenciesPage", createRateLimiter("heavyRead"));
+  app.use("/api/trpc/analysis.getFieldDependenciesPage", createRateLimiter("heavyRead"));
+  app.use("/api/trpc/analysis.getImpact", createRateLimiter("heavyRead"));
   app.use("/api/trpc", createRateLimiter("api"));
 }
 
-export { defaultConfigs, getStableRequestPath };
+export { defaultConfigs, getStableRequestPath, heavyReadPaths };

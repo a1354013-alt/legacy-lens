@@ -6,89 +6,77 @@ on:
   pull_request:
     branches: [main, master]
 
+env:
+  # Actions are already moving off the Node 20 runtime; keep CI validating Node 24-compatible JavaScript actions early.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   lint-and-typecheck:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.0'
-          cache: 'pnpm'
-
+          node-version: "22.18.0"
+          cache: "pnpm"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Run linter
         run: pnpm lint
-
       - name: Run type checker
         run: pnpm check
 
   test:
     runs-on: ubuntu-latest
-
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: legacy_lens_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/legacy_lens_ci
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.0'
-          cache: 'pnpm'
-
+          node-version: "22.18.0"
+          cache: "pnpm"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Run tests
         run: pnpm test
-
-      - name: Upload test coverage (if available)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: |
-            coverage/
-            .vitest-reports/
-          retention-days: 7
+      - name: Run migration smoke
+        run: pnpm test:migration
 
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.0'
-          cache: 'pnpm'
-
+          node-version: "22.18.0"
+          cache: "pnpm"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Build application
         run: pnpm build
-
       - name: Verify build output
         run: |
           test -d dist || { echo "Build output not found"; exit 1; }
@@ -97,48 +85,32 @@ jobs:
 
   docker-smoke:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.0'
-          cache: 'pnpm'
-
+          node-version: "22.18.0"
+          cache: "pnpm"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Run Docker demo smoke test
         run: pnpm docker:smoke
 
   security-scan:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.0'
-          cache: 'pnpm'
-
+          node-version: "22.18.0"
+          cache: "pnpm"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Run npm audit
-        # Keep CI stable for a demo app by failing only on high/critical findings.
-        # Lower-severity advisories should still be reviewed, but they do not block every run.
+      - name: Run pnpm audit
         run: pnpm audit --audit-level high

@@ -4,9 +4,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Progress } from "@/components/ui/progress";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import { analysisStatusLabels, projectStatusLabels, type AnalysisStatus, type FocusLanguage, type ProjectSourceType, type ProjectStatus } from "@shared/contracts";
+import {
+  analysisStatusLabels,
+  projectJobStatusLabels,
+  projectJobTypeLabels,
+  projectStatusLabels,
+  type AnalysisStatus,
+  type FocusLanguage,
+  type ProjectSourceType,
+  type ProjectStatus,
+} from "@shared/contracts";
 import { FileSearch, FileText, GitBranch, Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -22,9 +32,16 @@ type ProjectRow = {
   analysisProgress: number;
   errorMessage: string | null;
   analysisStatus: AnalysisStatus;
+  latestJob: {
+    id: number;
+    type: "import_zip" | "import_git" | "analyze";
+    status: "queued" | "running" | "completed" | "failed";
+    progress: number;
+    errorMessage: string | null;
+  } | null;
 };
 
-function getBadgeVariant(status: ProjectStatus | AnalysisStatus) {
+function getBadgeVariant(status: ProjectStatus | AnalysisStatus | "queued" | "running") {
   if (status === "failed") return "destructive" as const;
   if (status === "completed") return "default" as const;
   return "secondary" as const;
@@ -37,6 +54,7 @@ export default function Home() {
   const projectsQuery = trpc.projects.list.useQuery(undefined, {
     enabled: isAuthenticated,
     refetchOnWindowFocus: false,
+    refetchInterval: 2000,
   });
 
   const deleteProjectMutation = trpc.projects.delete.useMutation({
@@ -60,22 +78,22 @@ export default function Home() {
           <div className="space-y-4">
             <Badge variant="outline">Legacy Lens</Badge>
             <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-slate-950">
-              Import a legacy codebase, analyze structural dependencies, and export a reviewable report package.
+              匯入舊系統原始碼，分析結構依賴，並輸出可審閱的報告封包。
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-slate-600">
-              Go / SQL / Delphi-focused ingestion with deterministic import, server-owned workflow state, persisted analysis artifacts, and reproducible report export.
+              支援 Go / SQL / Delphi，提供可追蹤的匯入工作、持久化分析結果與可重現的報告下載。
             </p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            <FeatureCard title="Import Sources" description="Create a project from ZIP upload or Git clone and store normalized source files in MySQL." />
-            <FeatureCard title="Persisted Analysis" description="Run heuristic analysis for Go, SQL, and Delphi, then persist symbols, dependencies, risks, rules, and documents." />
-            <FeatureCard title="Exportable Reports" description="Review the saved result in the UI and download the same persisted report bundle as a ZIP archive." />
+            <FeatureCard title="來源匯入" description="透過 ZIP 或 Git 建立專案，由伺服器統一驗證與儲存檔案。" />
+            <FeatureCard title="持久化分析" description="將 Symbols、Dependencies、Fields、Risks、Rules 與文件輸出寫入資料庫。" />
+            <FeatureCard title="可交付報告" description="在 UI 檢視摘要後，下載與資料庫一致的 Report ZIP。" />
           </div>
 
           <div>
             <Button size="lg" onClick={() => (window.location.href = getLoginUrl())}>
-              Sign in
+              登入開始使用
             </Button>
           </div>
         </main>
@@ -83,7 +101,7 @@ export default function Home() {
     );
   }
 
-  const projects = projectsQuery.data ?? [];
+  const projects = (projectsQuery.data ?? []) as ProjectRow[];
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -91,13 +109,13 @@ export default function Home() {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div>
             <p className="text-sm font-medium text-slate-500">Legacy Lens</p>
-            <h1 className="text-2xl font-semibold text-slate-950">Projects</h1>
+            <h1 className="text-2xl font-semibold text-slate-950">專案列表</h1>
           </div>
           <div className="flex items-center gap-3">
-            <span className="hidden text-sm text-slate-600 sm:inline">{user?.name ?? user?.email ?? "Signed-in user"}</span>
+            <span className="hidden text-sm text-slate-600 sm:inline">{user?.name ?? user?.email ?? "已登入使用者"}</span>
             <Button variant="outline" onClick={() => setLocation("/import")}>
               <Plus className="mr-2 size-4" />
-              New project
+              建立專案
             </Button>
             <Button
               variant="ghost"
@@ -106,7 +124,7 @@ export default function Home() {
                 window.location.href = getLoginUrl();
               }}
             >
-              Sign out
+              登出
             </Button>
           </div>
         </div>
@@ -115,19 +133,19 @@ export default function Home() {
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         {projectsQuery.error ? (
           <Alert variant="destructive">
-            <AlertTitle>Failed to load projects</AlertTitle>
+            <AlertTitle>讀取專案失敗</AlertTitle>
             <AlertDescription>{projectsQuery.error.message}</AlertDescription>
           </Alert>
         ) : null}
 
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-slate-950">Recent work</h2>
-            <p className="text-sm text-slate-600">Server workflow state and analysis status are shown separately so the delivery path stays traceable.</p>
+            <h2 className="text-xl font-semibold text-slate-950">最近工作</h2>
+            <p className="text-sm text-slate-600">專案狀態與工作佇列狀態分開顯示，便於追蹤目前卡在哪個階段。</p>
           </div>
           <Button variant="outline" onClick={() => projectsQuery.refetch()} disabled={projectsQuery.isFetching}>
             <RefreshCcw className="mr-2 size-4" />
-            Refresh
+            重新整理
           </Button>
         </div>
 
@@ -143,11 +161,11 @@ export default function Home() {
                   <EmptyMedia variant="icon">
                     <FileSearch />
                   </EmptyMedia>
-                  <EmptyTitle>No projects yet</EmptyTitle>
-                  <EmptyDescription>Create a project and import a ZIP archive or Git repository to begin analysis.</EmptyDescription>
+                  <EmptyTitle>目前還沒有專案</EmptyTitle>
+                  <EmptyDescription>建立專案後即可上傳 ZIP 或輸入 Git 儲存庫開始分析。</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
-                  <Button onClick={() => setLocation("/import")}>Create project</Button>
+                  <Button onClick={() => setLocation("/import")}>建立第一個專案</Button>
                 </EmptyContent>
               </Empty>
             </CardContent>
@@ -161,13 +179,13 @@ export default function Home() {
                 deleting={deleteProjectMutation.isPending && deleteProjectMutation.variables === project.id}
                 onOpen={() => setLocation(`/projects/${project.id}/analysis`)}
                 onDelete={async () => {
-                  const confirmed = window.confirm(`Delete project "${project.name}" and all imported files, analysis artifacts, and reports?`);
+                  const confirmed = window.confirm(`確定要刪除專案「${project.name}」以及所有匯入檔案、分析結果與報告嗎？`);
                   if (!confirmed) return;
                   try {
                     await deleteProjectMutation.mutateAsync(project.id);
-                    toast.success("Project deleted.");
+                    toast.success("專案已刪除。");
                   } catch (error) {
-                    toast.error(error instanceof Error ? error.message : "Failed to delete project.");
+                    toast.error(error instanceof Error ? error.message : "刪除專案失敗。");
                   }
                 }}
               />
@@ -209,7 +227,7 @@ function ProjectCard({
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <CardTitle>{project.name}</CardTitle>
-            <CardDescription>{project.description || "No description provided."}</CardDescription>
+            <CardDescription>{project.description || "尚未提供描述。"}</CardDescription>
           </div>
           <div className="flex flex-col items-end gap-2">
             <Badge variant={getBadgeVariant(project.status)}>{projectStatusLabels[project.status]}</Badge>
@@ -225,27 +243,36 @@ function ProjectCard({
           </div>
           <div className="flex items-center gap-2">
             <GitBranch className="size-4" />
-            <span>{project.sourceType === "git" ? "Git import" : "ZIP upload"}</span>
+            <span>{project.sourceType === "git" ? "Git 匯入" : "ZIP 上傳"}</span>
           </div>
         </div>
 
-        {project.status === "importing" ? <p className="text-sm text-slate-600">Import is running on the server.</p> : null}
-        {project.status === "analyzing" ? <p className="text-sm text-slate-600">Analysis is running on the server.</p> : null}
+        {project.latestJob ? (
+          <div className="space-y-2 rounded-lg border p-3">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span>{projectJobTypeLabels[project.latestJob.type]}</span>
+              <Badge variant={getBadgeVariant(project.latestJob.status)}>{projectJobStatusLabels[project.latestJob.status]}</Badge>
+            </div>
+            <Progress value={project.latestJob.progress} />
+            <p className="text-xs text-slate-500">進度 {project.latestJob.progress}%</p>
+            {project.latestJob.errorMessage ? <p className="text-xs text-red-600">{project.latestJob.errorMessage}</p> : null}
+          </div>
+        ) : null}
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>Latest workflow error</AlertTitle>
+            <AlertTitle>最近一次流程錯誤</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
 
         <div className="flex items-center justify-between gap-3">
           <Button variant="outline" onClick={onOpen}>
-            Open analysis
+            開啟分析結果
           </Button>
           <Button variant="ghost" disabled={deleting} onClick={() => void onDelete()}>
             {deleting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Trash2 className="mr-2 size-4" />}
-            Delete
+            刪除
           </Button>
         </div>
       </CardContent>

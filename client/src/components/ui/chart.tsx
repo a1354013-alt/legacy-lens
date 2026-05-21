@@ -22,6 +22,34 @@ type ChartContextProps = {
 
 const ChartContext = React.createContext<ChartContextProps | null>(null);
 
+function sanitizeCssIdentifier(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+export function buildChartThemeCss(id: string, config: ChartConfig) {
+  const safeChartId = sanitizeCssIdentifier(id);
+  const colorConfig = Object.entries(config).filter(([, itemConfig]) => itemConfig.theme || itemConfig.color);
+
+  if (!colorConfig.length) {
+    return "";
+  }
+
+  return Object.entries(THEMES)
+    .map(([theme, prefix]) => {
+      const cssVariables = colorConfig
+        .map(([key, itemConfig]) => {
+          const safeKey = sanitizeCssIdentifier(key);
+          const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
+          return color ? `  --color-${safeKey}: ${color};` : null;
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      return `${prefix} [data-chart="${safeChartId}"] {\n${cssVariables}\n}`;
+    })
+    .join("\n");
+}
+
 function useChart() {
   const context = React.useContext(ChartContext);
 
@@ -68,36 +96,13 @@ function ChartContainer({
 }
 
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
-  const colorConfig = Object.entries(config).filter(
-    ([, config]) => config.theme || config.color
-  );
+  const cssText = buildChartThemeCss(id, config);
 
-  if (!colorConfig.length) {
+  if (!cssText) {
     return null;
   }
 
-  return (
-    <style
-      dangerouslySetInnerHTML={{
-        __html: Object.entries(THEMES)
-          .map(
-            ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
-${colorConfig
-  .map(([key, itemConfig]) => {
-    const color =
-      itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ||
-      itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
-  })
-  .join("\n")}
-}
-`
-          )
-          .join("\n"),
-      }}
-    />
-  );
+  return <style>{cssText}</style>;
 };
 
 const ChartTooltip = RechartsPrimitive.Tooltip;

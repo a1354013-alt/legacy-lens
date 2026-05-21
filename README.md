@@ -155,16 +155,16 @@ IMPORT_FILE_TOO_LARGE: big.sql - The file was skipped because it exceeds the max
 ## Verified Environment
 
 Legacy Lens is currently verified in CI and local acceptance with:
-- Node.js `20.19.0`
+- Node.js `22.18.0` in CI and Docker
 - pnpm `10.4.1`
 
-`package.json` engines, the lockfile, and `.github/workflows/ci.yml` are intentionally aligned so local `build` / `test` results match CI behavior.
+`package.json#packageManager` is the single source of truth for pnpm. CI uses `pnpm/action-setup` without a duplicated version override so `pnpm install --frozen-lockfile` stays aligned with the repo lockfile.
 
 ## Quick Start (Local)
 
 ### Prerequisites
-- Node.js 20.x (`>=20 <23`, verified with `20.19.0`)
-- pnpm 10.4.1
+- Node.js 22.x (`>=20 <23`, verified with `22.18.0`)
+- pnpm 10.4.1 (via `packageManager`)
 - MySQL 8+ (or compatible provider)
 
 ### 1) Configure env
@@ -248,6 +248,11 @@ If you want to run migrations manually without starting the app:
 docker compose -f docker-compose.demo.yml run --rm migrate
 ```
 
+To run migration smoke locally against a dedicated MySQL database:
+```bash
+DATABASE_URL=mysql://root:password@127.0.0.1:3306/legacy_lens_dev pnpm test:migration
+```
+
 ### Production-like mode
 
 `docker-compose.yml` extends `docker-compose.prod.yml` and does not enable demo auth, weak demo secrets, or fake users. It expects production-like environment values:
@@ -299,11 +304,26 @@ Operational notes:
 
 1. Create a project
 2. Import source (ZIP or Git URL)
-3. Run analysis (server-side, persisted)
-4. Review the persisted snapshot in the UI
-5. Export report ZIP (generated from persisted analysis only)
+3. Wait for the persisted import job to complete
+4. Run analysis as a separate persisted job
+5. Review the persisted snapshot + paged detail views in the UI
+6. Export report ZIP (generated from persisted analysis only)
 
 Report downloads should use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available only for compatibility and should be treated as deprecated.
+
+### Job Model
+
+- ZIP import, Git import, and analysis are queued as persisted `projectJobs` records.
+- Job status values: `queued`, `running`, `completed`, `failed`.
+- The UI polls project state plus the latest job state instead of waiting on a single long-running request.
+- Duplicate running analysis jobs for the same project are rejected.
+
+### Snapshot / Pagination Model
+
+- `analysis.getSnapshot` is now a light summary payload only.
+- Symbols, Fields, Risks, Rules, Dependencies, and FieldDependencies are fetched through dedicated paged APIs.
+- Page input is bounded to `pageSize <= 100`.
+- Heavy read endpoints have their own rate limiter and a consistent `429` message.
 
 ## Samples
 
@@ -347,6 +367,7 @@ Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `p
 | `pnpm lint` | ESLint |
 | `pnpm check` | Typecheck (app + tests) |
 | `pnpm test` | Vitest |
+| `pnpm test:migration` | Run migration smoke against a real MySQL database (`DATABASE_URL` required) |
 | `pnpm db:migrate` | Apply Drizzle migrations |
 
 Docker equivalents:
@@ -370,6 +391,8 @@ Import pipeline is intentionally bounded:
 - Git: max 2,000 supported source files, max 5MB per source file, max 500MB total supported source content
 - Oversize individual source files are skipped with a stable `IMPORT_FILE_TOO_LARGE` warning so the rest of the import can continue
 - ZIP and Git imports both preserve import warnings in the persisted project snapshot and exported report
+- Large result sets are never returned from the summary snapshot; the UI reads detail pages through backend pagination
+- Generated report archives are bounded by a server-side ZIP size ceiling before download
 - Archive / repository import fails only for whole-import safety boundaries such as invalid ZIP content, unsafe ZIP paths, total supported-source bytes, or supported-source file-count limits
 - Production Git host policy:
   - loopback hosts are blocked (`localhost`, `127.0.0.1`, `0.0.0.0`, `::1`)
@@ -406,6 +429,7 @@ Import pipeline is intentionally bounded:
 - `JWT_SECRET` must be at least 32 characters in production and local runtime validation.
 - Production Git import should use `LEGACY_LENS_GIT_HOST_ALLOWLIST`.
 - `LEGACY_LENS_TRUST_PROXY` should be enabled only when Legacy Lens sits behind a trusted reverse proxy/load balancer.
+- `APP_VERSION` should be injected in production-like Docker and compose runs so health/report metadata show the deploy version deterministically.
 - Production network policy should restrict outbound Git egress even if host allowlisting is configured.
 - Production deployments should review network policy, DB credentials, OAuth settings, and container secrets separately from this demo setup.
 
@@ -419,6 +443,7 @@ pnpm audit --audit-level high
 pnpm check
 pnpm lint
 pnpm test
+pnpm test:migration
 pnpm build
 pnpm docker:smoke
 ```

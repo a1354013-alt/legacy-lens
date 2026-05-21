@@ -5,6 +5,7 @@ import {
   fieldDependencies,
   fields,
   files,
+  projectJobs,
   projects,
   risks,
   rules,
@@ -29,6 +30,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   risks: many(risks),
   rules: many(rules),
   analysisResults: many(analysisResults),
+  projectJobs: many(projectJobs),
 }));
 
 export const filesRelations = relations(files, ({ one, many }) => ({
@@ -115,5 +117,16 @@ export const analysisResultsRelations = relations(analysisResults, ({ one }) => 
   project: one(projects, {
     fields: [analysisResults.projectId],
     references: [projects.id],
+  }),
+}));
+
+export const projectJobsRelations = relations(projectJobs, ({ one }) => ({
+  project: one(projects, {
+    fields: [projectJobs.projectId],
+    references: [projects.id],
+  }),
+  user: one(users, {
+    fields: [projectJobs.userId],
+    references: [users.id],
   }),
 }));

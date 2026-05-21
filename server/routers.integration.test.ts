@@ -63,12 +63,8 @@ function getTableName(table: object): string {
 
 function matches(condition: Condition, row: Row): boolean {
   if (!condition) return true;
-  if (condition.type === "eq") {
-    return row[condition.column] === condition.value;
-  }
-  if (condition.type === "inArray") {
-    return condition.values.includes(row[condition.column]);
-  }
+  if (condition.type === "eq") return row[condition.column] === condition.value;
+  if (condition.type === "inArray") return condition.values.includes(row[condition.column]);
   return condition.conditions.every((child) => matches(child, row));
 }
 
@@ -84,9 +80,7 @@ function selectRows(store: Store, table: object, condition: Condition, sort: Sor
     rows = rows.slice(0, limit);
   }
 
-  if (!selection) {
-    return rows;
-  }
+  if (!selection) return rows;
 
   return rows.map((row) => {
     const mapped: Row = {};
@@ -101,6 +95,7 @@ function createFakeDb(initialStore?: Partial<Store>) {
   const store: Store = {
     users: [],
     projects: [],
+    projectJobs: [],
     files: [],
     symbols: [],
     dependencies: [],
@@ -252,8 +247,9 @@ beforeEach(() => {
 });
 
 describe("appRouter integration", () => {
-  it("supports create, upload, analyze, snapshot, and download flows", async () => {
+  it("supports create, queued import, queued analysis, snapshot, paged reads, and download flows", async () => {
     const { appRouter } = await import("./routers");
+    const { waitForProjectJobForTests } = await import("./services/projectWorkflow");
     const caller = appRouter.createCaller(createContext());
 
     const created = await caller.projects.create({
@@ -263,22 +259,34 @@ describe("appRouter integration", () => {
     });
     expect(created.projectId).toBe(1);
 
-    const uploaded = await caller.projects.uploadFiles({
+    const importJob = await caller.projects.uploadFiles({
       projectId: created.projectId,
       zipContent: "encoded",
     });
-    expect(uploaded.fileCount).toBe(1);
-    expect(uploaded.warnings).toEqual(importWarnings);
+    expect(importJob.status).toBe("queued");
+    await waitForProjectJobForTests(importJob.jobId);
 
-    const project = await caller.projects.getById(created.projectId);
-    expect(project?.importWarningsJson).toEqual(importWarnings);
+    const projectAfterImport = await caller.projects.getById(created.projectId);
+    expect(projectAfterImport?.importWarningsJson).toEqual(importWarnings);
+    expect(projectAfterImport?.latestJob?.type).toBe("import_zip");
+    expect(projectAfterImport?.latestJob?.status).toBe("completed");
 
-    const analyzed = await caller.analysis.trigger(created.projectId);
-    expect(analyzed.status).toBe("partial");
+    const analyzeJob = await caller.analysis.trigger(created.projectId);
+    expect(analyzeJob.status).toBe("queued");
+    await waitForProjectJobForTests(analyzeJob.jobId);
 
     const snapshot = await caller.analysis.getSnapshot(created.projectId);
     expect(snapshot.report?.status).toBe("partial");
     expect(snapshot.importWarnings).toEqual(importWarnings);
+    expect(snapshot.totals.symbols).toBe(1);
+
+    const symbolsPage = await caller.analysis.getSymbolsPage({
+      projectId: created.projectId,
+      page: 1,
+      pageSize: 25,
+    });
+    expect(symbolsPage.items).toHaveLength(1);
+    expect(symbolsPage.total).toBe(1);
 
     const archive = await caller.analysis.downloadReport({
       projectId: created.projectId,
@@ -299,7 +307,7 @@ describe("appRouter integration", () => {
     expect(metadataJson.warningCount).toBe(1);
   });
 
-  it("lists only the current user's analysis results", async () => {
+  it("lists only the current user's projects and jobs", async () => {
     const { appRouter } = await import("./routers");
     fakeDb.store.projects.push(
       { id: 1, userId: 7, name: "owned-a", language: "go", sourceType: "upload", status: "completed" },
@@ -310,14 +318,32 @@ describe("appRouter integration", () => {
       { id: 1, projectId: 1, status: "partial" },
       { id: 2, projectId: 3, status: "completed" }
     );
+    fakeDb.store.projectJobs.push(
+      { id: 1, projectId: 1, userId: 7, type: "analyze", status: "completed", progress: 100 },
+      { id: 2, projectId: 3, userId: 99, type: "analyze", status: "failed", progress: 100 }
+    );
 
     const caller = appRouter.createCaller(createContext());
     const projects = await caller.projects.list();
 
     expect(projects).toEqual([
-      expect.objectContaining({ id: 2, analysisStatus: "pending" }),
-      expect.objectContaining({ id: 1, analysisStatus: "partial" }),
+      expect.objectContaining({ id: 2, analysisStatus: "pending", latestJob: null }),
+      expect.objectContaining({ id: 1, analysisStatus: "partial", latestJob: expect.objectContaining({ id: 1 }) }),
     ]);
     expect(projects.some((project) => project.id === 3)).toBe(false);
+  });
+
+  it("rejects oversized page sizes through the shared zod contract", async () => {
+    const { appRouter } = await import("./routers");
+    fakeDb.store.projects.push({ id: 1, userId: 7, name: "owned-a", language: "go", sourceType: "upload", status: "completed" });
+    const caller = appRouter.createCaller(createContext());
+
+    await expect(
+      caller.analysis.getSymbolsPage({
+        projectId: 1,
+        page: 1,
+        pageSize: 101,
+      })
+    ).rejects.toThrow(/100/);
   });
 });
