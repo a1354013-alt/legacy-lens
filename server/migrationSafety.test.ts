@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import mysql from "mysql2/promise";
 import { describe, expect, it } from "vitest";
+import { normalizeJsonArrayField } from "./_core/jsonNormalization";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const migrationDir = path.join(process.cwd(), "drizzle");
@@ -135,6 +136,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       await applyMigrationFiles(connection, getMigrationFiles().slice(6));
 
       const [projectRows] = await connection.query<mysql.RowDataPacket[]>("SELECT `status`, `importWarningsJson` FROM `projects` WHERE `id` = 1");
+      const [analysisRows] = await connection.query<mysql.RowDataPacket[]>("SELECT `status`, `warningsJson` FROM `analysisResults` WHERE `id` = 1");
       const [dependencyRows] = await connection.query<mysql.RowDataPacket[]>("SELECT `targetSymbolId`, `targetKind` FROM `dependencies` WHERE `id` = 1");
       const [fileColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `files` LIKE 'content'");
       const [analysisColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'flowMarkdown'");
@@ -144,7 +146,15 @@ maybeDescribe("Drizzle migration smoke", () => {
 
       expect(projectRows[0]?.status).toBe("completed");
       expect(projectRows[0]?.importWarningsJson).toBeDefined();
-      expect(projectRows[0]?.importWarningsJson).toBe("[]");
+      // Normalize JSON array field: MySQL driver may return parsed [] or string "[]"
+      const normalizedProjectWarnings = normalizeJsonArrayField(projectRows[0]?.importWarningsJson);
+      expect(normalizedProjectWarnings).toEqual([]);
+      
+      // Verify analysisResults.warningsJson was also migrated correctly
+      expect(analysisRows[0]?.status).toBe("completed");
+      const normalizedAnalysisWarnings = normalizeJsonArrayField(analysisRows[0]?.warningsJson);
+      expect(normalizedAnalysisWarnings).toEqual([]);
+      
       expect(dependencyRows[0]?.targetSymbolId).toBe(2);
       expect(dependencyRows[0]?.targetKind).toBe("internal");
       expect(String(fileColumns[0]?.Type ?? "")).toBe("mediumtext");

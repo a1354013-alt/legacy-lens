@@ -1,1 +1,1 @@
-ALTER TABLE `projects` ADD `importWarningsJson` json DEFAULT ('[]') NOT NULL;
+ALTER TABLE `projects` ADD `importWarningsJson` json DEFAULT (JSON_ARRAY()) NOT NULL;
