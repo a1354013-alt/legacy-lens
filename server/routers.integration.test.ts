@@ -34,6 +34,7 @@ vi.mock("./db", () => ({
 vi.mock("./utils/zipHandler", () => ({
   SUPPORTED_SOURCE_EXTENSIONS: [".go", ".sql", ".pas"],
   extractFilesFromZip: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
+  extractFilesFromZipBuffer: vi.fn(async () => ({ files: zipFiles, warnings: importWarnings })),
 }));
 
 vi.mock("./utils/gitHandler", () => ({

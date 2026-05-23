@@ -16,6 +16,7 @@ import { registerHealthEndpoint } from "./health";
 import { configureTrustProxy, registerRateLimiters } from "./rateLimiter";
 import { registerReportDownloadRoute } from "./reportRoute";
 import { recoverStaleProjectJobsOnStartup } from "../services/projectWorkflow";
+import { registerProjectUploadRoute } from "../services/projectUploadRoute";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -87,6 +88,7 @@ async function startServer() {
   registerDevAuthRoutes(app);
   registerOAuthRoutes(app);
   registerReportDownloadRoute(app);
+  registerProjectUploadRoute(app);
   app.use(
     "/api/trpc",
     createExpressMiddleware({
