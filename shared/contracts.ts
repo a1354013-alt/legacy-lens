@@ -133,57 +133,6 @@ export type RulesPageInput = z.infer<typeof rulesPageInputSchema>;
 export type DependenciesPageInput = z.infer<typeof dependenciesPageInputSchema>;
 export type FieldDependenciesPageInput = z.infer<typeof fieldDependenciesPageInputSchema>;
 
-export interface AppErrorShape {
-  code: AppErrorCode;
-  message: string;
-  details?: string;
-}
-
-export interface ReportArchivePayload {
-  fileName: string;
-  mimeType: string;
-  base64: string;
-}
-
-export const projectStatusLabels: Record<ProjectStatus, string> = {
-  draft: "草稿",
-  importing: "匯入中",
-  ready: "待分析",
-  analyzing: "分析中",
-  completed: "已完成",
-  failed: "失敗",
-};
-
-export const analysisStatusLabels: Record<AnalysisStatus, string> = {
-  pending: "尚未開始",
-  processing: "處理中",
-  completed: "已完成",
-  partial: "部分完成",
-  failed: "失敗",
-};
-
-export const projectJobStatusLabels: Record<ProjectJobStatus, string> = {
-  queued: "排隊中",
-  running: "執行中",
-  completed: "已完成",
-  failed: "失敗",
-};
-
-export const projectJobTypeLabels: Record<ProjectJobType, string> = {
-  import_zip: "ZIP 匯入",
-  import_git: "Git 匯入",
-  analyze: "分析",
-};
-
-export const statusDescriptions: Record<ProjectStatus, string> = {
-  draft: "專案已建立，但尚未開始匯入原始碼。",
-  importing: "伺服器正在驗證並儲存匯入的原始檔。",
-  ready: "匯入完成，可以開始分析。",
-  analyzing: "伺服器正在產生分析結果。",
-  completed: "最近一次分析已完成。",
-  failed: "最近一次匯入或分析失敗，請檢查錯誤訊息。",
-};
-
 export const appErrorCodes = [
   "DATABASE_UNAVAILABLE",
   "PROJECT_NOT_FOUND",
@@ -205,6 +154,57 @@ export const appErrorCodes = [
 export const appErrorCodeSchema = z.enum(appErrorCodes);
 export type AppErrorCode = z.infer<typeof appErrorCodeSchema>;
 
+export interface AppErrorShape {
+  code: AppErrorCode;
+  message: string;
+  details?: string;
+}
+
+export interface ReportArchivePayload {
+  fileName: string;
+  mimeType: string;
+  base64: string;
+}
+
+export const projectStatusLabels: Record<ProjectStatus, string> = {
+  draft: "Draft",
+  importing: "Importing",
+  ready: "Ready",
+  analyzing: "Analyzing",
+  completed: "Completed",
+  failed: "Failed",
+};
+
+export const analysisStatusLabels: Record<AnalysisStatus, string> = {
+  pending: "Pending",
+  processing: "Processing",
+  completed: "Completed",
+  partial: "Partial",
+  failed: "Failed",
+};
+
+export const projectJobStatusLabels: Record<ProjectJobStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+};
+
+export const projectJobTypeLabels: Record<ProjectJobType, string> = {
+  import_zip: "ZIP Import",
+  import_git: "Git Import",
+  analyze: "Analyze",
+};
+
+export const statusDescriptions: Record<ProjectStatus, string> = {
+  draft: "Project created and waiting for source import.",
+  importing: "Import job is ingesting and normalizing project files.",
+  ready: "Import completed and the project is ready for analysis.",
+  analyzing: "Analysis job is processing the persisted project snapshot.",
+  completed: "Analysis completed and report artifacts are available.",
+  failed: "The latest import or analysis job failed. Review the recorded error and retry.",
+};
+
 export const projectRecordSummarySchema = z.object({
   id: z.number().int().positive(),
   userId: z.number().int().positive(),
@@ -223,19 +223,21 @@ export const projectRecordSummarySchema = z.object({
   createdAt: z.date(),
   updatedAt: z.date(),
   analysisStatus: analysisStatusSchema,
-  latestJob: z.object({
-    id: z.number().int().positive(),
-    projectId: z.number().int().positive(),
-    userId: z.number().int().positive(),
-    type: projectJobTypeSchema,
-    status: projectJobStatusSchema,
-    progress: z.number().int().min(0).max(100),
-    errorCode: z.string().nullable(),
-    errorMessage: z.string().nullable(),
-    createdAt: z.date(),
-    startedAt: z.date().nullable(),
-    finishedAt: z.date().nullable(),
-  }).nullable(),
+  latestJob: z
+    .object({
+      id: z.number().int().positive(),
+      projectId: z.number().int().positive(),
+      userId: z.number().int().positive(),
+      type: projectJobTypeSchema,
+      status: projectJobStatusSchema,
+      progress: z.number().int().min(0).max(100),
+      errorCode: z.string().nullable(),
+      errorMessage: z.string().nullable(),
+      createdAt: z.date(),
+      startedAt: z.date().nullable(),
+      finishedAt: z.date().nullable(),
+    })
+    .nullable(),
 });
 
 export type ProjectRecordSummary = z.infer<typeof projectRecordSummarySchema>;

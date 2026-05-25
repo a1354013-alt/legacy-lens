@@ -73,4 +73,16 @@ describe("reportRoute", () => {
       expect(await response.text()).toContain("Analysis report is not ready");
     });
   });
+
+  it("returns 401 when the request is unauthorized", async () => {
+    const { sdk } = await import("./sdk");
+    vi.mocked(sdk.authenticateRequest).mockRejectedValueOnce(new Error("Invalid session."));
+
+    await withReportServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/projects/42/report.zip`);
+
+      expect(response.status).toBe(401);
+      await expect(response.text()).resolves.toContain("Invalid session");
+    });
+  });
 });

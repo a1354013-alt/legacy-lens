@@ -276,6 +276,13 @@ describe("appRouter integration", () => {
     const analyzeJob = await caller.analysis.trigger(created.projectId);
     expect(analyzeJob.status).toBe("queued");
     await waitForProjectJobForTests(analyzeJob.jobId);
+    const analyzeJobStatus = await caller.jobs.getById(analyzeJob.jobId);
+    expect(analyzeJobStatus).toMatchObject({
+      id: analyzeJob.jobId,
+      projectId: created.projectId,
+      type: "analyze",
+      status: "completed",
+    });
 
     const snapshot = await caller.analysis.getSnapshot(created.projectId);
     expect(snapshot.report?.status).toBe("partial");

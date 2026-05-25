@@ -38,6 +38,7 @@ import {
 import { AppError, toAppError } from "../appError";
 import { Analyzer } from "../analyzer/analyzer";
 import { buildFieldIdentityKey, parseFieldIdentityKey } from "../analyzer/fieldIdentity";
+import { ImpactAnalyzer } from "../analyzer/impactAnalyzer";
 import { resolveMostSpecificSymbol } from "../analyzer/symbolOwner";
 import type { AnalyzedSymbol, ProjectAnalysisResult } from "../analyzer/types";
 import { getDb } from "../db";
@@ -442,19 +443,26 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
   }
 
   const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
-  if (claimedJob) {
-    const queuedAt = toDate(claimedJob.createdAt);
-    logger.info("Project job claimed", {
-      action: "project.job.claimed",
-      status: "ok",
-      jobId: claimedJob.id,
-      projectId: claimedJob.projectId,
-      type: claimedJob.type,
-      queueWaitMs: queuedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null,
-    });
+  const claimedStartedAt = toDate(claimedJob?.startedAt);
+  if (!claimedJob || claimedJob.status !== "running" || !claimedStartedAt || claimedStartedAt.getTime() !== startedAt.getTime()) {
+    return null;
   }
 
+  const queuedAt = toDate(claimedJob.createdAt);
+  logger.info("Project job claimed", {
+    action: "project.job.claimed",
+    status: "ok",
+    jobId: claimedJob.id,
+    projectId: claimedJob.projectId,
+    type: claimedJob.type,
+    queueWaitMs: queuedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null,
+  });
+
   return claimedJob ?? null;
+}
+
+export async function claimNextQueuedProjectJobForTests() {
+  return claimNextQueuedProjectJob();
 }
 
 async function executeProjectJob(job: ProjectJobRow) {
@@ -480,8 +488,6 @@ async function executeProjectJob(job: ProjectJobRow) {
 
 async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "failed", error?: AppError) {
   const now = new Date();
-  
-  // Update job record
   const queuedAt = toDate(job.createdAt);
   const startedAt = toDate(job.startedAt);
   const queueDurationMs = queuedAt && startedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null;
@@ -497,16 +503,12 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
     finishedAt: now,
   });
 
-  // If job failed, also update project status and related analysis records
-  // But only if project is still in an active state (importing/analyzing)
   if (status === "failed") {
     const db = await requireDb();
-    
+
     if (job.type === "import_zip" || job.type === "import_git") {
-      // Only update if project is still in importing state
-      // (it might already be failed if importProjectZip/importProjectGit updated it)
-      const project = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
-      if (project[0]?.status === "importing") {
+      const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+      if (project?.status === "importing") {
         await db
           .update(projects)
           .set({
@@ -518,10 +520,11 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
           })
           .where(eq(projects.id, job.projectId));
       }
-    } else if (job.type === "analyze") {
-      // Only update if project is still in analyzing state
-      const project = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
-      if (project[0]?.status === "analyzing") {
+    }
+
+    if (job.type === "analyze") {
+      const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+      if (project?.status === "analyzing") {
         await db.transaction(async (tx) => {
           await tx
             .update(projects)
@@ -533,14 +536,13 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
               updatedAt: now,
             })
             .where(eq(projects.id, job.projectId));
-          
-          // Also mark analysisResults as failed
+
           const existingResult = await tx
             .select()
             .from(analysisResults)
             .where(eq(analysisResults.projectId, job.projectId))
             .limit(1);
-          
+
           if (existingResult[0]) {
             await tx
               .update(analysisResults)
@@ -553,6 +555,9 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
           }
         });
       }
+    }
+  }
+
   logger.info("Project job finalized", {
     action: "project.job.finalized",
     status,
@@ -2334,8 +2339,6 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
     await tx.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
   });
 }
-
-import { ImpactAnalyzer } from "../analyzer/impactAnalyzer";
 
 export async function runImpactAnalysis(projectId: number, userId: number, target: string, type: ImpactTargetType) {
   await getOwnedProject(projectId, userId);

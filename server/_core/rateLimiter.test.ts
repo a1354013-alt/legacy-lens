@@ -276,7 +276,21 @@ describe("configureTrustProxy", () => {
       "/api/trpc",
       createExpressMiddleware({
         router: testRouter,
-        createContext: ({ req, res }) => ({ req, res, user: { id: 1, role: "user" } }),
+        createContext: ({ req, res }) => ({
+          req,
+          res,
+          user: {
+            id: 1,
+            openId: "rate-limit-user",
+            name: "Rate Limit User",
+            email: "rate-limit@example.com",
+            loginMethod: "test",
+            role: "user",
+            createdAt: new Date(0),
+            updatedAt: new Date(0),
+            lastSignedIn: new Date(0),
+          },
+        }),
       })
     );
 

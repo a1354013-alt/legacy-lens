@@ -650,6 +650,33 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_FAILED" });
   });
 
+  it("prevents the same queued job from being claimed twice", async () => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    const firstClaim = await claimNextQueuedProjectJobForTests();
+    const secondClaim = await claimNextQueuedProjectJobForTests();
+
+    expect(firstClaim).toMatchObject({ id: 1, status: "running" });
+    expect(secondClaim).toBeNull();
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({ id: 1, status: "running" });
+  });
+
   it("rejects overlapping import and analyze jobs for the same project", async () => {
     const { queueAnalyzeProject, queueImportProjectGit, queueImportProjectZip } = await import("./projectWorkflow");
     seedProject(1, { status: "ready" });
