@@ -18,6 +18,10 @@ let fakeDb: ReturnType<typeof createFakeDb>;
 let failRootProjectReadsDuringTransaction = false;
 let transactionDepth = 0;
 const cloneAndExtractFilesMock = vi.fn(async () => ({ files: gitFiles, warnings: importWarnings }));
+const { readFileMock, rmMock } = vi.hoisted(() => ({
+  readFileMock: vi.fn(async () => Buffer.from("zip-bytes")),
+  rmMock: vi.fn(async () => undefined),
+}));
 
 vi.mock("drizzle-orm", async () => {
   const actual = await vi.importActual<typeof import("drizzle-orm")>("drizzle-orm");
@@ -33,6 +37,15 @@ vi.mock("drizzle-orm", async () => {
 vi.mock("../db", () => ({
   getDb: vi.fn(async () => fakeDb),
 }));
+
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  return {
+    ...actual,
+    readFile: readFileMock,
+    rm: rmMock,
+  };
+});
 
 vi.mock("../utils/zipHandler", () => ({
   SUPPORTED_SOURCE_EXTENSIONS: [".go", ".sql", ".pas"],
@@ -247,6 +260,10 @@ beforeEach(() => {
   failRootProjectReadsDuringTransaction = false;
   transactionDepth = 0;
   cloneAndExtractFilesMock.mockClear();
+  readFileMock.mockClear();
+  readFileMock.mockImplementation(async () => Buffer.from("zip-bytes"));
+  rmMock.mockClear();
+  rmMock.mockImplementation(async () => undefined);
 });
 
 describe("project workflow", () => {
@@ -693,6 +710,102 @@ describe("project workflow", () => {
     expect(failedJob.status).toBe("failed");
     expect(failedJob.errorCode).toBe("ANALYSIS_FAILED");
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_FAILED" });
+  });
+
+  it("fails a claimed job when payloadJson is invalid instead of leaving it running", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: "{invalid-json",
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+    });
+
+    await expect(runClaimedProjectJob(1)).rejects.toMatchObject({ code: "PROJECT_JOB_STALE" });
+
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "failed",
+      activeKey: null,
+      errorCode: "PROJECT_JOB_STALE",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "failed",
+      lastErrorCode: "PROJECT_JOB_STALE",
+    });
+    expect(rmMock).not.toHaveBeenCalled();
+  });
+
+  it("fails a claimed import job, preserves an import failure code, and cleans its temp file", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    readFileMock.mockRejectedValueOnce(new Error("disk read failed"));
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/queued-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+    });
+
+    await expect(runClaimedProjectJob(1)).rejects.toMatchObject({ code: "IMPORT_FAILED" });
+
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "failed",
+      errorCode: "IMPORT_FAILED",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "failed",
+      lastErrorCode: "IMPORT_FAILED",
+    });
+    expect(rmMock).toHaveBeenCalledWith("C:/tmp/queued-upload.zip", { force: true });
+  });
+
+  it("still fails the job when temp file cleanup itself errors", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    readFileMock.mockRejectedValueOnce(new Error("disk read failed"));
+    rmMock.mockRejectedValueOnce(new Error("cleanup denied"));
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/queued-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+    });
+
+    await expect(runClaimedProjectJob(1)).rejects.toMatchObject({ code: "IMPORT_FAILED" });
+
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "failed",
+      errorCode: "IMPORT_FAILED",
+    });
+    expect(rmMock).toHaveBeenCalledWith("C:/tmp/queued-upload.zip", { force: true });
   });
 
   it("prevents the same queued job from being claimed twice", async () => {

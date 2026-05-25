@@ -162,7 +162,13 @@ function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloa
     throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is missing.`);
   }
 
-  const parsed = JSON.parse(job.payloadJson) as ProjectJobPayload;
+  let parsed: ProjectJobPayload;
+  try {
+    parsed = JSON.parse(job.payloadJson) as ProjectJobPayload;
+  } catch {
+    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
+  }
+
   if (!parsed || parsed.type !== job.type) {
     throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
   }
@@ -552,6 +558,14 @@ async function executeProjectJob(job: ProjectJobRow) {
   await analyzeProject(job.projectId, job.userId);
 }
 
+function buildProjectJobFailureFallback(job: Pick<ProjectJobRow, "type">) {
+  if (job.type === "analyze") {
+    return new AppError("ANALYSIS_FAILED", "Project job failed.");
+  }
+
+  return new AppError("IMPORT_FAILED", "Project job failed.");
+}
+
 async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "failed", error?: AppError) {
   const now = new Date();
   const queuedAt = toDate(job.createdAt);
@@ -596,18 +610,18 @@ export async function runClaimedProjectJob(jobId: number) {
   if (!claimedJob) {
     throw new AppError("PROJECT_JOB_NOT_FOUND", `Project job ${jobId} was not found.`);
   }
-
-  const payload = parseProjectJobPayload(claimedJob);
+  let tempFilePath: string | null = null;
 
   try {
+    const payload = parseProjectJobPayload(claimedJob);
+    tempFilePath = getImportZipPayloadTempPath(payload);
     await executeProjectJob(claimedJob);
     await finalizeProjectJob(claimedJob, "completed");
   } catch (error) {
-    const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Project job failed."));
+    const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
     await finalizeProjectJob(claimedJob, "failed", appError);
     throw appError;
   } finally {
-    const tempFilePath = getImportZipPayloadTempPath(payload);
     if (tempFilePath) {
       await rm(tempFilePath, { force: true }).catch(() => undefined);
     }

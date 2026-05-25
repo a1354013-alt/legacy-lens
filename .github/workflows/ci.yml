@@ -29,7 +29,9 @@ jobs:
       - name: Run type checker
         run: pnpm check
       - name: Verify Drizzle metadata
-        run: pnpm db:generate
+        run: |
+          pnpm db:generate
+          git diff --exit-code drizzle
 
   test:
     runs-on: ubuntu-latest

@@ -1,16 +1,16 @@
 import express from "express";
-import { access, readdir, rm } from "node:fs/promises";
+import { access, mkdir, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_ZIP_RAW_BYTES } from "../../shared/const";
 import { AppError } from "../appError";
-import { registerProjectUploadRoute } from "./projectUploadRoute";
+import { cleanupExpiredUploadTempFiles, registerProjectUploadRoute, uploadTempDir } from "./projectUploadRoute";
 
 let lastTempFilePath: string | null = null;
-const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
+const outsideTempDir = join(tmpdir(), "legacy-lens-upload-outside");
 
 vi.mock("../_core/sdk", () => ({
   sdk: {
@@ -58,6 +58,7 @@ afterEach(async () => {
     await rm(lastTempFilePath, { force: true }).catch(() => undefined);
     lastTempFilePath = null;
   }
+  await rm(outsideTempDir, { recursive: true, force: true }).catch(() => undefined);
   vi.clearAllMocks();
 });
 
@@ -105,6 +106,28 @@ describe("projectUploadRoute", () => {
       expect(lastTempFilePath).toBeTruthy();
       await expectFileExists(lastTempFilePath!);
     });
+  });
+
+  it("stores uploads under a generated safe .zip temp file name", async () => {
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "../nested\\evil?.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(200);
+    });
+
+    expect(lastTempFilePath).toBeTruthy();
+    expect(lastTempFilePath!.startsWith(uploadTempDir)).toBe(true);
+    expect(basename(lastTempFilePath!)).toMatch(/^\d+-[0-9a-f-]+\.zip$/i);
+    expect(basename(lastTempFilePath!)).not.toContain("evil");
+    expect(basename(lastTempFilePath!)).not.toContain("..");
+    expect(lastTempFilePath!).not.toContain("../");
+    expect(lastTempFilePath!).not.toContain("..\\");
   });
 
   it("rejects oversized ZIP uploads with a 413 response", async () => {
@@ -205,5 +228,58 @@ describe("projectUploadRoute", () => {
       expect(response.status).toBe(400);
       await expect(response.text()).resolves.toContain("Git URL is not allowed.");
     });
+  });
+
+  it("deletes only expired temp zip files from the upload temp directory", async () => {
+    await mkdir(uploadTempDir, { recursive: true });
+    const oldZipPath = join(uploadTempDir, "old.zip");
+    const freshZipPath = join(uploadTempDir, "fresh.zip");
+    const textPath = join(uploadTempDir, "notes.txt");
+    const oldDate = new Date("2026-01-01T00:00:00.000Z");
+    const now = new Date("2026-01-03T00:00:00.000Z");
+    await Promise.all([
+      writeFile(oldZipPath, "zip"),
+      writeFile(freshZipPath, "zip"),
+      writeFile(textPath, "note"),
+    ]);
+    await utimes(oldZipPath, oldDate, oldDate);
+    await utimes(freshZipPath, now, now);
+    await utimes(textPath, oldDate, oldDate);
+
+    await cleanupExpiredUploadTempFiles(now, 24 * 60 * 60 * 1000);
+
+    await expectFileMissing(oldZipPath);
+    await expectFileExists(freshZipPath);
+    await expectFileExists(textPath);
+  });
+
+  it("never deletes files outside the managed upload temp directory", async () => {
+    await mkdir(outsideTempDir, { recursive: true });
+    const outsideZipPath = join(outsideTempDir, "old.zip");
+    const oldDate = new Date("2026-01-01T00:00:00.000Z");
+    await writeFile(outsideZipPath, "zip");
+    await utimes(outsideZipPath, oldDate, oldDate);
+
+    await cleanupExpiredUploadTempFiles(new Date("2026-01-03T00:00:00.000Z"), 24 * 60 * 60 * 1000);
+
+    await expectFileExists(outsideZipPath);
+  });
+
+  it("ignores temp cleanup permission errors instead of crashing", async () => {
+    await mkdir(uploadTempDir, { recursive: true });
+    const oldZipPath = join(uploadTempDir, "locked.zip");
+    const oldDate = new Date("2026-01-01T00:00:00.000Z");
+    await writeFile(oldZipPath, "zip");
+    await utimes(oldZipPath, oldDate, oldDate);
+    const removeFile = vi.fn(async () => {
+      throw new Error("EPERM");
+    });
+
+    await expect(
+      cleanupExpiredUploadTempFiles(new Date("2026-01-03T00:00:00.000Z"), 24 * 60 * 60 * 1000, removeFile)
+    ).resolves.toBeUndefined();
+
+    await expectFileExists(oldZipPath);
+    expect(removeFile).toHaveBeenCalledWith(oldZipPath, { force: true });
   });
 });

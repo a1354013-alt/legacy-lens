@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_ZIP_RAW_BYTES, UNAUTHED_ERR_MSG } from "@shared/const";
@@ -10,7 +10,12 @@ import { sdk } from "../_core/sdk";
 import { logger } from "../_core/logger";
 import { queueImportProjectGit, queueImportProjectZipFromTempFile } from "./projectWorkflow";
 
-const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
+export const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
+export const UPLOAD_TEMP_ZIP_TTL_MS = Number.parseInt(process.env.UPLOAD_TEMP_ZIP_TTL_MS ?? "86400000", 10);
+
+function buildSafeUploadTempFileName() {
+  return `${Date.now()}-${randomUUID()}.zip`;
+}
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -19,8 +24,8 @@ const upload = multer({
         .then(() => callback(null, uploadTempDir))
         .catch((error) => callback(error as Error, uploadTempDir));
     },
-    filename: (_req, file, callback) => {
-      callback(null, `${Date.now()}-${randomUUID()}-${file.originalname}`);
+    filename: (_req, _file, callback) => {
+      callback(null, buildSafeUploadTempFileName());
     },
   }),
   limits: {
@@ -28,6 +33,40 @@ const upload = multer({
     files: 1,
   },
 });
+
+export async function cleanupExpiredUploadTempFiles(
+  now = new Date(),
+  ttlMs = UPLOAD_TEMP_ZIP_TTL_MS,
+  removeFile: (filePath: string, options: { force: true }) => Promise<void> = rm
+) {
+  await mkdir(uploadTempDir, { recursive: true });
+  const expiresBefore = now.getTime() - ttlMs;
+  const entries = await readdir(uploadTempDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".zip")) {
+      continue;
+    }
+
+    const filePath = join(uploadTempDir, entry.name);
+
+    try {
+      const fileStats = await stat(filePath);
+      if (fileStats.mtimeMs > expiresBefore) {
+        continue;
+      }
+
+      await removeFile(filePath, { force: true });
+    } catch (error) {
+      logger.warn("Upload temp file cleanup skipped an entry", {
+        action: "project.upload.temp.cleanup",
+        status: "error",
+        filePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
 
 async function requireAuthenticatedUser(req: Request, res: Response) {
   try {
@@ -70,6 +109,14 @@ async function authenticateProjectUploadRequest(req: Request, res: Response, nex
 }
 
 export function registerProjectUploadRoute(app: Express) {
+  void cleanupExpiredUploadTempFiles().catch((error) => {
+    logger.warn("Upload temp file cleanup failed during startup", {
+      action: "project.upload.temp.cleanup.startup",
+      status: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+
   app.post("/api/projects/:projectId/upload", authenticateProjectUploadRequest, async (req, res) => {
     try {
       await runSingleFileUpload(req, res);

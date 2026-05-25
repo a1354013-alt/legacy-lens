@@ -48,11 +48,6 @@ export function useAuth(options?: UseAuthOptions) {
   );
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem("legacy-lens:user", JSON.stringify(state.user));
-  }, [state.user]);
-
-  useEffect(() => {
     if (!redirectOnUnauthenticated) return;
     if (meQuery.isLoading || logoutMutation.isPending) return;
     if (state.user) return;
