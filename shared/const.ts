@@ -7,6 +7,7 @@ export const NOT_ADMIN_ERR_MSG = 'You do not have required permission (10002)';
 export const BYTES_PER_MB = 1024 * 1024;
 export const MAX_UPLOAD_BYTES = 30 * BYTES_PER_MB;
 export const MAX_ZIP_RAW_BYTES = MAX_UPLOAD_BYTES;
+export const MAX_LEGACY_BASE64_ZIP_BYTES = 2 * BYTES_PER_MB;
 export const MAX_EXTRACTED_BYTES = 500 * BYTES_PER_MB;
 export const MAX_FILE_COUNT = 2_000;
 export const MAX_TOTAL_ARCHIVE_ENTRIES = 10_000;

@@ -312,6 +312,8 @@ Operational notes:
 
 Report downloads should use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available only for compatibility and should be treated as deprecated.
 
+Project imports should use `POST /api/projects/:projectId/upload` with multipart form data. The legacy tRPC `projects.uploadFiles` mutation remains available only for small compatibility payloads and is intentionally capped at 2MB raw ZIP content to avoid storing large base64 archives in job payloads.
+
 ### Job Model
 
 - ZIP import, Git import, and analysis are queued as persisted `projectJobs` records.
@@ -319,6 +321,7 @@ Report downloads should use `GET /api/projects/:projectId/report.zip` so large r
 - Job status values: `queued`, `running`, `completed`, `failed`.
 - The queue is DB-backed and restart-safe: startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks stuck `importing` / `analyzing` projects as failed when no active job still exists.
 - `PROJECT_JOB_STALE_MS` controls when a running job is treated as stale during startup recovery (default `900000` / 15 minutes).
+- Multi-instance deployments are currently single-worker only: set `PROJECT_WORKER_ENABLED=true` on exactly one instance/container and `PROJECT_WORKER_ENABLED=false` on the rest.
 - The UI polls project state plus the latest job state instead of waiting on a single long-running request.
 - The backend enforces one active job per project across `import_zip`, `import_git`, and `analyze`; conflicting requests fail with a stable conflict error instead of relying on disabled buttons.
 
@@ -393,6 +396,7 @@ Docker equivalents:
 Import pipeline is intentionally bounded:
 - Shared raw ZIP upload limit: 30MB per `.zip` before base64 encoding (`MAX_UPLOAD_BYTES` / `MAX_ZIP_RAW_BYTES`)
 - HTTP JSON body limit is derived from the same raw ZIP limit with base64 overhead headroom (`JSON_UPLOAD_BODY_LIMIT_BYTES`)
+- Legacy tRPC base64 ZIP upload is compatibility-only and capped at 2MB raw ZIP content; normal imports should use the multipart upload route instead of embedding archive data in JSON
 - ZIP: max 10,000 total archive entries, max 2,000 supported source files, max 5MB per source file, max 500MB expanded supported source content
 - Git: max 2,000 supported source files, max 5MB per source file, max 500MB total supported source content
 - ZIP extraction does not trust compressed size alone: central-directory metadata and streaming extraction enforce per-file extracted bytes and total extracted bytes before content can grow unbounded in memory

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 import JSZip from "jszip";
+import { MAX_LEGACY_BASE64_ZIP_BYTES } from "../shared/const";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -354,5 +355,25 @@ describe("appRouter integration", () => {
         pageSize: 101,
       })
     ).rejects.toThrow(/100/);
+  });
+
+  it("limits the legacy base64 ZIP endpoint to small compatibility payloads", async () => {
+    const { appRouter } = await import("./routers");
+    const caller = appRouter.createCaller(createContext());
+
+    await caller.projects.create({
+      name: "legacy-upload-project",
+      focusLanguage: "go",
+      sourceType: "upload",
+    });
+
+    const oversizedBase64 = Buffer.alloc(MAX_LEGACY_BASE64_ZIP_BYTES + 1, 1).toString("base64");
+
+    await expect(
+      caller.projects.uploadFiles({
+        projectId: 1,
+        zipContent: oversizedBase64,
+      })
+    ).rejects.toThrow(/Legacy ZIP upload is limited to 2MB/);
   });
 });

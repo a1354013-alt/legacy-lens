@@ -52,6 +52,7 @@ async function startServer() {
   validateRuntimeConfig();
   await validateDbConfig();
   const recoveredJobCount = await recoverStaleProjectJobsOnStartup();
+  const projectWorkerEnabled = process.env.PROJECT_WORKER_ENABLED !== "false";
 
   const app = express();
   const server = createServer(app);
@@ -124,6 +125,7 @@ async function startServer() {
       port,
       env: process.env.NODE_ENV || "development",
       recoveredJobCount,
+      projectWorkerEnabled,
     });
     
     // Log health endpoint availability

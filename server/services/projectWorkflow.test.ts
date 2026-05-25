@@ -564,6 +564,41 @@ describe("project workflow", () => {
     });
   });
 
+  it("skips startup recovery when the project worker is disabled", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "false";
+    seedProject(1, { status: "analyzing", analysisProgress: 42 });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "running",
+      progress: 70,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:00:00.000Z"),
+      finishedAt: null,
+    });
+
+    const { recoverStaleProjectJobsOnStartup } = await import("./projectWorkflow");
+
+    try {
+      const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-02T00:16:00.000Z"), 15 * 60 * 1000);
+
+      expect(recovered).toBe(0);
+      expect(fakeDb.store.projectJobs[0]).toMatchObject({ status: "running" });
+      expect(fakeDb.store.projects[0]).toMatchObject({ status: "analyzing" });
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
   it("creates async jobs, persists success/failure, and rejects duplicate analyze jobs", async () => {
     const { getProjectJob, queueAnalyzeProject, waitForProjectJobForTests } = await import("./projectWorkflow");
     seedProject();

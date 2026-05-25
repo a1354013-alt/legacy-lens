@@ -8,6 +8,7 @@ This document captures the operational boundaries that matter for real deploymen
 - Enqueue writes the job row and project status in the same transaction.
 - Only one active job per project is allowed through the `(projectId, activeKey)` unique index and transaction-time conflict checks.
 - The worker claims queued jobs from MySQL instead of relying on process-local promises.
+- Distributed-safe job leasing is not implemented yet; production deployments must enable `PROJECT_WORKER_ENABLED` on exactly one instance and set it to `false` on all other replicas.
 - Startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks `projects.status in (importing, analyzing)` as failed when no active job remains.
 - `PROJECT_JOB_STALE_MS` controls when a running job is considered stale.
 

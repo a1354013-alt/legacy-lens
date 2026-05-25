@@ -1,13 +1,16 @@
 import express from "express";
-import { rm } from "node:fs/promises";
+import { access, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_ZIP_RAW_BYTES } from "../../shared/const";
 import { AppError } from "../appError";
 import { registerProjectUploadRoute } from "./projectUploadRoute";
 
 let lastTempFilePath: string | null = null;
+const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
 
 vi.mock("../_core/sdk", () => ({
   sdk: {
@@ -38,6 +41,18 @@ async function withUploadServer<T>(callback: (baseUrl: string) => Promise<T>) {
   }
 }
 
+async function listUploadTempFiles() {
+  return await readdir(uploadTempDir).catch(() => []);
+}
+
+async function expectFileExists(path: string) {
+  await expect(access(path)).resolves.toBeUndefined();
+}
+
+async function expectFileMissing(path: string) {
+  await expect(access(path)).rejects.toBeTruthy();
+}
+
 afterEach(async () => {
   if (lastTempFilePath) {
     await rm(lastTempFilePath, { force: true }).catch(() => undefined);
@@ -47,6 +62,26 @@ afterEach(async () => {
 });
 
 describe("projectUploadRoute", () => {
+  it("rejects unauthenticated uploads without leaving a temp file", async () => {
+    const { sdk } = await import("../_core/sdk");
+    vi.mocked(sdk.authenticateRequest).mockRejectedValueOnce(new Error("unauthorized"));
+    const beforeFiles = await listUploadTempFiles();
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(401);
+    });
+
+    await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
+  });
+
   it("accepts ZIP uploads and returns an import job payload", async () => {
     const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
 
@@ -67,6 +102,8 @@ describe("projectUploadRoute", () => {
         expect.any(String),
         "project.zip"
       );
+      expect(lastTempFilePath).toBeTruthy();
+      await expectFileExists(lastTempFilePath!);
     });
   });
 
@@ -87,6 +124,69 @@ describe("projectUploadRoute", () => {
       expect(response.status).toBe(413);
       await expect(response.text()).resolves.toContain("ZIP upload exceeds the raw archive limit");
     });
+  });
+
+  it("rejects invalid project ids and cleans the uploaded temp file", async () => {
+    const beforeFiles = await listUploadTempFiles();
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/not-a-number/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.text()).resolves.toContain("Invalid project id.");
+    });
+
+    await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
+  });
+
+  it("rejects requests that provide both file and git url and cleans the temp file", async () => {
+    const beforeFiles = await listUploadTempFiles();
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+      formData.append("gitUrl", "https://example.com/org/repo.git");
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.text()).resolves.toContain("Exactly one import source is required.");
+    });
+
+    await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
+  });
+
+  it("cleans the temp file when job creation fails", async () => {
+    const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
+    vi.mocked(queueImportProjectZipFromTempFile).mockImplementationOnce(async (_projectId, _userId, tempFilePath) => {
+      lastTempFilePath = tempFilePath;
+      throw new AppError("IMPORT_FAILED", "Unable to queue import.");
+    });
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.text()).resolves.toContain("Unable to queue import.");
+    });
+
+    expect(lastTempFilePath).toBeTruthy();
+    await expectFileMissing(lastTempFilePath!);
   });
 
   it("rejects invalid Git import URLs with a 400 response", async () => {

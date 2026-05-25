@@ -1,4 +1,4 @@
-import { COOKIE_NAME, MAX_ZIP_RAW_BYTES, formatBytes } from "@shared/const";
+import { COOKIE_NAME, MAX_LEGACY_BASE64_ZIP_BYTES, formatBytes } from "@shared/const";
 import {
   dependenciesPageInputSchema,
   fieldDependenciesPageInputSchema,
@@ -53,8 +53,8 @@ const createProjectSchema = z.object({
 
 const uploadFilesSchema = z.object({
   projectId: projectIdSchema,
-  zipContent: z.string().min(1).refine((value) => Buffer.from(value, "base64").length <= MAX_ZIP_RAW_BYTES, {
-    message: `ZIP upload exceeds the raw archive limit (${formatBytes(MAX_ZIP_RAW_BYTES)}).`,
+  zipContent: z.string().min(1).refine((value) => Buffer.from(value, "base64").length <= MAX_LEGACY_BASE64_ZIP_BYTES, {
+    message: `Legacy ZIP upload is limited to ${formatBytes(MAX_LEGACY_BASE64_ZIP_BYTES)}. Use the multipart /api/projects/:projectId/upload route for normal imports.`,
   }),
 });
 
@@ -205,6 +205,8 @@ export const appRouter = router({
       }
     }),
 
+    // Legacy-only small ZIP upload path kept for backwards compatibility.
+    // The main UI uses the multipart upload route so large archives never need to be base64-encoded into JSON.
     uploadFiles: protectedProcedure.input(uploadFilesSchema).mutation(async ({ ctx, input }) => {
       try {
         return await queueImportProjectZip(input.projectId, ctx.user.id, input.zipContent);

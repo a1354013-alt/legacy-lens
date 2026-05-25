@@ -84,6 +84,10 @@ const ACTIVE_PROJECT_JOB_KEY = "active";
 const STALE_PROJECT_JOB_MS = Number.parseInt(process.env.PROJECT_JOB_STALE_MS ?? "900000", 10);
 let projectJobWorkerLoop: Promise<void> | null = null;
 
+function isProjectWorkerEnabled() {
+  return process.env.PROJECT_WORKER_ENABLED !== "false";
+}
+
 function assertProjectTransition(current: ProjectStatus, next: ProjectStatus) {
   if (current === next) {
     return;
@@ -399,6 +403,10 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
 }
 
 function kickProjectJobWorker() {
+  if (!isProjectWorkerEnabled()) {
+    return null;
+  }
+
   if (projectJobWorkerLoop) {
     return projectJobWorkerLoop;
   }
@@ -465,6 +473,61 @@ export async function claimNextQueuedProjectJobForTests() {
   return claimNextQueuedProjectJob();
 }
 
+async function failImportProjectIfStillImporting(job: ProjectJobRow, now: Date, error?: AppError) {
+  const db = await requireDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+  if (project?.status !== "importing") {
+    return;
+  }
+
+  await db
+    .update(projects)
+    .set({
+      status: "failed",
+      importProgress: 0,
+      errorMessage: error?.message ?? "Import failed.",
+      lastErrorCode: error?.code ?? null,
+      updatedAt: now,
+    })
+    .where(eq(projects.id, job.projectId));
+}
+
+async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date, error?: AppError) {
+  const db = await requireDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+  if (project?.status !== "analyzing") {
+    return;
+  }
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(projects)
+      .set({
+        status: "failed",
+        analysisProgress: 0,
+        errorMessage: error?.message ?? "Analysis failed.",
+        lastErrorCode: error?.code ?? null,
+        updatedAt: now,
+      })
+      .where(eq(projects.id, job.projectId));
+
+    const existingResult = await tx.select().from(analysisResults).where(eq(analysisResults.projectId, job.projectId)).limit(1);
+
+    if (!existingResult[0]) {
+      return;
+    }
+
+    await tx
+      .update(analysisResults)
+      .set({
+        status: "failed",
+        errorMessage: error?.message ?? "Analysis failed.",
+        updatedAt: now,
+      })
+      .where(eq(analysisResults.projectId, job.projectId));
+  });
+}
+
 async function executeProjectJob(job: ProjectJobRow) {
   const payload = parseProjectJobPayload(job);
 
@@ -504,57 +567,12 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
   });
 
   if (status === "failed") {
-    const db = await requireDb();
-
     if (job.type === "import_zip" || job.type === "import_git") {
-      const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
-      if (project?.status === "importing") {
-        await db
-          .update(projects)
-          .set({
-            status: "failed",
-            importProgress: 0,
-            errorMessage: error?.message ?? "Import failed.",
-            lastErrorCode: error?.code ?? null,
-            updatedAt: now,
-          })
-          .where(eq(projects.id, job.projectId));
-      }
+      await failImportProjectIfStillImporting(job, now, error);
     }
 
     if (job.type === "analyze") {
-      const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
-      if (project?.status === "analyzing") {
-        await db.transaction(async (tx) => {
-          await tx
-            .update(projects)
-            .set({
-              status: "failed",
-              analysisProgress: 0,
-              errorMessage: error?.message ?? "Analysis failed.",
-              lastErrorCode: error?.code ?? null,
-              updatedAt: now,
-            })
-            .where(eq(projects.id, job.projectId));
-
-          const existingResult = await tx
-            .select()
-            .from(analysisResults)
-            .where(eq(analysisResults.projectId, job.projectId))
-            .limit(1);
-
-          if (existingResult[0]) {
-            await tx
-              .update(analysisResults)
-              .set({
-                status: "failed",
-                errorMessage: error?.message ?? "Analysis failed.",
-                updatedAt: now,
-              })
-              .where(eq(analysisResults.projectId, job.projectId));
-          }
-        });
-      }
+      await failAnalysisProjectIfStillAnalyzing(job, now, error);
     }
   }
 
@@ -691,6 +709,14 @@ async function markProjectAsRecoveryFailed(projectId: number, status: ProjectSta
 }
 
 export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAfterMs = STALE_PROJECT_JOB_MS) {
+  if (!isProjectWorkerEnabled()) {
+    logger.info("Project worker disabled; skipping startup recovery.", {
+      action: "project.job.recovery.skipped",
+      status: "ok",
+    });
+    return 0;
+  }
+
   const db = await requireDb();
   const staleBefore = new Date(now.getTime() - staleAfterMs);
   const allJobs = await db.select().from(projectJobs);
