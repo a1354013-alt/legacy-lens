@@ -123,7 +123,7 @@ export default function AnalysisResult() {
       search: symbolSearch || undefined,
       kind: symbolKind === "all" ? undefined : (symbolKind as (typeof symbolKinds)[number]),
     },
-    { enabled: Number.isFinite(projectId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "symbols" }
   );
 
   const fieldsQuery = trpc.analysis.getFieldsPage.useQuery(
@@ -134,7 +134,7 @@ export default function AnalysisResult() {
       search: fieldSearch || undefined,
       tableName: fieldTable === "all" ? undefined : fieldTable,
     },
-    { enabled: Number.isFinite(projectId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "fields" }
   );
 
   const risksQuery = trpc.analysis.getRisksPage.useQuery(
@@ -145,7 +145,7 @@ export default function AnalysisResult() {
       search: riskSearch || undefined,
       severity: riskSeverity === "all" ? undefined : (riskSeverity as (typeof riskSeverities)[number]),
     },
-    { enabled: Number.isFinite(projectId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "risks" }
   );
 
   const rulesQuery = trpc.analysis.getRulesPage.useQuery(
@@ -156,7 +156,7 @@ export default function AnalysisResult() {
       search: ruleSearch || undefined,
       ruleType: ruleType === "all" ? undefined : (ruleType as (typeof ruleTypes)[number]),
     },
-    { enabled: Number.isFinite(projectId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "rules" }
   );
 
   const dependenciesQuery = trpc.analysis.getDependenciesPage.useQuery(
@@ -168,7 +168,7 @@ export default function AnalysisResult() {
       dependencyType: dependencyType === "all" ? undefined : (dependencyType as (typeof dependencyKinds)[number]),
       targetKind: dependencyTargetKind === "all" ? undefined : (dependencyTargetKind as (typeof dependencyTargetKinds)[number]),
     },
-    { enabled: Number.isFinite(projectId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "dependencies" }
   );
 
   const fieldDependenciesQuery = trpc.analysis.getFieldDependenciesPage.useQuery(
@@ -183,7 +183,7 @@ export default function AnalysisResult() {
           ? undefined
           : (fieldDependencyOperationType as (typeof fieldDependencyOperationTypes)[number]),
     },
-    { enabled: Number.isFinite(projectId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "fieldDependencies" }
   );
 
   const triggerAnalysisMutation = trpc.analysis.trigger.useMutation({

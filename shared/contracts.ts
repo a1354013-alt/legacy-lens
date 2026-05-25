@@ -223,6 +223,19 @@ export const projectRecordSummarySchema = z.object({
   createdAt: z.date(),
   updatedAt: z.date(),
   analysisStatus: analysisStatusSchema,
+  latestJob: z.object({
+    id: z.number().int().positive(),
+    projectId: z.number().int().positive(),
+    userId: z.number().int().positive(),
+    type: projectJobTypeSchema,
+    status: projectJobStatusSchema,
+    progress: z.number().int().min(0).max(100),
+    errorCode: z.string().nullable(),
+    errorMessage: z.string().nullable(),
+    createdAt: z.date(),
+    startedAt: z.date().nullable(),
+    finishedAt: z.date().nullable(),
+  }).nullable(),
 });
 
 export type ProjectRecordSummary = z.infer<typeof projectRecordSummarySchema>;

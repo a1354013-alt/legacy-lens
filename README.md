@@ -386,7 +386,7 @@ Docker equivalents:
 - `package.json` keeps a small `pnpm.overrides` block for transitive packages that were still flagged by `pnpm audit --audit-level high` after the direct dependency upgrades.
 - Current overrides are intentionally limited to security patches for `path-to-regexp`, `rollup`, `picomatch`, `tar`, `lodash`, and `lodash-es`.
 - When upstream packages adopt the patched transitive versions directly, prefer removing the override instead of letting the list grow.
-- Moderate findings are tracked in [docs/security-audit-accepted-risks.md](/D:/git/legacy-lens/docs/security-audit-accepted-risks.md).
+- Moderate findings are tracked in [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md).
 
 ## Import Safety Boundaries
 
@@ -437,8 +437,8 @@ Import pipeline is intentionally bounded:
 
 ## Additional Docs
 
-- Architecture notes: [docs/architecture.md](/D:/git/legacy-lens/docs/architecture.md)
-- Accepted audit risks: [docs/security-audit-accepted-risks.md](/D:/git/legacy-lens/docs/security-audit-accepted-risks.md)
+- Architecture notes: [docs/architecture.md](docs/architecture.md)
+- Accepted audit risks: [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md)
 
 ## Demo vs Production
 

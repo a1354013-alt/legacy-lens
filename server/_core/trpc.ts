@@ -39,7 +39,10 @@ const procedureRateLimitMiddleware = t.middleware(async (opts) => {
   return opts.next();
 });
 
-export const publicProcedure = t.procedure.use(procedureRateLimitMiddleware);
+// Base procedure with tRPC-level rate limiting applied
+const rateLimitedProcedure = t.procedure.use(procedureRateLimitMiddleware);
+
+export const publicProcedure = rateLimitedProcedure;
 
 const requireUser = t.middleware(async (opts) => {
   const { ctx, next } = opts;
@@ -56,9 +59,9 @@ const requireUser = t.middleware(async (opts) => {
   });
 });
 
-export const protectedProcedure = t.procedure.use(requireUser);
+export const protectedProcedure = rateLimitedProcedure.use(requireUser);
 
-export const adminProcedure = t.procedure.use(
+export const adminProcedure = rateLimitedProcedure.use(
   t.middleware(async (opts) => {
     const { ctx, next } = opts;
 

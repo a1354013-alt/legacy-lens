@@ -6,7 +6,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import superjson from "superjson";
 import { z } from "zod";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { publicProcedure, router } from "./trpc";
+import { publicProcedure, protectedProcedure, router } from "./trpc";
 import {
   buildProcedureRateLimitKey,
   configureTrustProxy,
@@ -258,5 +258,50 @@ describe("configureTrustProxy", () => {
         ip: "198.51.100.10",
       })
     ).toBe("heavyRead:user:7:analysis.getSnapshot");
+  });
+
+  it("applies rate limiting to protectedProcedure heavy reads", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    resetProcedureRateLimiterStore();
+
+    const testRouter = router({
+      analysis: router({
+        getSnapshot: protectedProcedure.input(z.number()).query(() => ({ ok: true })),
+      }),
+    });
+
+    const app = express();
+    app.use(
+      "/api/trpc",
+      createExpressMiddleware({
+        router: testRouter,
+        createContext: ({ req, res }) => ({ req, res, user: { id: 1, role: "user" } }),
+      })
+    );
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const client = createTRPCProxyClient<typeof testRouter>({
+      links: [
+        httpBatchLink({
+          url: `http://127.0.0.1:${port}/api/trpc`,
+          transformer: superjson,
+          fetch: (input, init) => fetch(input, init),
+        }),
+      ],
+    });
+
+    try {
+      for (let index = 0; index < defaultConfigs.heavyRead.max; index += 1) {
+        await client.analysis.getSnapshot.query(1);
+      }
+
+      await expect(client.analysis.getSnapshot.query(1)).rejects.toBeInstanceOf(TRPCClientError);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
   });
 });

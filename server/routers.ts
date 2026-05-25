@@ -305,6 +305,9 @@ export const appRouter = router({
       }
     }),
 
+    // DEPRECATED: Use GET /api/projects/:projectId/report.zip instead
+    // This tRPC query remains available only for backward compatibility
+    // HTTP ZIP download is preferred to avoid base64 encoding overhead
     downloadReport: protectedProcedure
       .input(z.object({ projectId: projectIdSchema, format: z.literal("zip").default("zip") }))
       .query(async ({ ctx, input }) => {

@@ -448,6 +448,8 @@ async function executeProjectJob(job: ProjectJobRow) {
 
 async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "failed", error?: AppError) {
   const now = new Date();
+  
+  // Update job record
   await updateProjectJob(job.id, {
     status,
     progress: 100,
@@ -457,6 +459,65 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
     errorMessage: error?.message ?? null,
     finishedAt: now,
   });
+
+  // If job failed, also update project status and related analysis records
+  // But only if project is still in an active state (importing/analyzing)
+  if (status === "failed") {
+    const db = await requireDb();
+    
+    if (job.type === "import_zip" || job.type === "import_git") {
+      // Only update if project is still in importing state
+      // (it might already be failed if importProjectZip/importProjectGit updated it)
+      const project = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+      if (project[0]?.status === "importing") {
+        await db
+          .update(projects)
+          .set({
+            status: "failed",
+            importProgress: 0,
+            errorMessage: error?.message ?? "Import failed.",
+            lastErrorCode: error?.code ?? null,
+            updatedAt: now,
+          })
+          .where(eq(projects.id, job.projectId));
+      }
+    } else if (job.type === "analyze") {
+      // Only update if project is still in analyzing state
+      const project = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+      if (project[0]?.status === "analyzing") {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(projects)
+            .set({
+              status: "failed",
+              analysisProgress: 0,
+              errorMessage: error?.message ?? "Analysis failed.",
+              lastErrorCode: error?.code ?? null,
+              updatedAt: now,
+            })
+            .where(eq(projects.id, job.projectId));
+          
+          // Also mark analysisResults as failed
+          const existingResult = await tx
+            .select()
+            .from(analysisResults)
+            .where(eq(analysisResults.projectId, job.projectId))
+            .limit(1);
+          
+          if (existingResult[0]) {
+            await tx
+              .update(analysisResults)
+              .set({
+                status: "failed",
+                errorMessage: error?.message ?? "Analysis failed.",
+                updatedAt: now,
+              })
+              .where(eq(analysisResults.projectId, job.projectId));
+          }
+        });
+      }
+    }
+  }
 }
 
 async function processNextQueuedProjectJob() {
