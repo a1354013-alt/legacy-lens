@@ -221,10 +221,10 @@ beforeEach(() => {
     language: "go",
     symbols: [{ stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 3, signature: "func main()" }],
     dependencies: [],
-    fieldReferences: [],
+    fieldReferences: [{ table: "dbo.Users", field: "Name", type: "read", file: "main.go", line: 2, symbolStableKey: "main.go::main::1", symbolName: "main" }],
     schemaFields: [],
-    risks: [],
-    rules: [],
+    risks: [{ title: "Dynamic SQL review", description: "Manual review is required.", severity: "medium", category: "other", sourceFile: "main.go", lineNumber: 2 }],
+    rules: [{ ruleType: "validation", name: "review_user_name_reads", description: "Review dbo.Users.Name usage.", sourceFile: "main.go", lineNumber: 2 }],
     warnings: [{ code: "HEURISTIC_ANALYSIS", message: "best-effort", level: "note", heuristic: true }],
     flowDocument: "# FLOW",
     dataDependencyDocument: "# DATA_DEPENDENCY",
@@ -240,10 +240,10 @@ beforeEach(() => {
       degradedFileCount: 1,
       symbolCount: 1,
       dependencyCount: 0,
-      fieldCount: 0,
-      fieldDependencyCount: 0,
-      riskCount: 0,
-      ruleCount: 0,
+      fieldCount: 1,
+      fieldDependencyCount: 1,
+      riskCount: 1,
+      ruleCount: 1,
       warningCount: 1,
     },
   };
@@ -298,6 +298,20 @@ describe("appRouter integration", () => {
     expect(symbolsPage.items).toHaveLength(1);
     expect(symbolsPage.total).toBe(1);
 
+    const fieldsPage = await caller.analysis.getFieldsPage({
+      projectId: created.projectId,
+      page: 1,
+      pageSize: 25,
+    });
+    expect(fieldsPage.items).toEqual([expect.objectContaining({ tableName: "dbo.Users", fieldName: "Name" })]);
+
+    const risksPage = await caller.analysis.getRisksPage({
+      projectId: created.projectId,
+      page: 1,
+      pageSize: 25,
+    });
+    expect(risksPage.items).toEqual([expect.objectContaining({ title: "Dynamic SQL review", severity: "medium" })]);
+
     const archive = await caller.analysis.downloadReport({
       projectId: created.projectId,
       format: "zip",
@@ -315,6 +329,11 @@ describe("appRouter integration", () => {
     expect(metadataJson.symbolCount).toBe(1);
     expect(metadataJson.dependencyCount).toBe(0);
     expect(metadataJson.warningCount).toBe(1);
+
+    const summary = zip.file("analysis-summary.json");
+    expect(summary).toBeTruthy();
+    const summaryJson = JSON.parse(await summary!.async("text")) as Record<string, unknown>;
+    expect(String(summaryJson.limitationSummary)).toContain("legacy impact review assistant");
   });
 
   it("lists only the current user's projects and jobs", async () => {

@@ -18,6 +18,7 @@ export class DocumentGenerator {
       "",
       "This document summarizes discovered callable entry points and downstream calls.",
       "Heuristic note: symbol and dependency resolution is best-effort, not compiler-grade.",
+      "Legacy Lens is a legacy impact review assistant. Use this output to support human code review, not to replace it.",
       "",
     ];
 
@@ -61,6 +62,7 @@ export class DocumentGenerator {
       "",
       "This document tracks read/write/calculate activity per table field.",
       "Heuristic note: SQL extraction from application code is best-effort.",
+      "Known limitation: dynamic SQL, nested expression rewriting, and runtime-built query fragments may be incomplete.",
       "",
     ];
 
@@ -102,6 +104,7 @@ export class DocumentGenerator {
       "",
       "Detected implementation risks grouped by severity.",
       "Heuristic note: this risk register is produced from bounded static analysis and may miss runtime-only behavior.",
+      "Review note: findings support legacy modernization review and should be validated by a human reviewer before code changes ship.",
       "",
     ];
 

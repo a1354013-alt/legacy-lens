@@ -272,6 +272,40 @@ describe("DelphiParser", () => {
     );
   });
 
+  it("documents Go interface dispatch over-approximation while leaving package-alias resolution unresolved", () => {
+    const parser = new GoParser(
+      [
+        "package main",
+        "",
+        'import svc "example.com/service"',
+        "",
+        "type Runner interface {",
+        "  Run()",
+        "}",
+        "",
+        "type Service struct{}",
+        "func (Service) Run() {}",
+        "",
+        "func execute(r Runner) {",
+        "  r.Run()",
+        "}",
+        "",
+        "func build() {",
+        "  repo := svc.NewRepo()",
+        "  repo.Save()",
+        "}",
+      ].join("\n"),
+      "main.go"
+    );
+
+    const symbols = parser.parseSymbols();
+    const dependencies = parser.parseDependencies(symbols);
+
+    expect(symbols).toEqual(expect.arrayContaining([expect.objectContaining({ qualifiedName: "Service.Run", type: "method" })]));
+    expect(dependencies.some((dependency) => dependency.fromName === "execute" && dependency.toName === "Service.Run")).toBe(true);
+    expect(dependencies.some((dependency) => dependency.fromName === "build" && dependency.toName.includes("Save"))).toBe(false);
+  });
+
   it("falls back to symbol name when a Delphi procedure lacks qualifiedName", () => {
     const content = [
       "unit InvoiceUnit;",
@@ -543,5 +577,65 @@ describe("SQLParser", () => {
         expect.objectContaining({ table: "orders", field: "created_at", fieldType: "datetime", defaultValue: "CURRENT_TIMESTAMP" }),
       ])
     );
+  });
+
+  it("handles common nested-query reads without claiming extra semantic certainty", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "SELECT *",
+        "FROM dbo.Users u",
+        "WHERE u.Id IN (",
+        "  SELECT o.UserId",
+        "  FROM dbo.Orders o",
+        "  WHERE o.Status = 'paid'",
+        ");",
+      ].join("\n"),
+      "nested.sql"
+    );
+
+    const references = parser.parseFieldReferences(parser.parseSymbols());
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "dbo.Users", field: "Id", type: "read" }),
+        expect.objectContaining({ table: "dbo.Orders", field: "UserId", type: "read" }),
+        expect.objectContaining({ table: "dbo.Orders", field: "Status", type: "read" }),
+      ])
+    );
+  });
+
+  it("tracks Delphi dataset field and parameter access but leaves with-block ownership heuristic", () => {
+    const parser = new DelphiParser(
+      [
+        "unit Repo;",
+        "interface",
+        "implementation",
+        "procedure UpdateOrder;",
+        "begin",
+        "  Query.FieldByName('Status').AsString := 'paid';",
+        "  Query.ParamByName('OrderId').AsInteger := 42;",
+        "  with Query do",
+        "  begin",
+        "    FieldByName('Amount').AsFloat := 0;",
+        "  end;",
+        "end;",
+        "end.",
+      ].join("\n"),
+      "repo.pas"
+    );
+
+    const symbols = parser.parseSymbols();
+    const references = parser.parseFieldReferences(symbols);
+    const warnings = parser.collectWarnings();
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "Status", type: "read", symbolName: "UpdateOrder" }),
+        expect.objectContaining({ field: "OrderId", type: "write", symbolName: "UpdateOrder" }),
+        expect.objectContaining({ field: "Amount", symbolName: "UpdateOrder" }),
+      ])
+    );
+    expect(warnings.some((warning) => warning.code === "HEURISTIC_ANALYSIS")).toBe(true);
   });
 });

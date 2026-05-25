@@ -227,7 +227,8 @@ export class Analyzer {
       ...warnings,
       {
         code: "HEURISTIC_ANALYSIS",
-        message: "Analysis results are heuristic for Go, SQL, and Delphi; review before using them as source-of-truth.",
+        message:
+          "Analysis results are heuristic for Go, SQL, and Delphi. Use them to support legacy impact review and human code review, not as a compiler-grade source-of-truth.",
         level: "note",
         heuristic: true,
       },

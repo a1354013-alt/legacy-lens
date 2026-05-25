@@ -74,6 +74,23 @@ describe("reportRoute", () => {
     });
   });
 
+  it("returns a friendly payload when the report archive is too large", async () => {
+    const { buildReportArchiveBuffer } = await import("../services/projectWorkflow");
+    vi.mocked(buildReportArchiveBuffer).mockRejectedValueOnce(
+      new AppError("REPORT_TOO_LARGE", "Report ZIP exceeds the 25MB export limit. Try a smaller project slice or increase MAX_REPORT_ARCHIVE_BYTES.")
+    );
+
+    await withReportServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/projects/42/report.zip`);
+      const payload = (await response.json()) as { error: string; code: string; remediation?: string };
+
+      expect(response.status).toBe(413);
+      expect(payload.code).toBe("REPORT_TOO_LARGE");
+      expect(payload.error).toContain("25MB export limit");
+      expect(payload.remediation).toContain("smaller project slice");
+    });
+  });
+
   it("returns 401 when the request is unauthorized", async () => {
     const { sdk } = await import("./sdk");
     vi.mocked(sdk.authenticateRequest).mockRejectedValueOnce(new Error("Invalid session."));

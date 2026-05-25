@@ -25,4 +25,12 @@ describe("DocumentGenerator", () => {
     const generator = new DocumentGenerator();
     expect(generator.generateRulesYaml([])).toBe("rules: []");
   });
+
+  it("adds review-scope disclaimers to generated markdown artifacts", () => {
+    const generator = new DocumentGenerator();
+
+    expect(generator.generateFlowDocument([], [])).toContain("legacy impact review assistant");
+    expect(generator.generateDataDependencyDocument([])).toContain("dynamic SQL");
+    expect(generator.generateRisksDocument([])).toContain("validated by a human reviewer");
+  });
 });

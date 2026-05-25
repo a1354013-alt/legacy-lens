@@ -2280,7 +2280,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
         warnings: readyReport.warningsJson,
         importWarnings: project?.importWarningsJson ?? [],
         limitationSummary:
-          "Legacy Lens uses heuristic static analysis for Go, SQL, and Delphi. Review skipped files, degraded files, and warnings before treating the report as source-of-truth.",
+          "Legacy Lens is a legacy impact review assistant that uses heuristic static analysis for Go, SQL, and Delphi. Review skipped files, degraded files, warnings, dynamic SQL paths, complex Delphi inheritance, Go interface dispatch, and cross-package type resolution limits before treating the report as source-of-truth.",
       },
       null,
       2

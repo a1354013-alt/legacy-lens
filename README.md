@@ -2,6 +2,8 @@
 
 Legacy Lens is a **legacy static analyzer and project import workspace**. It imports Go / SQL / Delphi projects (ZIP upload or Git clone), runs deterministic server-side analysis, persists results in MySQL, and lets you **export a reviewable ZIP report** generated from the same persisted snapshot.
 
+Legacy Lens should be positioned as a **legacy impact review assistant**. Its reports support human code review and modernization planning; they do not replace manual review, compiler-grade semantic analysis, or runtime validation.
+
 Positioning:
 - portfolio-grade
 - demo-ready
@@ -51,6 +53,13 @@ Highlights (why this repo is portfolio-worthy):
 | Delphi related | `.dfm`, `.inc`, `.dpk`, `.fmx` | imported with **limited analysis** warnings |
 
 Unsupported languages are skipped with explicit import warnings.
+
+## Accuracy Posture
+
+- Legacy Lens uses heuristic, regex-driven, and line-based analysis in many Go, SQL, Delphi, and DFM paths.
+- Results are intended to support human code review and legacy impact review, not to serve as a fully authoritative semantic model.
+- Known weak spots include dynamic SQL, complex Delphi inheritance chains, DFM/runtime mismatches, Go interface dispatch, and cross-package type resolution.
+- Exported reports should be reviewed alongside skipped-file warnings, degraded-file warnings, and surrounding source code before changes ship.
 
 ## Architecture (High Level)
 
@@ -372,6 +381,12 @@ Endpoint semantics:
 - `/ready` is the deploy-time readiness gate and returns success only when required runtime checks are available.
 - `/api/health` remains the detailed diagnostics endpoint and may return `206` for degraded-but-still-running states.
 
+## Language / i18n Status
+
+- The current portfolio UI primarily targets **Traditional Chinese**.
+- A lightweight locale helper exists, but the product is not yet fully localized end-to-end.
+- New UI work should prefer the existing locale layer where practical instead of adding more ad-hoc hard-coded strings.
+
 Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `package.json`. If no reliable value exists, health reports `unknown` rather than an incorrect `0.0.0`. `GIT_COMMIT` is reported when injected; otherwise commit hash is `unknown`.
 
 ## Scripts
@@ -442,15 +457,19 @@ Import pipeline is intentionally bounded:
 - Delphi `.pas` / `.dpr` parsing is best-effort; `.dfm`, `.fmx`, `.dpk`, and `.inc` are imported with limited analysis warnings.
 - SQL extraction handles common table/field and query patterns but is not a complete SQL parser, optimizer, or execution-plan analyzer.
 - Go extraction focuses on structural symbols and dependencies; it does not replace `go/types`, `gopls`, build tags, or module-aware compilation.
+- Go interface dispatch and package-alias-based construction are not resolved with compiler-grade certainty.
+- Complex Delphi inheritance, `with` blocks, runtime component wiring, and dataset ownership can still require manual review.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
 - Results do **not** replace a compiler, runtime tracing, DB execution plan analysis, or a full SQL AST parser.
 - Mixed-language repos are supported; the **Focus language** is the primary report focus language, not an analysis filter.
 - Import is capped at 5MB per file and 500MB total extracted content by design.
 - Analysis and impact output remain heuristic even when the status is `completed`; review warnings, skipped files, and degraded files before treating results as source-of-truth.
+- Large report archives may exceed the export cap; in that case split the analysis into smaller project slices or raise `MAX_REPORT_ARCHIVE_BYTES` deliberately after reviewing infrastructure impact.
 
 ## Additional Docs
 
 - Architecture notes: [docs/architecture.md](docs/architecture.md)
+- Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
 - Accepted audit risks: [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md)
 
 ## Demo vs Production

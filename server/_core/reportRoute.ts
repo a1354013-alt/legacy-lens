@@ -7,7 +7,11 @@ import { sdk } from "./sdk";
 function sendAppError(res: Response, error: AppError) {
   const status =
     error.code === "PROJECT_NOT_FOUND" ? 404 : error.code === "REPORT_NOT_READY" ? 409 : error.code === "REPORT_TOO_LARGE" ? 413 : 400;
-  res.status(status).json({ error: error.message, code: error.code });
+  const remediation =
+    error.code === "REPORT_TOO_LARGE"
+      ? "Try analyzing a smaller project slice, splitting the import, or raising MAX_REPORT_ARCHIVE_BYTES deliberately."
+      : undefined;
+  res.status(status).json({ error: error.message, code: error.code, remediation });
 }
 
 export function registerReportDownloadRoute(app: Express) {
