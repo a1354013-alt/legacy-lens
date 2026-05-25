@@ -1,4 +1,5 @@
 import JSZip from "jszip";
+import { readFile, rm } from "node:fs/promises";
 import { and, asc, count, eq, inArray, like, or, sql } from "drizzle-orm";
 import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
@@ -43,9 +44,10 @@ import { getDb } from "../db";
 import type { DatabaseClient, InsertProjectRecord } from "../dbTypes";
 import { deleteProjectFiles, getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
 import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../utils/gitHandler";
-import { extractFilesFromZip } from "../utils/zipHandler";
+import { extractFilesFromZip, extractFilesFromZipBuffer } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
 import { getAppVersion } from "../_core/version";
+import { runProjectJob } from "./jobWorker";
 import {
   mapSnapshotReport,
   renderProjectImpactSummaryMarkdown,
@@ -72,6 +74,7 @@ type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 type ProjectJobRow = typeof projectJobs.$inferSelect;
 type ProjectJobPayload =
   | { type: "import_zip"; zipContent: string }
+  | { type: "import_zip"; tempFilePath: string; originalFileName?: string | null }
   | { type: "import_git"; gitUrl: string }
   | { type: "analyze" };
 
@@ -160,6 +163,18 @@ function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloa
   }
 
   return parsed;
+}
+
+function toDate(value: Date | string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  return value instanceof Date ? value : new Date(value);
+}
+
+function getImportZipPayloadTempPath(payload: ProjectJobPayload) {
+  return payload.type === "import_zip" && "tempFilePath" in payload ? payload.tempFilePath : null;
 }
 
 function isUniqueConstraintError(error: unknown) {
@@ -427,6 +442,18 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
   }
 
   const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
+  if (claimedJob) {
+    const queuedAt = toDate(claimedJob.createdAt);
+    logger.info("Project job claimed", {
+      action: "project.job.claimed",
+      status: "ok",
+      jobId: claimedJob.id,
+      projectId: claimedJob.projectId,
+      type: claimedJob.type,
+      queueWaitMs: queuedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null,
+    });
+  }
+
   return claimedJob ?? null;
 }
 
@@ -434,6 +461,11 @@ async function executeProjectJob(job: ProjectJobRow) {
   const payload = parseProjectJobPayload(job);
 
   if (payload.type === "import_zip") {
+    if ("tempFilePath" in payload) {
+      await importProjectZipFromTempFile(job.projectId, job.userId, payload.tempFilePath);
+      return;
+    }
+
     await importProjectZip(job.projectId, job.userId, payload.zipContent);
     return;
   }
@@ -450,6 +482,11 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
   const now = new Date();
   
   // Update job record
+  const queuedAt = toDate(job.createdAt);
+  const startedAt = toDate(job.startedAt);
+  const queueDurationMs = queuedAt && startedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null;
+  const runDurationMs = startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+
   await updateProjectJob(job.id, {
     status,
     progress: 100,
@@ -516,6 +553,37 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
           }
         });
       }
+  logger.info("Project job finalized", {
+    action: "project.job.finalized",
+    status,
+    jobId: job.id,
+    projectId: job.projectId,
+    type: job.type,
+    queueDurationMs,
+    runDurationMs,
+    errorCode: error?.code ?? null,
+  });
+}
+
+export async function runClaimedProjectJob(jobId: number) {
+  const claimedJob = await getProjectJobById(jobId);
+  if (!claimedJob) {
+    throw new AppError("PROJECT_JOB_NOT_FOUND", `Project job ${jobId} was not found.`);
+  }
+
+  const payload = parseProjectJobPayload(claimedJob);
+
+  try {
+    await executeProjectJob(claimedJob);
+    await finalizeProjectJob(claimedJob, "completed");
+  } catch (error) {
+    const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Project job failed."));
+    await finalizeProjectJob(claimedJob, "failed", appError);
+    throw appError;
+  } finally {
+    const tempFilePath = getImportZipPayloadTempPath(payload);
+    if (tempFilePath) {
+      await rm(tempFilePath, { force: true }).catch(() => undefined);
     }
   }
 }
@@ -526,17 +594,11 @@ async function processNextQueuedProjectJob() {
     return false;
   }
 
-  const promise = (async () => {
-    try {
-      await executeProjectJob(claimedJob);
-      await finalizeProjectJob(claimedJob, "completed");
-    } catch (error) {
-      const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Project job failed."));
-      await finalizeProjectJob(claimedJob, "failed", appError);
-    } finally {
+  const promise = runProjectJob(claimedJob.id)
+    .catch(() => undefined)
+    .finally(() => {
       queuedJobPromises.delete(claimedJob.id);
-    }
-  })();
+    });
 
   queuedJobPromises.set(claimedJob.id, promise);
   await promise;
@@ -797,10 +859,74 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
   }
 }
 
+export async function importProjectZipFromTempFile(projectId: number, userId: number, tempFilePath: string) {
+  await getOwnedProject(projectId, userId);
+  logger.info("Import started", { projectId, action: "import.zip.start", status: "ok", source: "temp_file" });
+
+  try {
+    const zipBuffer = await readFile(tempFilePath);
+    const extractedFiles = await extractFilesFromZipBuffer(zipBuffer);
+    const fileIds = await replaceProjectFiles(projectId, extractedFiles);
+
+    logger.info("Import completed", {
+      projectId,
+      action: "import.zip.complete",
+      status: "ok",
+      source: "temp_file",
+      fileCount: extractedFiles.files.length,
+      warningCount: extractedFiles.warnings.length,
+    });
+    return {
+      fileIds,
+      files: extractedFiles.files.map((file) => ({
+        path: file.path,
+        fileName: file.fileName,
+        language: file.language,
+        size: file.size,
+      })),
+      warnings: extractedFiles.warnings,
+    };
+  } catch (error) {
+    const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
+    logger.error("Import failed", {
+      projectId,
+      action: "import.zip.complete",
+      status: "error",
+      source: "temp_file",
+      code: appError.code,
+      message: appError.message,
+    });
+    const db = await requireDb();
+    await db
+      .update(projects)
+      .set({
+        status: "failed",
+        errorMessage: appError.message,
+        lastErrorCode: appError.code,
+        importWarningsJson: [],
+      })
+      .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    throw appError;
+  }
+}
+
 export async function queueImportProjectZip(projectId: number, userId: number, zipContent: string) {
   return enqueueProjectJob(projectId, userId, {
     type: "import_zip",
     zipContent,
+  });
+}
+
+export async function queueImportProjectZipFromTempFile(
+  projectId: number,
+  userId: number,
+  tempFilePath: string,
+  originalFileName?: string | null
+) {
+  return enqueueProjectJob(projectId, userId, {
+    type: "import_zip",
+    tempFilePath,
+    originalFileName,
   });
 }
 

@@ -212,9 +212,8 @@ async function readZipEntryBuffer(entry: ZipDirectoryEntry, filePath: string) {
   return Buffer.concat(chunks);
 }
 
-export async function extractFilesFromZip(base64Content: string): Promise<ExtractedSourceBundle> {
+export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<ExtractedSourceBundle> {
   try {
-    const buffer = Buffer.from(base64Content, "base64");
     assertZipRawSize(buffer.length);
 
     const zip = await unzipper.Open.buffer(buffer);
@@ -345,6 +344,10 @@ export async function extractFilesFromZip(base64Content: string): Promise<Extrac
       error instanceof Error ? error.message : undefined
     );
   }
+}
+
+export async function extractFilesFromZip(base64Content: string): Promise<ExtractedSourceBundle> {
+  return extractFilesFromZipBuffer(Buffer.from(base64Content, "base64"));
 }
 
 export async function countCodeFilesInZip(base64Content: string): Promise<number> {
