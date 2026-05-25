@@ -6,6 +6,7 @@ import { normalizeJsonArrayField } from "./_core/jsonNormalization";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const migrationDir = path.join(process.cwd(), "drizzle");
+const MIGRATION_TEST_TIMEOUT_MS = Number.parseInt(process.env.MIGRATION_TEST_TIMEOUT_MS ?? "30000", 10);
 
 function getMigrationFiles() {
   return fs
@@ -74,7 +75,9 @@ async function tableExists(connection: mysql.Connection, dbName: string, tableNa
 const maybeDescribe = DATABASE_URL ? describe : describe.skip;
 
 maybeDescribe("Drizzle migration smoke", () => {
-  it("runs all migrations on a fresh database and creates the latest tables", async () => {
+  it(
+    "runs all migrations on a fresh database and creates the latest tables",
+    async () => {
     const dbName = await createDatabase(DATABASE_URL as string, "fresh");
     const connection = await connectToDatabase(DATABASE_URL as string, dbName);
 
@@ -105,9 +108,13 @@ maybeDescribe("Drizzle migration smoke", () => {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
     }
-  });
+    },
+    MIGRATION_TEST_TIMEOUT_MS
+  );
 
-  it("upgrades a pre-0006 schema without breaking legacy data", async () => {
+  it(
+    "upgrades a pre-0006 schema without breaking legacy data",
+    async () => {
     const dbName = await createDatabase(DATABASE_URL as string, "upgrade");
     const connection = await connectToDatabase(DATABASE_URL as string, dbName);
 
@@ -167,5 +174,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
     }
-  });
+    },
+    MIGRATION_TEST_TIMEOUT_MS
+  );
 });

@@ -179,7 +179,17 @@ function createFakeDb(initialStore?: Partial<Store>) {
         set: (updates: Row) => ({
           where: async (condition: Condition) => {
             const tableName = getTableName(table);
-            store[tableName] = store[tableName].map((row) => (matches(condition, row) ? { ...row, ...updates } : row));
+            let affectedRows = 0;
+            store[tableName] = store[tableName].map((row) => {
+              if (!matches(condition, row)) {
+                return row;
+              }
+
+              affectedRows += 1;
+              return { ...row, ...updates };
+            });
+
+            return { affectedRows };
           },
         }),
       };
@@ -710,6 +720,47 @@ describe("project workflow", () => {
     expect(firstClaim).toMatchObject({ id: 1, status: "running" });
     expect(secondClaim).toBeNull();
     expect(fakeDb.store.projectJobs[0]).toMatchObject({ id: 1, status: "running" });
+  });
+
+  it("treats a queued job as claimed even when the stored timestamp loses milliseconds", async () => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    const originalUpdate = fakeDb.update.bind(fakeDb);
+    fakeDb.update = (table: object) => {
+      const baseUpdate = originalUpdate(table);
+      return {
+        set: (updates: Row) =>
+          baseUpdate.set({
+            ...updates,
+            startedAt:
+              updates.startedAt instanceof Date
+                ? new Date(Math.floor(updates.startedAt.getTime() / 1000) * 1000)
+                : updates.startedAt,
+          }),
+      };
+    };
+
+    const claim = await claimNextQueuedProjectJobForTests();
+
+    expect(claim).toMatchObject({ id: 1, status: "running" });
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({ id: 1, status: "running" });
+    expect(fakeDb.store.projectJobs[0]?.startedAt).toBeInstanceOf(Date);
   });
 
   it("rejects overlapping import and analyze jobs for the same project", async () => {

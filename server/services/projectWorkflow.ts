@@ -451,8 +451,7 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
   }
 
   const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
-  const claimedStartedAt = toDate(claimedJob?.startedAt);
-  if (!claimedJob || claimedJob.status !== "running" || !claimedStartedAt || claimedStartedAt.getTime() !== startedAt.getTime()) {
+  if (!claimedJob || claimedJob.status !== "running") {
     return null;
   }
 
@@ -479,7 +478,6 @@ async function failImportProjectIfStillImporting(job: ProjectJobRow, now: Date, 
   if (project?.status !== "importing") {
     return;
   }
-
   await db
     .update(projects)
     .set({
