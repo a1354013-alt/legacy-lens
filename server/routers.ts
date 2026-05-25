@@ -21,6 +21,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { AppError } from "./appError";
 import { getDb } from "./db";
+import { logger } from "./_core/logger";
 import {
   buildReportArchive,
   createProjectForUser,
@@ -80,9 +81,9 @@ function deriveProjectAnalysisStatus(projectStatus: ProjectStatus, reportStatus?
   }
 }
 
-function raiseAsTrpc(error: unknown): never {
+export function toTrpcError(error: unknown): TRPCError {
   if (error instanceof TRPCError) {
-    throw error;
+    return error;
   }
 
   if (error instanceof AppError) {
@@ -104,18 +105,29 @@ function raiseAsTrpc(error: unknown): never {
       DELETE_FAILED: "BAD_REQUEST",
     };
 
-    throw new TRPCError({
+    return new TRPCError({
       code: codeMap[error.code],
       message: error.message,
       cause: error,
     });
   }
 
-  throw new TRPCError({
+  logger.error("Unhandled router error", {
+    action: "trpc.error",
+    status: "error",
+    errorMessage: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+
+  return new TRPCError({
     code: "INTERNAL_SERVER_ERROR",
-    message: error instanceof Error ? error.message : "Unexpected server error.",
+    message: process.env.NODE_ENV === "production" ? "Internal server error" : error instanceof Error ? error.message : "Unexpected server error.",
     cause: error instanceof Error ? error : undefined,
   });
+}
+
+function raiseAsTrpc(error: unknown): never {
+  throw toTrpcError(error);
 }
 
 export const appRouter = router({

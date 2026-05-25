@@ -39,7 +39,7 @@ const zh = {
       description: "描述",
       descriptionPlaceholder: "例如：ERP 移轉前盤點、風險盤查或相依分析。",
       language: "主要語言",
-      languageHint: "主要語言會影響 UI 預設焦點，但分析仍會掃描支援的 Go、SQL 與 Delphi 檔案。",
+      languageHint: "這是主要分析語言與報告聚焦語言。系統仍會掃描其他支援的 Go、SQL 與 Delphi 檔案，以建立跨檔案關聯。",
     },
     uploadCard: {
       title: "上傳 ZIP",

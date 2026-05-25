@@ -270,6 +270,9 @@ async function main() {
     globalThis.console.log("\n[step] wait for /health");
     await waitForSmokeHttp(`http://127.0.0.1:${hostPort}/health`, async (response) => response.ok);
 
+    globalThis.console.log("\n[step] wait for /ready");
+    await waitForSmokeHttp(`http://127.0.0.1:${hostPort}/ready`, async (response) => response.ok);
+
     globalThis.console.log("\n[step] wait for /api/health");
     await waitForSmokeHttp(`http://127.0.0.1:${hostPort}/api/health`, async (response) => response.ok);
 

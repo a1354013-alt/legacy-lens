@@ -27,6 +27,16 @@ export interface HealthStatus {
   };
 }
 
+export interface ReadinessStatus {
+  status: "ready" | "not_ready";
+  timestamp: string;
+  checks: {
+    database: "up" | "down";
+    disk: "up" | "down";
+    memory: "up" | "down";
+  };
+}
+
 async function checkDatabase(): Promise<HealthStatus["checks"]["database"]> {
   const startTime = Date.now();
 
@@ -132,12 +142,41 @@ export async function getHealthStatus(): Promise<HealthStatus> {
   };
 }
 
+export async function getReadinessStatus(): Promise<ReadinessStatus> {
+  const health = await getHealthStatus();
+  const readinessChecks = {
+    database: health.checks.database?.status ?? "down",
+    disk: health.checks.disk?.status ?? "down",
+    memory: health.checks.memory?.status ?? "down",
+  };
+
+  const ready = Object.values(readinessChecks).every((status) => status === "up");
+  return {
+    status: ready ? "ready" : "not_ready",
+    timestamp: new Date().toISOString(),
+    checks: readinessChecks,
+  };
+}
+
 export function registerHealthEndpoint(app: Express) {
   app.get("/health", (_req, res) => {
     res.json({
       status: "alive",
       timestamp: new Date().toISOString(),
     });
+  });
+
+  app.get("/ready", async (_req, res) => {
+    try {
+      const readiness = await getReadinessStatus();
+      return res.status(readiness.status === "ready" ? 200 : 503).json(readiness);
+    } catch (error) {
+      return res.status(500).json({
+        status: "not_ready",
+        timestamp: new Date().toISOString(),
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
   });
 
   app.get("/api/health", async (_req, res) => {

@@ -285,7 +285,7 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
               return true;
             }
 
-            if (stablePath === "/health" || stablePath === "/api/health") {
+            if (stablePath === "/health" || stablePath === "/ready" || stablePath === "/api/health") {
               return true;
             }
 

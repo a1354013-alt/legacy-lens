@@ -24,7 +24,10 @@ export const riskTypes = [
 ] as const;
 export const ruleTypes = ["validation", "format", "magic_value", "calculation"] as const;
 
-export const focusLanguageSchema = z.enum(focusLanguages);
+export const focusLanguageDescription =
+  "Primary report focus language. Legacy Lens still scans other supported languages to build cross-file and cross-language relationships.";
+
+export const focusLanguageSchema = z.enum(focusLanguages).describe(focusLanguageDescription);
 export const projectSourceTypeSchema = z.enum(projectSourceTypes);
 export const projectStatusSchema = z.enum(projectStatuses);
 export const fileStatusSchema = z.enum(fileStatuses);

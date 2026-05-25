@@ -133,6 +133,8 @@ Minimal excerpt (shape) of `metadata.json`:
 }
 ```
 
+`focusLanguage` records the primary report focus language for the project. It is not a hard filter: Legacy Lens still scans other supported languages so cross-file and cross-language relationships remain visible in the exported report.
+
 ## Example Import Warnings (Human-Readable + Stable)
 
 Import is intentionally bounded and produces stable warning codes/messages instead of stack traces.
@@ -321,7 +323,8 @@ Project imports should use `POST /api/projects/:projectId/upload` with multipart
 - Job status values: `queued`, `running`, `completed`, `failed`.
 - The queue is DB-backed and restart-safe: startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks stuck `importing` / `analyzing` projects as failed when no active job still exists.
 - `PROJECT_JOB_STALE_MS` controls when a running job is treated as stale during startup recovery (default `900000` / 15 minutes).
-- Multi-instance deployments are currently single-worker only: set `PROJECT_WORKER_ENABLED=true` on exactly one instance/container and `PROJECT_WORKER_ENABLED=false` on the rest.
+- Multi-instance deployments are currently single-worker only: set `PROJECT_WORKER_ENABLED=true` on exactly one instance/container and `PROJECT_WORKER_ENABLED=false` on every other web replica.
+- Distributed-safe job leasing/heartbeat is not implemented yet, so multiple worker-enabled replicas can claim the same queued job during startup or steady-state polling.
 - The UI polls project state plus the latest job state instead of waiting on a single long-running request.
 - The backend enforces one active job per project across `import_zip`, `import_git`, and `analyze`; conflicting requests fail with a stable conflict error instead of relying on disabled buttons.
 
@@ -360,8 +363,14 @@ Demo walkthrough:
 ## Health / System Info
 
 - Liveness: `GET /health`
-- Full health (includes DB check, version, and commit hash): `GET /api/health`
+- Readiness: `GET /ready`
+- Full health (includes DB check, version, commit hash, and degraded-state details): `GET /api/health`
 - tRPC system health: `GET /api/trpc/system.health`
+
+Endpoint semantics:
+- `/health` only confirms that the HTTP server process is alive enough to answer requests.
+- `/ready` is the deploy-time readiness gate and returns success only when required runtime checks are available.
+- `/api/health` remains the detailed diagnostics endpoint and may return `206` for degraded-but-still-running states.
 
 Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `package.json`. If no reliable value exists, health reports `unknown` rather than an incorrect `0.0.0`. `GIT_COMMIT` is reported when injected; otherwise commit hash is `unknown`.
 
@@ -382,7 +391,7 @@ Docker equivalents:
 - `docker compose -f docker-compose.demo.yml up --build` -> local demo stack with MySQL and dev auth bypass
 - `docker compose up --build` -> production-like app/migrate flow using external `DATABASE_URL`
 - `docker compose -f docker-compose.demo.yml run --rm migrate` -> run demo migrations only
-- `pnpm docker:smoke` -> build the compose stack, verify `/health`, `/api/health`, and demo dev-login redirect, then tear it down
+- `pnpm docker:smoke` -> build the compose stack, verify `/health`, `/ready`, `/api/health`, and demo dev-login redirect, then tear it down
 
 ## Dependency Security Notes
 
@@ -435,7 +444,7 @@ Import pipeline is intentionally bounded:
 - Go extraction focuses on structural symbols and dependencies; it does not replace `go/types`, `gopls`, build tags, or module-aware compilation.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
 - Results do **not** replace a compiler, runtime tracing, DB execution plan analysis, or a full SQL AST parser.
-- Mixed-language repos are supported; the **Focus language** is a UI/navigation lens, not an analysis filter.
+- Mixed-language repos are supported; the **Focus language** is the primary report focus language, not an analysis filter.
 - Import is capped at 5MB per file and 500MB total extracted content by design.
 - Analysis and impact output remain heuristic even when the status is `completed`; review warnings, skipped files, and degraded files before treating results as source-of-truth.
 

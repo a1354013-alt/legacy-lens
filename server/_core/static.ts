@@ -3,19 +3,40 @@ import fs from "fs";
 import path from "path";
 import { logger } from "./logger";
 
-export function serveStatic(app: Express) {
-  const distPath =
-    process.env.NODE_ENV === "development"
-      ? path.resolve(import.meta.dirname, "../..", "dist", "public")
-      : path.resolve(import.meta.dirname, "public");
+function getStaticDistPath(nodeEnv = process.env.NODE_ENV) {
+  return nodeEnv === "production"
+    ? path.resolve(import.meta.dirname, "public")
+    : path.resolve(import.meta.dirname, "../..", "dist", "public");
+}
 
-  if (!fs.existsSync(distPath)) {
-    logger.error("Missing client build output directory", {
-      action: "static.serve",
-      status: "error",
-      distPath,
-    });
+function assertProductionStaticAssets(distPath: string, nodeEnv = process.env.NODE_ENV) {
+  if (nodeEnv !== "production") {
+    return;
   }
+
+  const indexPath = path.resolve(distPath, "index.html");
+  if (fs.existsSync(distPath) && fs.existsSync(indexPath)) {
+    return;
+  }
+
+  const error = new Error(
+    `Missing production static build output. Expected "${distPath}" and "${indexPath}". Run "pnpm build" before starting the production server.`
+  );
+
+  logger.error("Missing production static build output", {
+    action: "static.serve",
+    status: "error",
+    distPath,
+    indexPath,
+    nodeEnv,
+  });
+
+  throw error;
+}
+
+export function serveStatic(app: Express) {
+  const distPath = getStaticDistPath();
+  assertProductionStaticAssets(distPath);
 
   app.use(express.static(distPath));
 
@@ -24,3 +45,5 @@ export function serveStatic(app: Express) {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
+
+export { assertProductionStaticAssets, getStaticDistPath };

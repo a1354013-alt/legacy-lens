@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { readFile, rm } from "node:fs/promises";
-import { and, asc, count, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, or, sql } from "drizzle-orm";
 import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
   AnalysisSnapshot,
@@ -47,6 +47,7 @@ import { deleteProjectFiles, getProjectFiles, saveExtractedFiles } from "../util
 import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../utils/gitHandler";
 import { extractFilesFromZip, extractFilesFromZipBuffer } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
+import { buildContainsLikePattern, likeContainsEscaped } from "../_core/sqlLike";
 import { getAppVersion } from "../_core/version";
 import { runProjectJob } from "./jobWorker";
 import {
@@ -107,8 +108,7 @@ function normalizeSearch(value: string | null | undefined) {
 }
 
 function normalizeLikeSearch(value: string | null | undefined) {
-  const normalized = String(value ?? "").trim();
-  return normalized ? `%${normalized}%` : "";
+  return buildContainsLikePattern(value);
 }
 
 function normalizePagination(page: number, pageSize: number, total: number) {
@@ -214,7 +214,7 @@ async function listMatchingFileIds(projectId: number, searchLike: string) {
   const rows = await db
     .select({ id: files.id })
     .from(files)
-    .where(and(eq(files.projectId, projectId), like(files.filePath, searchLike)));
+    .where(and(eq(files.projectId, projectId), likeContainsEscaped(files.filePath, searchLike)));
 
   return rows.map((row) => row.id);
 }
@@ -226,7 +226,7 @@ async function listMatchingSymbolIds(projectId: number, searchLike: string) {
   const rows = await db
     .select({ id: symbols.id })
     .from(symbols)
-    .where(and(eq(symbols.projectId, projectId), like(symbols.name, searchLike)));
+    .where(and(eq(symbols.projectId, projectId), likeContainsEscaped(symbols.name, searchLike)));
 
   return rows.map((row) => row.id);
 }
@@ -238,7 +238,12 @@ async function listMatchingFieldIds(projectId: number, searchLike: string) {
   const rows = await db
     .select({ id: fields.id })
     .from(fields)
-    .where(and(eq(fields.projectId, projectId), or(like(fields.tableName, searchLike), like(fields.fieldName, searchLike))));
+    .where(
+      and(
+        eq(fields.projectId, projectId),
+        or(likeContainsEscaped(fields.tableName, searchLike), likeContainsEscaped(fields.fieldName, searchLike))
+      )
+    );
 
   return rows.map((row) => row.id);
 }
@@ -1710,7 +1715,7 @@ export async function getSymbolsPage(input: SymbolsPageInput, userId: number): P
   }
 
   if (searchLike) {
-    const searchClauses = [like(symbols.name, searchLike)];
+    const searchClauses = [likeContainsEscaped(symbols.name, searchLike)];
     if (matchingFileIds.length > 0) {
       searchClauses.push(inArray(symbols.fileId, matchingFileIds));
     }
@@ -1789,7 +1794,7 @@ export async function getFieldsPage(input: FieldsPageInput, userId: number): Pro
   }
 
   if (searchLike) {
-    conditions.push(orAll([like(fields.tableName, searchLike), like(fields.fieldName, searchLike)]));
+    conditions.push(orAll([likeContainsEscaped(fields.tableName, searchLike), likeContainsEscaped(fields.fieldName, searchLike)]));
   }
 
   const whereCondition = andAll(conditions);
@@ -1884,7 +1889,13 @@ export async function getRisksPage(input: RisksPageInput, userId: number): Promi
   }
 
   if (searchLike) {
-    conditions.push(orAll([like(risks.title, searchLike), like(risks.description, searchLike), like(risks.sourceFile, searchLike)]));
+    conditions.push(
+      orAll([
+        likeContainsEscaped(risks.title, searchLike),
+        likeContainsEscaped(risks.description, searchLike),
+        likeContainsEscaped(risks.sourceFile, searchLike),
+      ])
+    );
   }
 
   const whereCondition = andAll(conditions);
@@ -1956,7 +1967,7 @@ export async function getRulesPage(input: RulesPageInput, userId: number): Promi
   }
 
   if (searchLike) {
-    conditions.push(orAll([like(rules.name, searchLike), like(rules.description, searchLike)]));
+    conditions.push(orAll([likeContainsEscaped(rules.name, searchLike), likeContainsEscaped(rules.description, searchLike)]));
   }
 
   const whereCondition = andAll(conditions);
@@ -2040,7 +2051,7 @@ export async function getDependenciesPage(
   }
 
   if (searchLike) {
-    const searchClauses = [like(dependencies.targetExternalName, searchLike)];
+    const searchClauses = [likeContainsEscaped(dependencies.targetExternalName, searchLike)];
     if (matchingSymbolIds.length > 0) {
       searchClauses.push(inArray(dependencies.sourceSymbolId, matchingSymbolIds));
       searchClauses.push(inArray(dependencies.targetSymbolId, matchingSymbolIds));
@@ -2159,7 +2170,7 @@ export async function getFieldDependenciesPage(
   }
 
   if (searchLike) {
-    const searchClauses = [like(fieldDependencies.context, searchLike)];
+    const searchClauses = [likeContainsEscaped(fieldDependencies.context, searchLike)];
     if (searchFieldIds.length > 0) {
       searchClauses.push(inArray(fieldDependencies.fieldId, searchFieldIds));
     }
