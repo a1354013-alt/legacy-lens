@@ -11,11 +11,18 @@ import { cleanupExpiredUploadTempFiles, registerProjectUploadRoute, uploadTempDi
 
 let lastTempFilePath: string | null = null;
 const outsideTempDir = join(tmpdir(), "legacy-lens-upload-outside");
+const { uploadLimiterMock } = vi.hoisted(() => ({
+  uploadLimiterMock: vi.fn(async (_req: unknown, _res: unknown, next: () => void) => next()),
+}));
 
 vi.mock("../_core/sdk", () => ({
   sdk: {
     authenticateRequest: vi.fn(async () => ({ id: 7 })),
   },
+}));
+
+vi.mock("../_core/rateLimiter", () => ({
+  createRateLimiter: vi.fn(() => uploadLimiterMock),
 }));
 
 vi.mock("./projectWorkflow", () => ({
@@ -61,6 +68,7 @@ afterEach(async () => {
   }
   await rm(outsideTempDir, { recursive: true, force: true }).catch(() => undefined);
   vi.clearAllMocks();
+  uploadLimiterMock.mockImplementation(async (_req: unknown, _res: unknown, next: () => void) => next());
 });
 
 describe("projectUploadRoute", () => {
@@ -146,7 +154,10 @@ describe("projectUploadRoute", () => {
       });
 
       expect(response.status).toBe(413);
-      await expect(response.text()).resolves.toContain("ZIP upload exceeds the raw archive limit");
+      await expect(response.json()).resolves.toMatchObject({
+        code: "ZIP_INVALID",
+        error: expect.stringContaining("ZIP upload exceeds the raw archive limit"),
+      });
     });
   });
 
@@ -163,7 +174,7 @@ describe("projectUploadRoute", () => {
       });
 
       expect(response.status).toBe(400);
-      await expect(response.text()).resolves.toContain("Invalid project id.");
+      await expect(response.json()).resolves.toMatchObject({ error: "Invalid project id." });
     });
 
     await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
@@ -183,13 +194,13 @@ describe("projectUploadRoute", () => {
       });
 
       expect(response.status).toBe(400);
-      await expect(response.text()).resolves.toContain("Exactly one import source is required.");
+      await expect(response.json()).resolves.toMatchObject({ error: "Exactly one import source is required." });
     });
 
     await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
   });
 
-  it("cleans the temp file when job creation fails", async () => {
+  it("cleans the temp file when job creation fails and returns a 500 response for internal import errors", async () => {
     const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
     vi.mocked(queueImportProjectZipFromTempFile).mockImplementationOnce(async (_projectId, _userId, tempFilePath) => {
       lastTempFilePath = tempFilePath;
@@ -205,8 +216,11 @@ describe("projectUploadRoute", () => {
         body: formData,
       });
 
-      expect(response.status).toBe(400);
-      await expect(response.text()).resolves.toContain("Unable to queue import.");
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "IMPORT_FAILED",
+        error: "Unable to queue import.",
+      });
     });
 
     expect(lastTempFilePath).toBeTruthy();
@@ -227,8 +241,42 @@ describe("projectUploadRoute", () => {
       });
 
       expect(response.status).toBe(400);
-      await expect(response.text()).resolves.toContain("Git URL is not allowed.");
+      await expect(response.json()).resolves.toMatchObject({
+        code: "INVALID_GIT_URL",
+        error: "Git URL is not allowed.",
+      });
     });
+  });
+
+  it("applies the upload rate limiter before multer writes a temp file", async () => {
+    const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
+    const beforeFiles = await listUploadTempFiles();
+    uploadLimiterMock.mockImplementationOnce(async (_req: unknown, res: unknown) => {
+      const response = res as { status: (code: number) => { json: (payload: unknown) => void } };
+      response.status(429).json({
+        error: "Too Many Requests",
+        message: "Too many upload requests, please try again later",
+      });
+    });
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(429);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "Too Many Requests",
+        message: "Too many upload requests, please try again later",
+      });
+    });
+
+    expect(vi.mocked(queueImportProjectZipFromTempFile)).not.toHaveBeenCalled();
+    await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
   });
 
   it("deletes only expired temp zip files from the upload temp directory", async () => {

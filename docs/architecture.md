@@ -9,11 +9,13 @@ This document captures the operational boundaries that matter for real deploymen
 - Only one active job per project is allowed through the `(projectId, activeKey)` unique index and transaction-time conflict checks.
 - The worker claims queued jobs from MySQL instead of relying on process-local promises.
 - Running jobs are leased with `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts`.
-- Claiming is distributed-safe through an atomic conditional update. Competing workers may read the same candidate row, but only one claim update is allowed to win.
+- Multiple web replicas are supported, and multiple worker replicas are supported when they share the same MySQL database.
+- Claiming is distributed-safe through a DB-filtered candidate query plus an atomic conditional update. Competing workers may read the same candidate row, but only one claim update is allowed to win.
 - Workers heartbeat the lease while processing. If the heartbeat stops and the lease expires, the job can be retried safely until `maxAttempts` is reached.
 - Startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks `projects.status in (importing, analyzing)` as failed when no active job remains.
 - Startup recovery does not reset still-valid leases. Older rows without lease metadata fall back to the legacy stale-window check.
 - `PROJECT_JOB_STALE_MS` controls when a running job is considered stale.
+- If an environment cannot guarantee reliable shared-database semantics, use a single worker replica rather than disabling atomic claims.
 - Projects with queued/running jobs cannot be deleted. Deletion is rejected until the active work finishes or fails.
 
 ## tRPC Rate Limiting
@@ -40,6 +42,7 @@ This document captures the operational boundaries that matter for real deploymen
   - per-file extracted size
   - total extracted bytes
 - Unsafe archive paths reject the whole import.
+- Unsafe archive paths return `ZIP_UNSAFE_PATH` and require the archive to be fixed and re-uploaded; partial file skipping is intentionally not supported for traversal cases.
 - Oversize supported files are skipped with persisted warnings instead of exhausting memory.
 - Upload temp-file cleanup preserves ZIPs that are still referenced by active queued/running `import_zip` jobs.
 

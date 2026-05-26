@@ -1,18 +1,9 @@
 import type { Express, Request, Response } from "express";
 import { AppError } from "../appError";
+import { sendAppErrorResponse } from "../httpApiErrors";
 import { buildReportArchiveBuffer } from "../services/projectWorkflow";
 import { createRateLimiter } from "./rateLimiter";
 import { sdk } from "./sdk";
-
-function sendAppError(res: Response, error: AppError) {
-  const status =
-    error.code === "PROJECT_NOT_FOUND" ? 404 : error.code === "REPORT_NOT_READY" ? 409 : error.code === "REPORT_TOO_LARGE" ? 413 : 400;
-  const remediation =
-    error.code === "REPORT_TOO_LARGE"
-      ? "Try analyzing a smaller project slice, splitting the import, or raising MAX_REPORT_ARCHIVE_BYTES deliberately."
-      : undefined;
-  res.status(status).json({ error: error.message, code: error.code, remediation });
-}
 
 export function registerReportDownloadRoute(app: Express) {
   app.get("/api/projects/:projectId/report.zip", createRateLimiter("heavyRead"), async (req: Request, res: Response) => {
@@ -31,7 +22,16 @@ export function registerReportDownloadRoute(app: Express) {
       res.status(200).send(archive.buffer);
     } catch (error) {
       if (error instanceof AppError) {
-        sendAppError(res, error);
+        sendAppErrorResponse(
+          res,
+          error,
+          error.code === "REPORT_TOO_LARGE"
+            ? {
+                remediation:
+                  "Try analyzing a smaller project slice, splitting the import, or raising MAX_REPORT_ARCHIVE_BYTES deliberately.",
+              }
+            : undefined
+        );
         return;
       }
 

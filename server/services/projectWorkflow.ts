@@ -501,34 +501,85 @@ function kickProjectJobWorker() {
   return projectJobWorkerLoop;
 }
 
+function compareProjectJobClaimOrder(left: Pick<ProjectJobRow, "createdAt" | "id">, right: Pick<ProjectJobRow, "createdAt" | "id">) {
+  const leftCreatedAt = toDate(left.createdAt)?.getTime() ?? 0;
+  const rightCreatedAt = toDate(right.createdAt)?.getTime() ?? 0;
+  if (leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt - rightCreatedAt;
+  }
+
+  return Number(left.id) - Number(right.id);
+}
+
+function buildClaimableProjectJobWhere(now: Date, legacyStaleBefore: Date) {
+  return and(
+    sql`${projectJobs.attemptCount} < ${projectJobs.maxAttempts}`,
+    or(
+      eq(projectJobs.status, "queued"),
+      and(
+        eq(projectJobs.status, "running"),
+        or(
+          and(sql`${projectJobs.leaseUntil} is not null`, sql`${projectJobs.leaseUntil} <= ${now}`),
+          and(isNull(projectJobs.leaseUntil), or(isNull(projectJobs.startedAt), sql`${projectJobs.startedAt} <= ${legacyStaleBefore}`))
+        )
+      )
+    )
+  );
+}
+
+async function selectClaimableProjectJobCandidate(
+  db: DbHandle,
+  now: Date,
+  legacyStaleBefore: Date
+): Promise<ProjectJobRow | null> {
+  if (isInMemoryDb(db)) {
+    const jobs = await db.select().from(projectJobs);
+    const candidate = jobs
+      .filter((job) => {
+        if (!canRetryProjectJob(job)) {
+          return false;
+        }
+
+        if (job.status === "queued") {
+          return true;
+        }
+
+        if (job.status !== "running") {
+          return false;
+        }
+
+        if (hasProjectJobLease(job)) {
+          return isProjectJobLeaseExpired(job, now);
+        }
+
+        const startedAt = toDate(job.startedAt);
+        return !startedAt || startedAt.getTime() <= legacyStaleBefore.getTime();
+      })
+      .sort(compareProjectJobClaimOrder)[0];
+
+    return candidate ?? null;
+  }
+
+  const [candidate] = await db
+    .select()
+    .from(projectJobs)
+    .where(buildClaimableProjectJobWhere(now, legacyStaleBefore))
+    .orderBy(asc(projectJobs.createdAt), asc(projectJobs.id))
+    .limit(1);
+
+  return candidate ?? null;
+}
+
 async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
   const db = await requireDb();
   const now = new Date();
   const legacyStaleBefore = new Date(now.getTime() - STALE_PROJECT_JOB_MS);
-  const candidateRows = (await db.select().from(projectJobs)).filter(
-    (job) => {
-      if (!canRetryProjectJob(job)) {
-        return false;
-      }
-
-      if (job.status === "queued") {
-        return true;
-      }
-
-      if (job.status !== "running") {
-        return false;
-      }
-
-      if (hasProjectJobLease(job)) {
-        return isProjectJobLeaseExpired(job, now);
-      }
-
-      const startedAt = toDate(job.startedAt);
-      return !startedAt || startedAt.getTime() <= legacyStaleBefore.getTime();
+  while (true) {
+    const nextJob = await selectClaimableProjectJobCandidate(db, now, legacyStaleBefore);
+    if (!nextJob) {
+      return null;
     }
-  );
 
-  for (const nextJob of candidateRows.sort((left, right) => Number(left.id) - Number(right.id))) {
     const startedAt = nextJob.startedAt ? toDate(nextJob.startedAt) ?? now : now;
     const lease = buildProjectJobLease(now);
     const updateConditions = [eq(projectJobs.id, nextJob.id)];
@@ -583,8 +634,6 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
 
     return claimedJob;
   }
-
-  return null;
 }
 
 export async function claimNextQueuedProjectJobForTests() {

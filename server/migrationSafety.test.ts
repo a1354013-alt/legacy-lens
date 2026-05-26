@@ -104,6 +104,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [heartbeatAtColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
       const [attemptCountColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
       const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
+      const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
 
       expect(projectColumns).toHaveLength(1);
       expect(jobColumns).toHaveLength(1);
@@ -114,6 +115,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       expect(heartbeatAtColumns).toHaveLength(1);
       expect(attemptCountColumns).toHaveLength(1);
       expect(maxAttemptsColumns).toHaveLength(1);
+      expect(claimIndexes).toHaveLength(4);
     } finally {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
@@ -164,6 +166,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [heartbeatAtColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
       const [attemptCountColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
       const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
+      const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
       const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
 
       expect(projectRows[0]?.status).toBe("completed");
@@ -189,6 +192,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       expect(heartbeatAtColumns).toHaveLength(1);
       expect(attemptCountColumns).toHaveLength(1);
       expect(maxAttemptsColumns).toHaveLength(1);
+      expect(claimIndexes).toHaveLength(4);
       expect(projectColumns).toHaveLength(1);
     } finally {
       await connection.end();

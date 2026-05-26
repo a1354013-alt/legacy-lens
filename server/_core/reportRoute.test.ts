@@ -56,9 +56,13 @@ describe("reportRoute", () => {
 
     await withReportServer(async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/projects/404/report.zip`);
+      const payload = (await response.json()) as { error: string; code: string };
 
       expect(response.status).toBe(404);
-      expect(await response.text()).toContain("Project not found.");
+      expect(payload).toMatchObject({
+        code: "PROJECT_NOT_FOUND",
+        error: "Project not found.",
+      });
     });
   });
 
@@ -68,9 +72,13 @@ describe("reportRoute", () => {
 
     await withReportServer(async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/projects/42/report.zip`);
+      const payload = (await response.json()) as { error: string; code: string };
 
       expect(response.status).toBe(409);
-      expect(await response.text()).toContain("Analysis report is not ready");
+      expect(payload).toMatchObject({
+        code: "REPORT_NOT_READY",
+        error: expect.stringContaining("Analysis report is not ready"),
+      });
     });
   });
 
@@ -99,7 +107,19 @@ describe("reportRoute", () => {
       const response = await fetch(`${baseUrl}/api/projects/42/report.zip`);
 
       expect(response.status).toBe(401);
-      await expect(response.text()).resolves.toContain("Invalid session");
+      await expect(response.json()).resolves.toMatchObject({ error: "Invalid session." });
+    });
+  });
+
+  it("returns 500 for unexpected internal failures instead of misclassifying them as bad input", async () => {
+    const { buildReportArchiveBuffer } = await import("../services/projectWorkflow");
+    vi.mocked(buildReportArchiveBuffer).mockRejectedValueOnce(new Error("disk read failed"));
+
+    await withReportServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/projects/42/report.zip`);
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({ error: "disk read failed" });
     });
   });
 });

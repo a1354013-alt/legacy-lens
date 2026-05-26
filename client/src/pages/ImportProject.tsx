@@ -25,6 +25,7 @@ import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
 
 type WorkflowPhase = "idle" | "creating" | "waiting-import" | "waiting-analysis" | "redirecting";
 type ImportUploadResponse = { jobId: number; jobType: "import_zip" | "import_git" };
+type ApiErrorPayload = { error?: string; message?: string; code?: string };
 
 function getPhaseLabel(phase: WorkflowPhase) {
   return t(`importProject.phaseLabel.${phase}`);
@@ -32,6 +33,16 @@ function getPhaseLabel(phase: WorkflowPhase) {
 
 function getPhaseDescription(phase: WorkflowPhase) {
   return t(`importProject.phaseDescription.${phase}`);
+}
+
+async function readApiErrorMessage(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const payload = (await response.json().catch(() => null)) as ApiErrorPayload | null;
+    return payload?.error ?? payload?.message ?? t("importProject.alerts.uploadFailed");
+  }
+
+  return (await response.text()) || t("importProject.alerts.uploadFailed");
 }
 
 export default function ImportProject() {
@@ -188,7 +199,7 @@ export default function ImportProject() {
       });
 
       if (!response.ok) {
-        const message = (await response.text()) || t("importProject.alerts.uploadFailed");
+        const message = await readApiErrorMessage(response);
         throw new Error(message);
       }
 

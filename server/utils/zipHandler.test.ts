@@ -145,7 +145,7 @@ describe("zipHandler", () => {
     } as any);
 
     await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
-      code: "ZIP_INVALID",
+      code: "ZIP_UNSAFE_PATH",
       message: expect.stringContaining("unsafe path"),
     });
   });
@@ -155,7 +155,43 @@ describe("zipHandler", () => {
     zip.file("/absolute/main.go", "package main\n");
 
     await expect(extractFilesFromZip(await zip.generateAsync({ type: "base64" }))).rejects.toMatchObject({
-      code: "ZIP_INVALID",
+      code: "ZIP_UNSAFE_PATH",
+      message: expect.stringContaining("unsafe path"),
+    });
+  });
+
+  it("rejects archives with Windows drive paths", async () => {
+    vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
+      files: [
+        {
+          path: "C:/windows/system32/evil.go",
+          type: "File",
+          vars: { uncompressedSize: 13 },
+          stream: () => Readable.from([Buffer.from("package main\n")]),
+        },
+      ],
+    } as any);
+
+    await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
+      code: "ZIP_UNSAFE_PATH",
+      message: expect.stringContaining("unsafe path"),
+    });
+  });
+
+  it("rejects archives with nested traversal paths", async () => {
+    vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
+      files: [
+        {
+          path: "safe/../../evil.go",
+          type: "File",
+          vars: { uncompressedSize: 13 },
+          stream: () => Readable.from([Buffer.from("package main\n")]),
+        },
+      ],
+    } as any);
+
+    await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
+      code: "ZIP_UNSAFE_PATH",
       message: expect.stringContaining("unsafe path"),
     });
   });

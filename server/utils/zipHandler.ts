@@ -104,7 +104,7 @@ export function createSingleFileSizeWarning(filePath: string): ImportWarning {
 }
 
 export function assertUnsafeArchivePath(rawPath: string) {
-  throw new AppError("ZIP_INVALID", `Archive contains an unsafe path and was rejected: ${rawPath}.`);
+  throw new AppError("ZIP_UNSAFE_PATH", `Archive contains an unsafe path and was rejected: ${rawPath}. Fix the ZIP contents and upload it again.`);
 }
 
 export function assertSingleFileSize(byteLength: number, filePath: string) {

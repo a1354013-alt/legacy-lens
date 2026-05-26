@@ -262,6 +262,7 @@ export const projectJobs = mysqlTable(
     statusIdx: index("projectJobs_status_idx").on(table.status),
     projectStatusIdx: index("projectJobs_projectId_status_idx").on(table.projectId, table.status),
     statusLeaseIdx: index("projectJobs_status_leaseUntil_idx").on(table.status, table.leaseUntil),
+    claimIdx: index("projectJobs_claim_idx").on(table.status, table.leaseUntil, table.createdAt, table.id),
     activeProjectUniqueIdx: uniqueIndex("projectJobs_active_project_unique").on(table.projectId, table.activeKey),
   })
 );

@@ -966,6 +966,99 @@ describe("project workflow", () => {
     });
   });
 
+  it("does not let another worker claim a running job while its lease is still valid", async () => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "analyzing" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "running",
+      progress: 60,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      lockedBy: "worker-still-active",
+      heartbeatAt: new Date("2026-01-01T00:00:10.000Z"),
+      leaseUntil: new Date("2099-01-01T00:00:20.000Z"),
+      attemptCount: 1,
+      maxAttempts: 3,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:00:05.000Z"),
+      finishedAt: null,
+    });
+
+    const claim = await claimNextQueuedProjectJobForTests();
+
+    expect(claim).toBeNull();
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      id: 1,
+      status: "running",
+      lockedBy: "worker-still-active",
+      attemptCount: 1,
+    });
+  });
+
+  it("claims queued jobs in stable createdAt/id order without scanning unrelated completed rows into execution", async () => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push(
+      {
+        id: 3,
+        projectId: 1,
+        userId: 7,
+        type: "analyze",
+        status: "completed",
+        progress: 100,
+        errorCode: null,
+        errorMessage: null,
+        payloadJson: null,
+        activeKey: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        startedAt: new Date("2026-01-01T00:01:00.000Z"),
+        finishedAt: new Date("2026-01-01T00:02:00.000Z"),
+      },
+      {
+        id: 2,
+        projectId: 1,
+        userId: 7,
+        type: "analyze",
+        status: "queued",
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        payloadJson: JSON.stringify({ type: "analyze" }),
+        activeKey: "active",
+        createdAt: new Date("2026-01-01T00:00:05.000Z"),
+        startedAt: null,
+        finishedAt: null,
+      },
+      {
+        id: 1,
+        projectId: 1,
+        userId: 7,
+        type: "analyze",
+        status: "queued",
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        payloadJson: JSON.stringify({ type: "analyze" }),
+        activeKey: "active",
+        createdAt: new Date("2026-01-01T00:00:05.000Z"),
+        startedAt: null,
+        finishedAt: null,
+      }
+    );
+
+    const firstClaim = await claimNextQueuedProjectJobForTests();
+    const secondClaim = await claimNextQueuedProjectJobForTests();
+
+    expect(firstClaim).toMatchObject({ id: 1, status: "running" });
+    expect(secondClaim).toMatchObject({ id: 2, status: "running" });
+  });
+
   it("rejects overlapping import and analyze jobs for the same project", async () => {
     const { queueAnalyzeProject, queueImportProjectGit, queueImportProjectZip } = await import("./projectWorkflow");
     seedProject(1, { status: "ready" });

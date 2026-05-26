@@ -20,6 +20,7 @@ This document records intentionally unfinished or bounded behavior so deployment
 
 - Worker coordination is lease-based and safe for multiple instances, but it still depends on timely heartbeats and a healthy shared MySQL database.
 - Long-running jobs that exceed the lease window without heartbeats will be retried; size your worker resources so legitimate work does not starve the heartbeat loop.
+- If a deployment cannot rely on shared-database conditional updates, run a single worker replica rather than weakening the claim path.
 - Deleting a project is intentionally blocked while queued/running work exists. If you need cancel semantics, that remains a future enhancement.
 
 ## Report Export Boundaries

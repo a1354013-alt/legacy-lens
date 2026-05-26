@@ -324,6 +324,20 @@ Operational notes:
 Report downloads should use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available only for compatibility and should be treated as deprecated.
 
 Project imports should use `POST /api/projects/:projectId/upload` with multipart form data. The legacy tRPC `projects.uploadFiles` mutation remains available only for small compatibility payloads and is intentionally capped at 2MB raw ZIP content to avoid storing large base64 archives in job payloads.
+The multipart upload route is protected by an Express upload rate limiter before `multer` starts parsing the request body, so repeated large-file uploads are rejected with `429` before temp files are written.
+
+Upload/report error contract:
+- `401`: unauthenticated or invalid session
+- `404`: project not found (per the current ownership-hiding strategy)
+- `409`: conflicting project/job state such as an already-active import/analysis job or a report that is not ready yet
+- `413`: upload/report archive exceeds the configured size limit
+- `429`: route-specific rate limit exceeded
+- `500`: database or unexpected internal failure
+
+ZIP safety contract:
+- Unsupported or malformed archives return `ZIP_INVALID`.
+- Any unsafe archive path such as `../evil.go`, `/absolute/main.go`, `C:/windows/evil.go`, or nested traversal segments rejects the entire archive with `ZIP_UNSAFE_PATH`.
+- Unsafe ZIP entries are never partially skipped. Fix the archive and upload it again.
 
 ### Job Model
 
@@ -331,10 +345,12 @@ Project imports should use `POST /api/projects/:projectId/upload` with multipart
 - `projectJobs` is the single source of truth for queued/running/completed/failed work; process memory is only a local execution aid.
 - Job status values: `queued`, `running`, `completed`, `failed`.
 - The queue is DB-backed and restart-safe: startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks stuck `importing` / `analyzing` projects as failed when no active job still exists.
-- Each running job carries `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts` so multiple workers can safely coordinate through MySQL.
-- Claiming a queued job is atomic. If two workers race for the same row, only one conditional update succeeds and only that worker continues.
+- The system supports multiple web replicas, and worker replicas are safe when they share the same MySQL database.
+- Each running job carries `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts` so multiple workers can coordinate through DB leases.
+- Claiming uses a DB-selected candidate plus an atomic conditional update. Competing workers may examine the same candidate row, but only one claim update is allowed to win for a given lease window.
 - Running jobs extend their lease through periodic heartbeats while work is in flight. If a worker dies and the lease expires, another worker may safely reclaim the job until its retry budget is exhausted.
 - Startup recovery respects still-valid leases. Legacy rows without lease metadata fall back to the older stale-window heuristic instead of being reset immediately.
+- If a deployment cannot provide reliable shared-database semantics, run a single worker replica instead of weakening the claim logic.
 - `PROJECT_JOB_STALE_MS` controls when a running job is treated as stale during startup recovery (default `900000` / 15 minutes).
 - The UI polls project state plus the latest job state instead of waiting on a single long-running request.
 - The backend enforces one active job per project across `import_zip`, `import_git`, and `analyze`; conflicting requests fail with a stable conflict error instead of relying on disabled buttons.

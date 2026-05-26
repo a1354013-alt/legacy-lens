@@ -147,6 +147,7 @@ export const appErrorCodes = [
   "GIT_CLONE_FAILED",
   "EMPTY_SOURCE",
   "ZIP_INVALID",
+  "ZIP_UNSAFE_PATH",
   "IMPORT_FAILED",
   "ANALYSIS_FAILED",
   "REPORT_NOT_READY",
