@@ -30,6 +30,14 @@ const upload = multer({
       callback(null, buildSafeUploadTempFileName());
     },
   }),
+  fileFilter: (_req, file, callback) => {
+    if (typeof file.originalname === "string" && file.originalname.toLowerCase().endsWith(".zip")) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new AppError("ZIP_INVALID", "Only .zip uploads are supported."));
+  },
   limits: {
     fileSize: MAX_ZIP_RAW_BYTES,
     files: 1,
@@ -133,6 +141,11 @@ export function registerProjectUploadRoute(app: Express) {
 
       if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
         sendHttpErrorResponse(res, 413, "ZIP_INVALID", `ZIP upload exceeds the raw archive limit (${MAX_ZIP_RAW_BYTES} bytes).`);
+        return;
+      }
+
+      if (error instanceof AppError) {
+        sendAppErrorResponse(res, error);
         return;
       }
 

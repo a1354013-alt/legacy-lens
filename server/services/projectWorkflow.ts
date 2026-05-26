@@ -76,6 +76,17 @@ const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 type ProjectJobRow = typeof projectJobs.$inferSelect;
+type ProjectJobOwnership = {
+  jobId: number;
+  projectId: number;
+  type: ProjectJobRow["type"];
+  lockedBy: string;
+  attemptCount: number;
+};
+type ProjectJobExecutionState = {
+  ownership: ProjectJobOwnership | null;
+  abortedError: ProjectJobExecutionAbortedError | null;
+};
 type ProjectJobPayload =
   | { type: "import_zip"; zipContent: string }
   | { type: "import_zip"; tempFilePath: string; originalFileName?: string | null }
@@ -90,6 +101,18 @@ const PROJECT_JOB_HEARTBEAT_MS = Number.parseInt(process.env.PROJECT_JOB_HEARTBE
 const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = Number.parseInt(process.env.PROJECT_JOB_MAX_ATTEMPTS ?? "3", 10);
 const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
 let projectJobWorkerLoop: Promise<void> | null = null;
+
+class ProjectJobExecutionAbortedError extends Error {
+  constructor(
+    message: string,
+    readonly reason: "ownership_lost" | "heartbeat_failed",
+    readonly ownership: ProjectJobOwnership,
+    readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "ProjectJobExecutionAbortedError";
+  }
+}
 
 function isProjectWorkerEnabled() {
   return process.env.PROJECT_WORKER_ENABLED !== "false";
@@ -196,6 +219,27 @@ function buildProjectJobLease(now = new Date()) {
   return {
     heartbeatAt: now,
     leaseUntil: new Date(now.getTime() + PROJECT_JOB_LEASE_MS),
+  };
+}
+
+function buildProjectJobOwnership(job: Pick<ProjectJobRow, "id" | "projectId" | "type" | "lockedBy" | "attemptCount">): ProjectJobOwnership | null {
+  if (!job.lockedBy) {
+    return null;
+  }
+
+  return {
+    jobId: job.id,
+    projectId: job.projectId,
+    type: job.type,
+    lockedBy: job.lockedBy,
+    attemptCount: getProjectJobAttemptCount(job),
+  };
+}
+
+function createProjectJobExecutionState(ownership: ProjectJobOwnership | null): ProjectJobExecutionState {
+  return {
+    ownership,
+    abortedError: null,
   };
 }
 
@@ -387,9 +431,108 @@ async function transitionProjectState(
   await db.update(projects).set({ ...updates, updatedAt: new Date() }).where(condition);
 }
 
-async function updateProjectJob(jobId: number, updates: Partial<typeof projectJobs.$inferInsert>) {
-  const db = await requireDb();
-  await db.update(projectJobs).set(updates).where(eq(projectJobs.id, jobId));
+function isProjectJobOwnershipActive(
+  job: Pick<ProjectJobRow, "id" | "status" | "lockedBy" | "attemptCount" | "leaseUntil"> | null,
+  ownership: ProjectJobOwnership,
+  now = new Date()
+) {
+  if (!job) {
+    return false;
+  }
+
+  const leaseUntil = toDate(job.leaseUntil);
+  return (
+    job.id === ownership.jobId &&
+    job.status === "running" &&
+    job.lockedBy === ownership.lockedBy &&
+    getProjectJobAttemptCount(job) === ownership.attemptCount &&
+    Boolean(leaseUntil && leaseUntil.getTime() > now.getTime())
+  );
+}
+
+async function hasProjectJobOwnership(ownership: ProjectJobOwnership, now = new Date()) {
+  const job = await getProjectJobById(ownership.jobId);
+  return isProjectJobOwnershipActive(job, ownership, now);
+}
+
+function createProjectJobExecutionAbortedError(
+  reason: "ownership_lost" | "heartbeat_failed",
+  ownership: ProjectJobOwnership,
+  action: string,
+  cause?: unknown
+) {
+  const message =
+    reason === "ownership_lost"
+      ? `Project job ${ownership.jobId} lost ownership before ${action}.`
+      : `Project job ${ownership.jobId} heartbeat failed before ${action}.`;
+  return new ProjectJobExecutionAbortedError(message, reason, ownership, cause);
+}
+
+function markProjectJobExecutionAborted(
+  state: ProjectJobExecutionState,
+  error: ProjectJobExecutionAbortedError,
+  action: string,
+  extra: Record<string, unknown> = {}
+) {
+  if (!state.abortedError) {
+    state.abortedError = error;
+    logger.warn("Project job execution aborted", {
+      action,
+      status: "error",
+      jobId: error.ownership.jobId,
+      projectId: error.ownership.projectId,
+      type: error.ownership.type,
+      lockedBy: error.ownership.lockedBy,
+      attemptCount: error.ownership.attemptCount,
+      reason: error.reason,
+      message: error.message,
+      ...extra,
+    });
+  }
+
+  return state.abortedError;
+}
+
+async function assertProjectJobExecutionActive(
+  state: ProjectJobExecutionState | undefined,
+  action: string,
+  options?: { refreshLease?: boolean }
+) {
+  if (!state?.ownership) {
+    return;
+  }
+
+  if (state.abortedError) {
+    throw state.abortedError;
+  }
+
+  try {
+    const stillOwned = options?.refreshLease
+      ? await heartbeatProjectJobLease(state.ownership)
+      : await hasProjectJobOwnership(state.ownership);
+    if (!stillOwned) {
+      throw markProjectJobExecutionAborted(
+        state,
+        createProjectJobExecutionAbortedError("ownership_lost", state.ownership, action),
+        "project.job.execution.aborted",
+        { checkpoint: action }
+      );
+    }
+  } catch (error) {
+    if (error instanceof ProjectJobExecutionAbortedError) {
+      throw error;
+    }
+
+    throw markProjectJobExecutionAborted(
+      state,
+      createProjectJobExecutionAbortedError("heartbeat_failed", state.ownership, action, error),
+      "project.job.execution.aborted",
+      {
+        checkpoint: action,
+        cause: error instanceof Error ? error.message : String(error),
+      }
+    );
+  }
 }
 
 async function getProjectJobById(jobId: number) {
@@ -703,25 +846,25 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
   });
 }
 
-async function executeProjectJob(job: ProjectJobRow) {
+async function executeProjectJob(job: ProjectJobRow, executionState: ProjectJobExecutionState) {
   const payload = parseProjectJobPayload(job);
 
   if (payload.type === "import_zip") {
     if ("tempFilePath" in payload) {
-      await importProjectZipFromTempFile(job.projectId, job.userId, payload.tempFilePath);
+      await importProjectZipFromTempFile(job.projectId, job.userId, payload.tempFilePath, executionState);
       return;
     }
 
-    await importProjectZip(job.projectId, job.userId, payload.zipContent);
+    await importProjectZip(job.projectId, job.userId, payload.zipContent, executionState);
     return;
   }
 
   if (payload.type === "import_git") {
-    await importProjectGit(job.projectId, job.userId, payload.gitUrl);
+    await importProjectGit(job.projectId, job.userId, payload.gitUrl, executionState);
     return;
   }
 
-  await analyzeProject(job.projectId, job.userId);
+  await analyzeProject(job.projectId, job.userId, executionState);
 }
 
 function buildProjectJobFailureFallback(job: Pick<ProjectJobRow, "type">) {
@@ -732,16 +875,26 @@ function buildProjectJobFailureFallback(job: Pick<ProjectJobRow, "type">) {
   return new AppError("IMPORT_FAILED", "Project job failed.");
 }
 
-async function heartbeatProjectJobLease(jobId: number, lockedBy: string) {
+async function heartbeatProjectJobLease(ownership: ProjectJobOwnership) {
   const db = await requireDb();
   const lease = buildProjectJobLease();
-  await db
+  const updateResult = await db
     .update(projectJobs)
     .set({
       heartbeatAt: lease.heartbeatAt,
       leaseUntil: lease.leaseUntil,
     })
-    .where(and(eq(projectJobs.id, jobId), eq(projectJobs.status, "running"), eq(projectJobs.lockedBy, lockedBy)));
+    .where(
+      and(
+        eq(projectJobs.id, ownership.jobId),
+        eq(projectJobs.status, "running"),
+        eq(projectJobs.lockedBy, ownership.lockedBy),
+        eq(projectJobs.attemptCount, ownership.attemptCount)
+      )
+    );
+
+  const affectedRows = extractAffectedRows(updateResult);
+  return typeof affectedRows === "number" ? affectedRows > 0 : true;
 }
 
 async function assertProjectJobProjectExists(projectId: number) {
@@ -751,25 +904,57 @@ async function assertProjectJobProjectExists(projectId: number) {
   }
 }
 
-async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "failed", error?: AppError) {
+async function finalizeProjectJob(
+  job: ProjectJobRow,
+  executionState: ProjectJobExecutionState,
+  status: "completed" | "failed",
+  error?: AppError
+) {
   const now = new Date();
   const queuedAt = toDate(job.createdAt);
   const startedAt = toDate(job.startedAt);
   const queueDurationMs = queuedAt && startedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null;
   const runDurationMs = startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+  const ownership = executionState.ownership;
 
-  await updateProjectJob(job.id, {
-    status,
-    progress: 100,
-    activeKey: null,
-    payloadJson: null,
-    lockedBy: null,
-    leaseUntil: null,
-    heartbeatAt: null,
-    errorCode: error?.code ?? null,
-    errorMessage: error?.message ?? null,
-    finishedAt: now,
-  });
+  if (!ownership) {
+    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be finalized because its ownership metadata is missing.`);
+  }
+
+  await assertProjectJobExecutionActive(executionState, `job.finalize.${status}`, { refreshLease: true });
+  const db = await requireDb();
+  const updateResult = await db
+    .update(projectJobs)
+    .set({
+      status,
+      progress: 100,
+      activeKey: null,
+      payloadJson: null,
+      lockedBy: null,
+      leaseUntil: null,
+      heartbeatAt: null,
+      errorCode: error?.code ?? null,
+      errorMessage: error?.message ?? null,
+      finishedAt: now,
+    })
+    .where(
+      and(
+        eq(projectJobs.id, ownership.jobId),
+        eq(projectJobs.status, "running"),
+        eq(projectJobs.lockedBy, ownership.lockedBy),
+        eq(projectJobs.attemptCount, ownership.attemptCount)
+      )
+    );
+
+  const affectedRows = extractAffectedRows(updateResult);
+  if (typeof affectedRows === "number" && affectedRows === 0) {
+    throw markProjectJobExecutionAborted(
+      executionState,
+      createProjectJobExecutionAbortedError("ownership_lost", ownership, `job.finalize.${status}`),
+      "project.job.execution.aborted",
+      { checkpoint: `job.finalize.${status}` }
+    );
+  }
 
   if (status === "failed") {
     if (job.type === "import_zip" || job.type === "import_git") {
@@ -798,6 +983,7 @@ export async function runClaimedProjectJob(jobId: number) {
   if (!claimedJob) {
     throw new AppError("PROJECT_JOB_NOT_FOUND", `Project job ${jobId} was not found.`);
   }
+  const executionState = createProjectJobExecutionState(buildProjectJobOwnership(claimedJob));
   let tempFilePath: string | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
 
@@ -805,18 +991,52 @@ export async function runClaimedProjectJob(jobId: number) {
     const payload = parseProjectJobPayload(claimedJob);
     tempFilePath = getImportZipPayloadTempPath(payload);
     await assertProjectJobProjectExists(claimedJob.projectId);
-    if (claimedJob.lockedBy) {
+    await assertProjectJobExecutionActive(executionState, "job.start", { refreshLease: true });
+    const heartbeatOwnership = executionState.ownership;
+    if (heartbeatOwnership) {
       heartbeatTimer = setInterval(() => {
-        void heartbeatProjectJobLease(claimedJob.id, claimedJob.lockedBy ?? "")
-          .catch(() => undefined);
+        void heartbeatProjectJobLease(heartbeatOwnership)
+          .then((stillOwned) => {
+            if (!stillOwned) {
+              markProjectJobExecutionAborted(
+                executionState,
+                createProjectJobExecutionAbortedError("ownership_lost", heartbeatOwnership, "job.heartbeat"),
+                "project.job.execution.aborted",
+                { checkpoint: "job.heartbeat" }
+              );
+            }
+          })
+          .catch((error) => {
+            markProjectJobExecutionAborted(
+              executionState,
+              createProjectJobExecutionAbortedError("heartbeat_failed", heartbeatOwnership, "job.heartbeat", error),
+              "project.job.execution.aborted",
+              {
+                checkpoint: "job.heartbeat",
+                cause: error instanceof Error ? error.message : String(error),
+              }
+            );
+          });
       }, Math.max(1_000, PROJECT_JOB_HEARTBEAT_MS));
     }
-    await executeProjectJob(claimedJob);
+    await executeProjectJob(claimedJob, executionState);
+    await assertProjectJobExecutionActive(executionState, "job.pre_finalize");
     await assertProjectJobProjectExists(claimedJob.projectId);
-    await finalizeProjectJob(claimedJob, "completed");
+    await finalizeProjectJob(claimedJob, executionState, "completed");
   } catch (error) {
+    if (error instanceof ProjectJobExecutionAbortedError) {
+      return;
+    }
+
     const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
-    await finalizeProjectJob(claimedJob, "failed", appError);
+    try {
+      await finalizeProjectJob(claimedJob, executionState, "failed", appError);
+    } catch (finalizeError) {
+      if (finalizeError instanceof ProjectJobExecutionAbortedError) {
+        return;
+      }
+      throw finalizeError;
+    }
     throw appError;
   } finally {
     if (heartbeatTimer) {
@@ -960,7 +1180,7 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
     }
 
     if (canRetryProjectJob(job)) {
-      await db
+      const updateResult = await db
         .update(projectJobs)
         .set({
           status: "queued",
@@ -973,13 +1193,32 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
           startedAt: null,
           finishedAt: null,
         })
-        .where(eq(projectJobs.id, job.id));
+        .where(
+          and(
+            eq(projectJobs.id, job.id),
+            eq(projectJobs.status, "running"),
+            job.lockedBy ? eq(projectJobs.lockedBy, job.lockedBy) : isNull(projectJobs.lockedBy),
+            eq(projectJobs.attemptCount, getProjectJobAttemptCount(job))
+          )
+        );
+      const affectedRows = extractAffectedRows(updateResult);
+      if (typeof affectedRows === "number" && affectedRows === 0) {
+        logger.warn("Startup recovery skipped requeue because ownership changed", {
+          action: "project.job.recovery.skipped",
+          status: "error",
+          jobId: job.id,
+          projectId: job.projectId,
+          lockedBy: job.lockedBy,
+          attemptCount: getProjectJobAttemptCount(job),
+        });
+        continue;
+      }
       recoveredJobCount += 1;
       continue;
     }
 
     const retryMessage = `Project job exceeded its retry budget (${getProjectJobAttemptCount(job)}/${getProjectJobMaxAttempts(job)}) after lease recovery.`;
-    await db
+    const updateResult = await db
       .update(projectJobs)
       .set({
         status: "failed",
@@ -993,7 +1232,27 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
         errorMessage: retryMessage,
         finishedAt: now,
       })
-      .where(eq(projectJobs.id, job.id));
+      .where(
+        and(
+          eq(projectJobs.id, job.id),
+          eq(projectJobs.status, "running"),
+          job.lockedBy ? eq(projectJobs.lockedBy, job.lockedBy) : isNull(projectJobs.lockedBy),
+          eq(projectJobs.attemptCount, getProjectJobAttemptCount(job))
+        )
+      );
+
+    const affectedRows = extractAffectedRows(updateResult);
+    if (typeof affectedRows === "number" && affectedRows === 0) {
+      logger.warn("Startup recovery skipped a project job because ownership changed", {
+        action: "project.job.recovery.skipped",
+        status: "error",
+        jobId: job.id,
+        projectId: job.projectId,
+        lockedBy: job.lockedBy,
+        attemptCount: getProjectJobAttemptCount(job),
+      });
+      continue;
+    }
 
     if (job.type === "analyze") {
       await failAnalysisProjectIfStillAnalyzing(job, now, new AppError("PROJECT_JOB_STALE", retryMessage));
@@ -1063,10 +1322,13 @@ export async function createProjectForUser(
 async function replaceProjectFiles(
   projectId: number,
   extractedFiles: Awaited<ReturnType<typeof extractFilesFromZip>>,
-  sourceUrl?: string
+  sourceUrl?: string,
+  executionState?: ProjectJobExecutionState
 ) {
   const db = await requireDb();
+  await assertProjectJobExecutionActive(executionState, "import.replace_files.prepare", { refreshLease: true });
   return db.transaction(async (tx) => {
+    await assertProjectJobExecutionActive(executionState, "import.replace_files.transaction");
     await transitionProjectState(tx, projectId, {
       status: "importing",
       importProgress: 10,
@@ -1079,6 +1341,7 @@ async function replaceProjectFiles(
 
     await clearProjectAnalysisGraph(tx, projectId, true);
     const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);
+    await assertProjectJobExecutionActive(executionState, "import.replace_files.persist");
 
     await transitionProjectState(tx, projectId, {
       status: "ready",
@@ -1093,13 +1356,15 @@ async function replaceProjectFiles(
   });
 }
 
-export async function importProjectZip(projectId: number, userId: number, zipContent: string) {
+export async function importProjectZip(projectId: number, userId: number, zipContent: string, executionState?: ProjectJobExecutionState) {
   await getOwnedProject(projectId, userId);
+  await assertProjectJobExecutionActive(executionState, "import.zip.start", { refreshLease: true });
   logger.info("Import started", { projectId, action: "import.zip.start", status: "ok" });
 
   try {
     const extractedFiles = await extractFilesFromZip(zipContent);
-    const fileIds = await replaceProjectFiles(projectId, extractedFiles);
+    await assertProjectJobExecutionActive(executionState, "import.zip.extracted", { refreshLease: true });
+    const fileIds = await replaceProjectFiles(projectId, extractedFiles, undefined, executionState);
 
     logger.info("Import completed", {
       projectId,
@@ -1119,6 +1384,9 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
       warnings: extractedFiles.warnings,
     };
   } catch (error) {
+    if (error instanceof ProjectJobExecutionAbortedError) {
+      throw error;
+    }
     const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
     logger.error("Import failed", {
       projectId,
@@ -1127,28 +1395,37 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
       code: appError.code,
       message: appError.message,
     });
-    const db = await requireDb();
-    await db
-      .update(projects)
-      .set({
-        status: "failed",
-        errorMessage: appError.message,
-        lastErrorCode: appError.code,
-        importWarningsJson: [],
-      })
-      .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    if (!executionState?.ownership) {
+      const db = await requireDb();
+      await db
+        .update(projects)
+        .set({
+          status: "failed",
+          errorMessage: appError.message,
+          lastErrorCode: appError.code,
+          importWarningsJson: [],
+        })
+        .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    }
     throw appError;
   }
 }
 
-export async function importProjectZipFromTempFile(projectId: number, userId: number, tempFilePath: string) {
+export async function importProjectZipFromTempFile(
+  projectId: number,
+  userId: number,
+  tempFilePath: string,
+  executionState?: ProjectJobExecutionState
+) {
   await getOwnedProject(projectId, userId);
+  await assertProjectJobExecutionActive(executionState, "import.zip_temp.start", { refreshLease: true });
   logger.info("Import started", { projectId, action: "import.zip.start", status: "ok", source: "temp_file" });
 
   try {
     const zipBuffer = await readFile(tempFilePath);
     const extractedFiles = await extractFilesFromZipBuffer(zipBuffer);
-    const fileIds = await replaceProjectFiles(projectId, extractedFiles);
+    await assertProjectJobExecutionActive(executionState, "import.zip_temp.extracted", { refreshLease: true });
+    const fileIds = await replaceProjectFiles(projectId, extractedFiles, undefined, executionState);
 
     logger.info("Import completed", {
       projectId,
@@ -1169,6 +1446,9 @@ export async function importProjectZipFromTempFile(projectId: number, userId: nu
       warnings: extractedFiles.warnings,
     };
   } catch (error) {
+    if (error instanceof ProjectJobExecutionAbortedError) {
+      throw error;
+    }
     const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
     logger.error("Import failed", {
       projectId,
@@ -1178,16 +1458,18 @@ export async function importProjectZipFromTempFile(projectId: number, userId: nu
       code: appError.code,
       message: appError.message,
     });
-    const db = await requireDb();
-    await db
-      .update(projects)
-      .set({
-        status: "failed",
-        errorMessage: appError.message,
-        lastErrorCode: appError.code,
-        importWarningsJson: [],
-      })
-      .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    if (!executionState?.ownership) {
+      const db = await requireDb();
+      await db
+        .update(projects)
+        .set({
+          status: "failed",
+          errorMessage: appError.message,
+          lastErrorCode: appError.code,
+          importWarningsJson: [],
+        })
+        .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    }
     throw appError;
   }
 }
@@ -1212,8 +1494,9 @@ export async function queueImportProjectZipFromTempFile(
   });
 }
 
-export async function importProjectGit(projectId: number, userId: number, gitUrl: string) {
+export async function importProjectGit(projectId: number, userId: number, gitUrl: string, executionState?: ProjectJobExecutionState) {
   await getOwnedProject(projectId, userId);
+  await assertProjectJobExecutionActive(executionState, "import.git.start", { refreshLease: true });
   const validatedGitUrl = await validateSafeGitUrl(gitUrl);
 
   logger.info("Import started", { projectId, action: "import.git.start", status: "ok" });
@@ -1223,7 +1506,8 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
     const { join } = await import("node:path");
     tempDir = join(tmpdir(), `legacy-lens-${projectId}-${Date.now()}`);
     const extractedFiles = await cloneAndExtractFiles(validatedGitUrl, tempDir);
-    const fileIds = await replaceProjectFiles(projectId, extractedFiles, gitUrl);
+    await assertProjectJobExecutionActive(executionState, "import.git.extracted", { refreshLease: true });
+    const fileIds = await replaceProjectFiles(projectId, extractedFiles, gitUrl, executionState);
 
     logger.info("Import completed", {
       projectId,
@@ -1243,6 +1527,9 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
       warnings: extractedFiles.warnings,
     };
   } catch (error) {
+    if (error instanceof ProjectJobExecutionAbortedError) {
+      throw error;
+    }
     const appError = toAppError(error, new AppError("GIT_CLONE_FAILED", "Git import failed."));
     logger.error("Import failed", {
       projectId,
@@ -1251,16 +1538,18 @@ export async function importProjectGit(projectId: number, userId: number, gitUrl
       code: appError.code,
       message: appError.message,
     });
-    const db = await requireDb();
-    await db
-      .update(projects)
-      .set({
-        status: "failed",
-        errorMessage: appError.message,
-        lastErrorCode: appError.code,
-        importWarningsJson: [],
-      })
-      .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    if (!executionState?.ownership) {
+      const db = await requireDb();
+      await db
+        .update(projects)
+        .set({
+          status: "failed",
+          errorMessage: appError.message,
+          lastErrorCode: appError.code,
+          importWarningsJson: [],
+        })
+        .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    }
     throw appError;
   } finally {
     if (tempDir) {
@@ -1304,8 +1593,10 @@ async function writeSuccessfulAnalysis(
   tx: DbHandle,
   projectId: number,
   projectFiles: Awaited<ReturnType<typeof getProjectFiles>>,
-  result: ProjectAnalysisResult
+  result: ProjectAnalysisResult,
+  executionState?: ProjectJobExecutionState
 ) {
+  await assertProjectJobExecutionActive(executionState, "analysis.write_success.prepare", { refreshLease: true });
   await clearProjectAnalysisGraph(tx, projectId);
 
   await replaceAnalysisResult(tx, projectId, {
@@ -1447,6 +1738,7 @@ async function writeSuccessfulAnalysis(
     });
   }
 
+  await assertProjectJobExecutionActive(executionState, "analysis.write_success.persist");
   await transitionProjectState(tx, projectId, {
     status: "completed",
     analysisProgress: 100,
@@ -1456,7 +1748,8 @@ async function writeSuccessfulAnalysis(
   });
 }
 
-async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: AppError) {
+async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: AppError, executionState?: ProjectJobExecutionState) {
+  await assertProjectJobExecutionActive(executionState, "analysis.write_failed.prepare", { refreshLease: true });
   await clearProjectAnalysisGraph(tx, projectId);
   await replaceAnalysisResult(tx, projectId, {
     status: "failed",
@@ -1468,6 +1761,7 @@ async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: Ap
     warningsJson: [],
     errorMessage: appError.message,
   });
+  await assertProjectJobExecutionActive(executionState, "analysis.write_failed.persist");
   await transitionProjectState(tx, projectId, {
     status: "failed",
     analysisProgress: 0,
@@ -1476,15 +1770,17 @@ async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: Ap
   });
 }
 
-export async function analyzeProject(projectId: number, userId: number) {
+export async function analyzeProject(projectId: number, userId: number, executionState?: ProjectJobExecutionState) {
   const project = await getOwnedProject(projectId, userId);
   if (!["ready", "completed", "failed", "analyzing"].includes(project.status)) {
     throw new AppError("INVALID_PROJECT_STATE", `Project is currently "${projectStatusLabels[project.status]}".`);
   }
 
+  await assertProjectJobExecutionActive(executionState, "analysis.start", { refreshLease: true });
   logger.info("Analysis started", { projectId, action: "analysis.start", status: "ok", focusLanguage: project.language });
   const db = await requireDb();
   await db.transaction(async (tx) => {
+    await assertProjectJobExecutionActive(executionState, "analysis.bootstrap");
     await transitionProjectState(
       tx,
       projectId,
@@ -1514,6 +1810,7 @@ export async function analyzeProject(projectId: number, userId: number) {
       throw new AppError("EMPTY_SOURCE", "Project does not contain any files to analyze.");
     }
 
+    await assertProjectJobExecutionActive(executionState, "analysis.files_loaded", { refreshLease: true });
     const analyzer = new Analyzer();
     const result = await analyzer.analyzeProject(
       projectFiles.map((file) => ({
@@ -1531,8 +1828,9 @@ export async function analyzeProject(projectId: number, userId: number) {
       );
     }
 
+    await assertProjectJobExecutionActive(executionState, "analysis.result_ready", { refreshLease: true });
     await db.transaction(async (tx) => {
-      await writeSuccessfulAnalysis(tx, projectId, projectFiles, result);
+      await writeSuccessfulAnalysis(tx, projectId, projectFiles, result, executionState);
     });
 
     logger.info("Analysis completed", {
@@ -1545,6 +1843,9 @@ export async function analyzeProject(projectId: number, userId: number) {
     });
     return result;
   } catch (error) {
+    if (error instanceof ProjectJobExecutionAbortedError) {
+      throw error;
+    }
     const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Analysis failed."));
     logger.error("Analysis failed", {
       projectId,
@@ -1553,8 +1854,11 @@ export async function analyzeProject(projectId: number, userId: number) {
       code: appError.code,
       message: appError.message,
     });
+    if (executionState?.ownership) {
+      await assertProjectJobExecutionActive(executionState, "analysis.error_finalize", { refreshLease: true });
+    }
     await db.transaction(async (tx) => {
-      await writeFailedAnalysis(tx, projectId, appError);
+      await writeFailedAnalysis(tx, projectId, appError, executionState);
     });
     throw appError;
   }

@@ -11,7 +11,8 @@ This document captures the operational boundaries that matter for real deploymen
 - Running jobs are leased with `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts`.
 - Multiple web replicas are supported, and multiple worker replicas are supported when they share the same MySQL database.
 - Claiming is distributed-safe through a DB-filtered candidate query plus an atomic conditional update. Competing workers may read the same candidate row, but only one claim update is allowed to win.
-- Workers heartbeat the lease while processing. If the heartbeat stops and the lease expires, the job can be retried safely until `maxAttempts` is reached.
+- Workers heartbeat the lease while processing. Heartbeats, retry decisions, and finalization are fenced with `lockedBy + attemptCount`, so stale workers cannot overwrite a reclaimed job or its project state.
+- If the heartbeat stops and the lease expires, the job can be retried safely until `maxAttempts` is reached. Stale worker finalization is rejected and logged.
 - Startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks `projects.status in (importing, analyzing)` as failed when no active job remains.
 - Startup recovery does not reset still-valid leases. Older rows without lease metadata fall back to the legacy stale-window check.
 - `PROJECT_JOB_STALE_MS` controls when a running job is considered stale.
@@ -60,6 +61,8 @@ This document captures the operational boundaries that matter for real deploymen
 - Git import validates hostnames and resolved IPs before clone.
 - Loopback, link-local, and private-network targets are rejected.
 - Production imports should still run behind outbound network policy; app-level validation is not a full SSRF substitute.
+- Production deployments should keep `LEGACY_LENS_GIT_HOST_ALLOWLIST` narrow and enforce outbound egress policy at the deployment layer.
+- Higher-security environments should run Git clone/import inside an isolated worker or container instead of the main web process.
 
 ## Analysis Semantics
 

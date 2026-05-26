@@ -4,7 +4,7 @@ Last reviewed: 2026-05-26
 
 `pnpm audit --audit-level high` currently passes.
 
-`pnpm audit --audit-level moderate` currently reports 9 moderate vulnerabilities. They are tracked here instead of being hidden with blanket overrides because the current findings are either:
+`pnpm audit --audit-level moderate` currently reports 10 moderate vulnerabilities. They are tracked here instead of being hidden with blanket overrides because the current findings are either:
 
 - dev-server-only issues in transitive tooling used by `vitest`, `vite`, or `drizzle-kit`
 - indirect dependency issues that need an upstream package release path
@@ -18,6 +18,7 @@ Current accepted moderate findings:
 - `mdast-util-to-hast` via `streamdown` / `react-markdown`. The app does not expose arbitrary end-user markdown authoring today; keep this under review if user-supplied markdown is introduced.
 - `uuid` via `mermaid`. This affects buffer-bound validation in UUID helper variants and is not on the server request path.
 - `ip-address` via `express-rate-limit`. The advisory targets HTML-emitting helper methods that Legacy Lens does not call.
+- `qs` via `express`. The advisory requires a specific `qs.stringify` option combination that Legacy Lens does not exercise on its request path.
 - `brace-expansion` via ESLint / TypeScript-ESLint. This is tooling-only and not part of the production runtime.
 
 Review notes:

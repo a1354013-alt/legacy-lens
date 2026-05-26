@@ -166,6 +166,31 @@ describe("projectUploadRoute", () => {
     });
   });
 
+  it("rejects non-zip uploads before job creation", async () => {
+    const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
+    const beforeFiles = await listUploadTempFiles();
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["not-a-zip"], { type: "text/plain" }), "notes.txt");
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "ZIP_INVALID",
+        error: "Only .zip uploads are supported.",
+        message: "Only .zip uploads are supported.",
+      });
+    });
+
+    expect(vi.mocked(queueImportProjectZipFromTempFile)).not.toHaveBeenCalled();
+    await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
+  });
+
   it("rejects invalid project ids and cleans the uploaded temp file", async () => {
     const beforeFiles = await listUploadTempFiles();
 

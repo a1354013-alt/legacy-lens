@@ -323,8 +323,22 @@ Operational notes:
 
 Report downloads should use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available only for compatibility and should be treated as deprecated.
 
-Project imports should use `POST /api/projects/:projectId/upload` with multipart form data. The legacy tRPC `projects.uploadFiles` mutation remains available only for small compatibility payloads and is intentionally capped at 2MB raw ZIP content to avoid storing large base64 archives in job payloads.
+Project imports should use `POST /api/projects/:projectId/upload` with `multipart/form-data`. The legacy tRPC `projects.uploadFiles` mutation remains available only for small compatibility payloads and is intentionally capped at 2MB raw ZIP content to avoid storing large base64 archives in job payloads.
 The multipart upload route is protected by an Express upload rate limiter before `multer` starts parsing the request body, so repeated large-file uploads are rejected with `429` before temp files are written.
+
+Multipart request examples:
+
+```bash
+# ZIP upload
+curl -X POST "http://localhost:3000/api/projects/42/upload" \
+  -H "Cookie: app_session_id=..." \
+  -F "file=@./project.zip;type=application/zip"
+
+# Git import through the same multipart endpoint
+curl -X POST "http://localhost:3000/api/projects/42/upload" \
+  -H "Cookie: app_session_id=..." \
+  -F "gitUrl=https://github.com/example/repo.git"
+```
 
 Upload/report error contract:
 - `401`: unauthenticated or invalid session
@@ -336,6 +350,7 @@ Upload/report error contract:
 
 ZIP safety contract:
 - Unsupported or malformed archives return `ZIP_INVALID`.
+- Non-`.zip` file uploads are rejected with `ZIP_INVALID`; the backend does not rely on the browser `accept=".zip"` hint.
 - Any unsafe archive path such as `../evil.go`, `/absolute/main.go`, `C:/windows/evil.go`, or nested traversal segments rejects the entire archive with `ZIP_UNSAFE_PATH`.
 - Unsafe ZIP entries are never partially skipped. Fix the archive and upload it again.
 
@@ -345,10 +360,11 @@ ZIP safety contract:
 - `projectJobs` is the single source of truth for queued/running/completed/failed work; process memory is only a local execution aid.
 - Job status values: `queued`, `running`, `completed`, `failed`.
 - The queue is DB-backed and restart-safe: startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks stuck `importing` / `analyzing` projects as failed when no active job still exists.
-- The system supports multiple web replicas, and worker replicas are safe when they share the same MySQL database.
+- The system supports multiple web replicas. Worker replicas are supported when they share the same MySQL database and preserve the current conditional-update semantics.
 - Each running job carries `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts` so multiple workers can coordinate through DB leases.
 - Claiming uses a DB-selected candidate plus an atomic conditional update. Competing workers may examine the same candidate row, but only one claim update is allowed to win for a given lease window.
-- Running jobs extend their lease through periodic heartbeats while work is in flight. If a worker dies and the lease expires, another worker may safely reclaim the job until its retry budget is exhausted.
+- Running jobs extend their lease through periodic heartbeats while work is in flight. Heartbeats, retry decisions, and finalization are ownership-fenced with `lockedBy + attemptCount`, so stale workers cannot overwrite a reclaimed job or its project state.
+- If a worker dies and the lease expires, another worker may safely reclaim the job until its retry budget is exhausted. Stale worker finalization is rejected and logged instead of clearing the new worker's lease.
 - Startup recovery respects still-valid leases. Legacy rows without lease metadata fall back to the older stale-window heuristic instead of being reset immediately.
 - If a deployment cannot provide reliable shared-MySQL transaction and conditional-update semantics, run a single worker replica instead of weakening the claim logic.
 - SQLite or in-memory test doubles are not the target for multi-worker deployment guarantees; the distributed-safe claim path assumes shared MySQL state.
@@ -467,8 +483,10 @@ Import pipeline is intentionally bounded:
   - override with `LEGACY_LENS_GIT_HOST_ALLOWLIST=github.com,gitlab.com,example.com`
 - DNS resolution is performed during validation and rejected if the resolved address is loopback, link-local, or private
 - `importProjectGit()` reuses the validated Git URL metadata so a single import flow does not repeat DNS resolution before clone
-- Git clone includes application-layer host/IP validation, but if you publicly deploy Legacy Lens you should still pair it with container or network-layer egress policy
+- Git clone includes application-layer host/IP validation, but app-level DNS and IP validation are not a complete SSRF boundary by themselves
+- Production deployments should keep `LEGACY_LENS_GIT_HOST_ALLOWLIST` narrow and also restrict outbound egress at the network/container/platform layer
 - DNS rebinding / TOCTOU risk cannot be eliminated purely in app code; use deployment-layer egress controls to reduce that residual risk
+- Higher-security environments should run Git clone/import in an isolated worker or container instead of the main web process
 - `LEGACY_LENS_TRUST_PROXY` should stay unset unless the app is deployed behind a trusted reverse proxy/load balancer; enabling it on a directly exposed app weakens client IP handling for rate limits and cookies
 - ZIP path traversal defense: unsafe archive paths (e.g. `../`, absolute paths, or drive-letter paths) reject the whole archive
 - Git path traversal / symlink escape defense: unsafe resolved paths are skipped and recorded as import warnings
@@ -501,7 +519,9 @@ Import pipeline is intentionally bounded:
 ## Additional Docs
 
 - Architecture notes: [docs/architecture.md](docs/architecture.md)
+- Deployment notes: [docs/deployment.md](docs/deployment.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
+- Testing notes: [docs/testing.md](docs/testing.md)
 - Accepted audit risks: [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md)
 
 ## Demo vs Production
@@ -521,6 +541,7 @@ Import pipeline is intentionally bounded:
 Use these commands for local acceptance before shipping changes:
 
 ```bash
+corepack prepare pnpm@10.4.1 --activate
 pnpm install --frozen-lockfile
 pnpm audit --audit-level high
 pnpm check

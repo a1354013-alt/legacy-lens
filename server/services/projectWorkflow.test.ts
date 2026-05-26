@@ -251,6 +251,17 @@ function seedProject(projectId = 1, overrides?: Row) {
   });
 }
 
+function claimedOwnership(overrides: Row = {}): Row {
+  return {
+    lockedBy: "worker-a",
+    heartbeatAt: new Date("2026-01-01T00:01:05.000Z"),
+    leaseUntil: new Date("2099-01-01T00:02:00.000Z"),
+    attemptCount: 1,
+    maxAttempts: 3,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   fakeDb = createFakeDb();
   zipFiles = [];
@@ -498,6 +509,7 @@ describe("project workflow", () => {
         createdAt: new Date("2026-01-01T00:00:00.000Z"),
         startedAt: new Date("2026-01-01T00:00:00.000Z"),
         finishedAt: null,
+        ...claimedOwnership({ leaseUntil: new Date("2026-01-01T00:10:00.000Z"), heartbeatAt: new Date("2026-01-01T00:09:30.000Z") }),
       },
       {
         id: 2,
@@ -511,6 +523,7 @@ describe("project workflow", () => {
         createdAt: new Date("2026-01-02T00:00:00.000Z"),
         startedAt: new Date("2026-01-02T00:14:00.000Z"),
         finishedAt: null,
+        ...claimedOwnership({ lockedBy: "worker-b" }),
       }
     );
 
@@ -603,6 +616,7 @@ describe("project workflow", () => {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       startedAt: new Date("2026-01-01T00:00:00.000Z"),
       finishedAt: null,
+      ...claimedOwnership({ leaseUntil: new Date("2026-01-01T00:10:00.000Z"), heartbeatAt: new Date("2026-01-01T00:09:30.000Z") }),
     });
 
     const { recoverStaleProjectJobsOnStartup } = await import("./projectWorkflow");
@@ -725,6 +739,7 @@ describe("project workflow", () => {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       startedAt: new Date("2026-01-01T00:01:00.000Z"),
       finishedAt: null,
+      ...claimedOwnership(),
     });
 
     await expect(runClaimedProjectJob(1)).rejects.toMatchObject({ code: "PROJECT_JOB_STALE" });
@@ -759,6 +774,7 @@ describe("project workflow", () => {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       startedAt: new Date("2026-01-01T00:01:00.000Z"),
       finishedAt: null,
+      ...claimedOwnership(),
     });
 
     await expect(runClaimedProjectJob(1)).rejects.toMatchObject({ code: "IMPORT_FAILED" });
@@ -793,6 +809,7 @@ describe("project workflow", () => {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       startedAt: new Date("2026-01-01T00:01:00.000Z"),
       finishedAt: null,
+      ...claimedOwnership(),
     });
 
     await expect(runClaimedProjectJob(1)).rejects.toMatchObject({ code: "IMPORT_FAILED" });
@@ -802,6 +819,213 @@ describe("project workflow", () => {
       errorCode: "IMPORT_FAILED",
     });
     expect(rmMock).toHaveBeenCalledWith("C:/tmp/queued-upload.zip", { force: true });
+  });
+
+  it("does not let a stale worker finalize a reclaimed job as completed or overwrite project state", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+
+    let resolveRead!: (value: Buffer) => void;
+    const readGate = new Promise((resolve) => {
+      resolveRead = resolve as (value: Buffer) => void;
+    }) as Promise<Buffer>;
+    readFileMock.mockImplementationOnce(() => readGate as unknown as Promise<Buffer<ArrayBuffer>>);
+
+    let projectJobUpdateCount = 0;
+    const originalUpdate = fakeDb.update.bind(fakeDb);
+    fakeDb.update = (table: object) => {
+      const baseUpdate = originalUpdate(table);
+      return {
+        set: (updates: Row) => ({
+          where: async (condition: Condition) => {
+            if (getTableName(table) === "projectJobs") {
+              projectJobUpdateCount += 1;
+              if (projectJobUpdateCount === 3) {
+                fakeDb.store.projectJobs[0] = {
+                  ...fakeDb.store.projectJobs[0],
+                  lockedBy: "worker-b",
+                  attemptCount: 2,
+                  heartbeatAt: new Date("2026-01-01T00:01:30.000Z"),
+                  leaseUntil: new Date("2099-01-01T00:05:00.000Z"),
+                };
+                return { affectedRows: 0 };
+              }
+            }
+
+            return baseUpdate.set(updates).where(condition);
+          },
+        }),
+      };
+    };
+
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/queued-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership(),
+    });
+
+    const runPromise = runClaimedProjectJob(1);
+    resolveRead(Buffer.from("zip-bytes"));
+
+    await expect(runPromise).resolves.toBeUndefined();
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "running",
+      lockedBy: "worker-b",
+      attemptCount: 2,
+      activeKey: "active",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "importing",
+      importProgress: 10,
+    });
+  });
+
+  it("does not let a stale worker finalize a reclaimed job as failed or overwrite project state", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+
+    let rejectRead!: (reason?: unknown) => void;
+    const readGate = new Promise((_resolve, reject) => {
+      rejectRead = reject as (reason?: unknown) => void;
+    }) as Promise<Buffer>;
+    readFileMock.mockImplementationOnce(() => readGate as unknown as Promise<Buffer<ArrayBuffer>>);
+
+    let projectJobUpdateCount = 0;
+    const originalUpdate = fakeDb.update.bind(fakeDb);
+    fakeDb.update = (table: object) => {
+      const baseUpdate = originalUpdate(table);
+      return {
+        set: (updates: Row) => ({
+          where: async (condition: Condition) => {
+            if (getTableName(table) === "projectJobs") {
+              projectJobUpdateCount += 1;
+              if (projectJobUpdateCount === 3) {
+                fakeDb.store.projectJobs[0] = {
+                  ...fakeDb.store.projectJobs[0],
+                  lockedBy: "worker-b",
+                  attemptCount: 2,
+                  heartbeatAt: new Date("2026-01-01T00:01:30.000Z"),
+                  leaseUntil: new Date("2099-01-01T00:05:00.000Z"),
+                };
+                return { affectedRows: 0 };
+              }
+            }
+
+            return baseUpdate.set(updates).where(condition);
+          },
+        }),
+      };
+    };
+
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/queued-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership(),
+    });
+
+    const runPromise = runClaimedProjectJob(1);
+    rejectRead(new Error("disk read failed"));
+
+    await expect(runPromise).resolves.toBeUndefined();
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "running",
+      lockedBy: "worker-b",
+      attemptCount: 2,
+      activeKey: "active",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "importing",
+      importProgress: 10,
+    });
+  });
+
+  it("does not continue to finalize after heartbeat renewal fails", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    vi.useFakeTimers();
+    seedProject(1, { status: "importing", importProgress: 10 });
+    readFileMock.mockImplementationOnce(async () => {
+      throw new Error("readFile should not run after heartbeat ownership is lost");
+    });
+
+    let projectJobUpdateCount = 0;
+    const originalUpdate = fakeDb.update.bind(fakeDb);
+    fakeDb.update = (table: object) => {
+      const baseUpdate = originalUpdate(table);
+      return {
+        set: (updates: Row) => ({
+          where: async (condition: Condition) => {
+            if (getTableName(table) === "projectJobs") {
+              projectJobUpdateCount += 1;
+              if (projectJobUpdateCount === 2) {
+                throw new Error("heartbeat write failed");
+              }
+            }
+
+            return baseUpdate.set(updates).where(condition);
+          },
+        }),
+      };
+    };
+
+    try {
+      fakeDb.store.projectJobs.push({
+        id: 1,
+        projectId: 1,
+        userId: 7,
+        type: "import_zip",
+        status: "running",
+        progress: 10,
+        errorCode: null,
+        errorMessage: null,
+        payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/queued-upload.zip" }),
+        activeKey: "active",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        startedAt: new Date("2026-01-01T00:01:00.000Z"),
+        finishedAt: null,
+        ...claimedOwnership(),
+      });
+
+      const runPromise = runClaimedProjectJob(1);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await expect(runPromise).resolves.toBeUndefined();
+      expect(readFileMock).not.toHaveBeenCalled();
+      expect(fakeDb.store.projectJobs[0]).toMatchObject({
+        status: "running",
+        activeKey: "active",
+        errorCode: null,
+      });
+      expect(fakeDb.store.projects[0]).toMatchObject({
+        status: "importing",
+        importProgress: 10,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("prevents the same queued job from being claimed twice", async () => {
@@ -1001,6 +1225,41 @@ describe("project workflow", () => {
     });
   });
 
+  it("does not reclaim a running job after it has exhausted max attempts", async () => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "analyzing" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "running",
+      progress: 60,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      lockedBy: "worker-exhausted",
+      heartbeatAt: new Date("2026-01-01T00:00:10.000Z"),
+      leaseUntil: new Date("2026-01-01T00:00:20.000Z"),
+      attemptCount: 3,
+      maxAttempts: 3,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:00:05.000Z"),
+      finishedAt: null,
+    });
+
+    const claim = await claimNextQueuedProjectJobForTests();
+
+    expect(claim).toBeNull();
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "running",
+      lockedBy: "worker-exhausted",
+      attemptCount: 3,
+      maxAttempts: 3,
+    });
+  });
+
   it("claims queued jobs in stable createdAt/id order without scanning unrelated completed rows into execution", async () => {
     const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
     seedProject(1, { status: "ready" });
@@ -1101,6 +1360,7 @@ describe("project workflow", () => {
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       startedAt: new Date("2026-01-01T00:01:00.000Z"),
       finishedAt: null,
+      ...claimedOwnership(),
     });
     fakeDb.store.projects[0] = { ...fakeDb.store.projects[0], status: "analyzing" };
 
