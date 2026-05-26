@@ -1,6 +1,6 @@
 # Security Audit Accepted Risks
 
-Last reviewed: 2026-05-21
+Last reviewed: 2026-05-26
 
 `pnpm audit --audit-level high` currently passes.
 
@@ -25,3 +25,4 @@ Review notes:
 - Prefer upstream package upgrades when compatible releases land.
 - Do not add broad `pnpm.overrides` entries just to silence the audit report.
 - Re-evaluate this file whenever `pnpm audit --audit-level moderate` changes materially or a new deployment-facing advisory appears.
+- Import security boundaries such as ZIP path validation, Git host/IP validation, lease-safe temp ZIP cleanup, and report export size preflight are documented in the root `README.md` and should be reviewed together with this file during deployment sign-off.

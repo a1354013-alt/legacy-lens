@@ -94,17 +94,17 @@ export default function Home() {
           <div className="space-y-4">
             <Badge variant="outline">Legacy Lens</Badge>
             <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-slate-950">
-              匯入舊系統原始碼，分析結構依賴，並輸出可審閱的報告封包。
+              協助整理 Go、SQL、Delphi 舊系統脈絡的靜態分析工作台
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-slate-600">
-              支援 Go / SQL / Delphi，提供可追蹤的匯入工作、持久化分析結果與可重現的報告下載。
+              匯入 ZIP 或 Git 專案後，集中檢視 symbols、dependencies、fields、risks、rules 與分析報告，讓 legacy impact review 更可追蹤。
             </p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            <FeatureCard title="來源匯入" description="透過 ZIP 或 Git 建立專案，由伺服器統一驗證與儲存檔案。" />
-            <FeatureCard title="持久化分析" description="將 Symbols、Dependencies、Fields、Risks、Rules 與文件輸出寫入資料庫。" />
-            <FeatureCard title="可交付報告" description="在 UI 檢視摘要後，下載與資料庫一致的 Report ZIP。" />
+            <FeatureCard title="安全匯入來源" description="支援 ZIP 與 Git 匯入，保留匯入警告、暫存檔清理與背景工作狀態。" />
+            <FeatureCard title="持久化分析結果" description="將符號、依賴、欄位使用、風險與規則持久化，方便分頁檢視與追蹤。" />
+            <FeatureCard title="報告與證據輸出" description="可下載報告 ZIP，並在 UI 中直接查看摘要、文件預覽與工作進度。" />
           </div>
 
           <div>
@@ -125,7 +125,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div>
             <p className="text-sm font-medium text-slate-500">Legacy Lens</p>
-            <h1 className="text-2xl font-semibold text-slate-950">專案列表</h1>
+            <h1 className="text-2xl font-semibold text-slate-950">專案總覽</h1>
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden text-sm text-slate-600 sm:inline">{user?.name ?? user?.email ?? "已登入使用者"}</span>
@@ -149,15 +149,15 @@ export default function Home() {
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         {projectsQuery.error ? (
           <Alert variant="destructive">
-            <AlertTitle>讀取專案失敗</AlertTitle>
+            <AlertTitle>專案清單載入失敗</AlertTitle>
             <AlertDescription>{projectsQuery.error.message}</AlertDescription>
           </Alert>
         ) : null}
 
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-slate-950">最近工作</h2>
-            <p className="text-sm text-slate-600">專案狀態與工作佇列狀態分開顯示，便於追蹤目前卡在哪個階段。</p>
+            <h2 className="text-xl font-semibold text-slate-950">目前專案</h2>
+            <p className="text-sm text-slate-600">這裡會顯示專案狀態、最新工作進度與分析結果是否可下載。</p>
           </div>
           <Button variant="outline" onClick={() => projectsQuery.refetch()} disabled={projectsQuery.isFetching}>
             <RefreshCcw className="mr-2 size-4" />
@@ -178,7 +178,7 @@ export default function Home() {
                     <FileSearch />
                   </EmptyMedia>
                   <EmptyTitle>目前還沒有專案</EmptyTitle>
-                  <EmptyDescription>建立專案後即可上傳 ZIP 或輸入 Git 儲存庫開始分析。</EmptyDescription>
+                  <EmptyDescription>建立第一個專案後，就能上傳 ZIP 或填入 Git URL 開始分析。</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
                   <Button onClick={() => setLocation("/import")}>建立第一個專案</Button>
@@ -195,7 +195,7 @@ export default function Home() {
                 deleting={deleteProjectMutation.isPending && deleteProjectMutation.variables === project.id}
                 onOpen={() => setLocation(`/projects/${project.id}/analysis`)}
                 onDelete={async () => {
-                  const confirmed = window.confirm(`確定要刪除專案「${project.name}」以及所有匯入檔案、分析結果與報告嗎？`);
+                  const confirmed = window.confirm(`確定要刪除專案「${project.name}」嗎？這會移除已匯入檔案、分析結果與工作紀錄。`);
                   if (!confirmed) return;
                   try {
                     await deleteProjectMutation.mutateAsync(project.id);
@@ -243,7 +243,7 @@ function ProjectCard({
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <CardTitle>{project.name}</CardTitle>
-            <CardDescription>{project.description || "尚未提供描述。"}</CardDescription>
+            <CardDescription>{project.description || "尚未填寫專案描述"}</CardDescription>
           </div>
           <div className="flex flex-col items-end gap-2">
             <Badge variant={getBadgeVariant(project.status)}>{projectStatusLabels[project.status]}</Badge>
@@ -277,14 +277,14 @@ function ProjectCard({
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>最近一次流程錯誤</AlertTitle>
+            <AlertTitle>最新專案錯誤</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
 
         <div className="flex items-center justify-between gap-3">
           <Button variant="outline" onClick={onOpen}>
-            開啟分析結果
+            查看分析結果
           </Button>
           <Button variant="ghost" disabled={deleting} onClick={() => void onDelete()}>
             {deleting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Trash2 className="mr-2 size-4" />}

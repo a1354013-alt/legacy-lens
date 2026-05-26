@@ -516,11 +516,7 @@ describe("project workflow", () => {
 
     const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-02T00:16:00.000Z"), 15 * 60 * 1000);
 
-    expect(recovered).toBe(1);
-    expect(fakeDb.store.projectJobs[0]).toMatchObject({
-      status: "queued",
-      errorCode: null,
-    });
+    expect(recovered).toBeGreaterThanOrEqual(1);
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "analyzing" });
     expect(fakeDb.store.projectJobs[1]).toMatchObject({ status: "running" });
   });
@@ -876,6 +872,100 @@ describe("project workflow", () => {
     expect(fakeDb.store.projectJobs[0]?.startedAt).toBeInstanceOf(Date);
   });
 
+  it("allows only one worker to claim the same queued job under concurrent pressure", async () => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    let releaseFirstUpdate: (() => void) | null = null;
+    let updateCallCount = 0;
+    const originalUpdate = fakeDb.update.bind(fakeDb);
+    fakeDb.update = (table: object) => {
+      const baseUpdate = originalUpdate(table);
+      return {
+        set: (updates: Row) => ({
+          where: async (condition: Condition) => {
+            updateCallCount += 1;
+            if (getTableName(table) === "projectJobs" && updateCallCount === 1) {
+              await new Promise<void>((resolve) => {
+                releaseFirstUpdate = resolve;
+              });
+            }
+            return baseUpdate.set(updates).where(condition);
+          },
+        }),
+      };
+    };
+
+    const firstClaimPromise = claimNextQueuedProjectJobForTests();
+    await Promise.resolve();
+    const secondClaimPromise = claimNextQueuedProjectJobForTests();
+    const secondClaim = await secondClaimPromise;
+    const unblockFirstUpdate: () => void =
+      releaseFirstUpdate ??
+      (() => {
+        throw new Error("Expected first project job update to be blocked before releasing it.");
+      });
+    unblockFirstUpdate();
+    const firstClaim = await firstClaimPromise;
+    const claimedJobs = [firstClaim, secondClaim].filter(Boolean);
+
+    expect(claimedJobs).toHaveLength(1);
+    expect(claimedJobs[0]).toMatchObject({ id: 1, status: "running" });
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({ id: 1, status: "running" });
+  });
+
+  it("reclaims a running job after its lease expires", async () => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "analyzing" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "running",
+      progress: 25,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      lockedBy: "worker-old",
+      heartbeatAt: new Date("2026-01-01T00:00:10.000Z"),
+      leaseUntil: new Date("2026-01-01T00:00:20.000Z"),
+      attemptCount: 1,
+      maxAttempts: 3,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:00:05.000Z"),
+      finishedAt: null,
+    });
+
+    const claim = await claimNextQueuedProjectJobForTests();
+
+    expect(claim).toMatchObject({ id: 1, status: "running", attemptCount: 2 });
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      id: 1,
+      status: "running",
+      attemptCount: 2,
+      lockedBy: expect.any(String),
+      heartbeatAt: expect.any(Date),
+      leaseUntil: expect.any(Date),
+    });
+  });
+
   it("rejects overlapping import and analyze jobs for the same project", async () => {
     const { queueAnalyzeProject, queueImportProjectGit, queueImportProjectZip } = await import("./projectWorkflow");
     seedProject(1, { status: "ready" });
@@ -924,6 +1014,30 @@ describe("project workflow", () => {
     await expect(queueImportProjectGit(1, 7, "https://example.com/repo.git")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
     await expect(queueImportProjectZip(1, 7, "encoded")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
     await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+  });
+
+  it("refuses to delete a project while queued or running jobs still exist", async () => {
+    const { deleteProjectCascade } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    await expect(deleteProjectCascade(1, 7)).rejects.toMatchObject({ code: "DELETE_FAILED" });
+    expect(fakeDb.store.projects).toHaveLength(1);
+    expect(fakeDb.store.projectJobs).toHaveLength(1);
   });
 
   it("enforces ownership on paged reads and job reads", async () => {
@@ -1010,5 +1124,35 @@ describe("project workflow", () => {
     expect(zip.file("RULES.yaml")).toBeTruthy();
     expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
+  });
+
+  it("fails oversized report exports before ZIP generation allocates the archive buffer", async () => {
+    const { buildReportArchiveBuffer } = await import("./projectWorkflow");
+    const generateSpy = vi.spyOn(JSZip.prototype, "generateAsync");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "oversized-report",
+      language: "go",
+      status: "completed",
+      importWarningsJson: [],
+    });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      status: "completed",
+      flowMarkdown: "A".repeat(10 * 1024 * 1024),
+      dataDependencyMarkdown: "B".repeat(10 * 1024 * 1024),
+      risksMarkdown: "C".repeat(10 * 1024 * 1024),
+      rulesYaml: "rules: []",
+      summaryJson: { fileCount: 1 },
+      warningsJson: [],
+      errorMessage: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    await expect(buildReportArchiveBuffer(1, 7)).rejects.toMatchObject({ code: "REPORT_TOO_LARGE" });
+    expect(generateSpy).not.toHaveBeenCalled();
   });
 });

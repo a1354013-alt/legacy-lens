@@ -99,11 +99,21 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [jobColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'");
       const [payloadColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'payloadJson'");
       const [activeKeyColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
+      const [lockedByColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'lockedBy'");
+      const [leaseUntilColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'leaseUntil'");
+      const [heartbeatAtColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
+      const [attemptCountColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
+      const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
 
       expect(projectColumns).toHaveLength(1);
       expect(jobColumns).toHaveLength(1);
       expect(payloadColumns).toHaveLength(1);
       expect(activeKeyColumns).toHaveLength(1);
+      expect(lockedByColumns).toHaveLength(1);
+      expect(leaseUntilColumns).toHaveLength(1);
+      expect(heartbeatAtColumns).toHaveLength(1);
+      expect(attemptCountColumns).toHaveLength(1);
+      expect(maxAttemptsColumns).toHaveLength(1);
     } finally {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
@@ -149,6 +159,11 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [analysisColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'flowMarkdown'");
       const [jobColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'");
       const [activeKeyColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
+      const [lockedByColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'lockedBy'");
+      const [leaseUntilColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'leaseUntil'");
+      const [heartbeatAtColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
+      const [attemptCountColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
+      const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
       const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
 
       expect(projectRows[0]?.status).toBe("completed");
@@ -169,6 +184,11 @@ maybeDescribe("Drizzle migration smoke", () => {
       await expect(tableExists(connection, dbName, "projectJobs")).resolves.toBe(true);
       expect(jobColumns).toHaveLength(1);
       expect(activeKeyColumns).toHaveLength(1);
+      expect(lockedByColumns).toHaveLength(1);
+      expect(leaseUntilColumns).toHaveLength(1);
+      expect(heartbeatAtColumns).toHaveLength(1);
+      expect(attemptCountColumns).toHaveLength(1);
+      expect(maxAttemptsColumns).toHaveLength(1);
       expect(projectColumns).toHaveLength(1);
     } finally {
       await connection.end();

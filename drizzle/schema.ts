@@ -87,6 +87,7 @@ export const files = mysqlTable(
   },
   (table) => ({
     projectIdIdx: index("files_projectId_idx").on(table.projectId),
+    projectFilePathIdx: index("files_projectId_filePath_idx").on(table.projectId, table.filePath),
   })
 );
 
@@ -111,6 +112,8 @@ export const symbols = mysqlTable(
   (table) => ({
     projectIdIdx: index("symbols_projectId_idx").on(table.projectId),
     fileIdIdx: index("symbols_fileId_idx").on(table.fileId),
+    projectNameIdx: index("symbols_projectId_name_idx").on(table.projectId, table.name),
+    projectFileIdx: index("symbols_projectId_fileId_idx").on(table.projectId, table.fileId),
   })
 );
 
@@ -134,6 +137,8 @@ export const dependencies = mysqlTable(
     projectIdIdx: index("dependencies_projectId_idx").on(table.projectId),
     sourceIdx: index("dependencies_sourceSymbolId_idx").on(table.sourceSymbolId),
     targetIdx: index("dependencies_targetSymbolId_idx").on(table.targetSymbolId),
+    projectSourceIdx: index("dependencies_projectId_sourceSymbolId_idx").on(table.projectId, table.sourceSymbolId),
+    projectTargetIdx: index("dependencies_projectId_targetSymbolId_idx").on(table.projectId, table.targetSymbolId),
   })
 );
 
@@ -153,6 +158,7 @@ export const fields = mysqlTable(
   },
   (table) => ({
     projectIdIdx: index("fields_projectId_idx").on(table.projectId),
+    projectTableFieldIdx: index("fields_projectId_tableName_fieldName_idx").on(table.projectId, table.tableName, table.fieldName),
   })
 );
 
@@ -175,6 +181,7 @@ export const fieldDependencies = mysqlTable(
     projectIdIdx: index("fieldDependencies_projectId_idx").on(table.projectId),
     fieldIdIdx: index("fieldDependencies_fieldId_idx").on(table.fieldId),
     symbolIdIdx: index("fieldDependencies_symbolId_idx").on(table.symbolId),
+    projectFieldIdx: index("fieldDependencies_projectId_fieldId_idx").on(table.projectId, table.fieldId),
   })
 );
 
@@ -198,6 +205,7 @@ export const risks = mysqlTable(
   },
   (table) => ({
     projectIdIdx: index("risks_projectId_idx").on(table.projectId),
+    projectSeverityIdx: index("risks_projectId_severity_idx").on(table.projectId, table.severity),
   })
 );
 
@@ -219,6 +227,7 @@ export const rules = mysqlTable(
   },
   (table) => ({
     projectIdIdx: index("rules_projectId_idx").on(table.projectId),
+    projectRuleTypeIdx: index("rules_projectId_ruleType_idx").on(table.projectId, table.ruleType),
   })
 );
 
@@ -238,6 +247,11 @@ export const projectJobs = mysqlTable(
     errorMessage: text("errorMessage"),
     payloadJson: longtext("payloadJson"),
     activeKey: varchar("activeKey", { length: 32 }),
+    lockedBy: varchar("lockedBy", { length: 128 }),
+    leaseUntil: timestamp("leaseUntil"),
+    heartbeatAt: timestamp("heartbeatAt"),
+    attemptCount: int("attemptCount").default(0).notNull(),
+    maxAttempts: int("maxAttempts").default(3).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     startedAt: timestamp("startedAt"),
     finishedAt: timestamp("finishedAt"),
@@ -246,6 +260,8 @@ export const projectJobs = mysqlTable(
     projectIdIdx: index("projectJobs_projectId_idx").on(table.projectId),
     userIdIdx: index("projectJobs_userId_idx").on(table.userId),
     statusIdx: index("projectJobs_status_idx").on(table.status),
+    projectStatusIdx: index("projectJobs_projectId_status_idx").on(table.projectId, table.status),
+    statusLeaseIdx: index("projectJobs_status_leaseUntil_idx").on(table.status, table.leaseUntil),
     activeProjectUniqueIdx: uniqueIndex("projectJobs_active_project_unique").on(table.projectId, table.activeKey),
   })
 );

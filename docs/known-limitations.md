@@ -18,8 +18,9 @@ This document records intentionally unfinished or bounded behavior so deployment
 
 ## Worker / Deployment Boundaries
 
-- Distributed-safe worker leasing is not implemented.
-- In multi-instance deployments, enable `PROJECT_WORKER_ENABLED=true` on exactly one instance and `false` on the rest.
+- Worker coordination is lease-based and safe for multiple instances, but it still depends on timely heartbeats and a healthy shared MySQL database.
+- Long-running jobs that exceed the lease window without heartbeats will be retried; size your worker resources so legitimate work does not starve the heartbeat loop.
+- Deleting a project is intentionally blocked while queued/running work exists. If you need cancel semantics, that remains a future enhancement.
 
 ## Report Export Boundaries
 

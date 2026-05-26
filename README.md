@@ -331,11 +331,14 @@ Project imports should use `POST /api/projects/:projectId/upload` with multipart
 - `projectJobs` is the single source of truth for queued/running/completed/failed work; process memory is only a local execution aid.
 - Job status values: `queued`, `running`, `completed`, `failed`.
 - The queue is DB-backed and restart-safe: startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks stuck `importing` / `analyzing` projects as failed when no active job still exists.
+- Each running job carries `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts` so multiple workers can safely coordinate through MySQL.
+- Claiming a queued job is atomic. If two workers race for the same row, only one conditional update succeeds and only that worker continues.
+- Running jobs extend their lease through periodic heartbeats while work is in flight. If a worker dies and the lease expires, another worker may safely reclaim the job until its retry budget is exhausted.
+- Startup recovery respects still-valid leases. Legacy rows without lease metadata fall back to the older stale-window heuristic instead of being reset immediately.
 - `PROJECT_JOB_STALE_MS` controls when a running job is treated as stale during startup recovery (default `900000` / 15 minutes).
-- Multi-instance deployments are currently single-worker only: set `PROJECT_WORKER_ENABLED=true` on exactly one instance/container and `PROJECT_WORKER_ENABLED=false` on every other web replica.
-- Distributed-safe job leasing/heartbeat is not implemented yet, so multiple worker-enabled replicas can claim the same queued job during startup or steady-state polling.
 - The UI polls project state plus the latest job state instead of waiting on a single long-running request.
 - The backend enforces one active job per project across `import_zip`, `import_git`, and `analyze`; conflicting requests fail with a stable conflict error instead of relying on disabled buttons.
+- Projects with active queued/running jobs cannot be deleted. This avoids dangling state while an import/analyze workflow is still in progress.
 
 ### Snapshot / Pagination Model
 
@@ -426,8 +429,10 @@ Import pipeline is intentionally bounded:
 - ZIP extraction does not trust compressed size alone: central-directory metadata and streaming extraction enforce per-file extracted bytes and total extracted bytes before content can grow unbounded in memory
 - Oversize individual source files are skipped with a stable `IMPORT_FILE_TOO_LARGE` warning so the rest of the import can continue
 - ZIP and Git imports both preserve import warnings in the persisted project snapshot and exported report
+- Temporary upload cleanup protects active `import_zip` jobs: expired temp ZIPs are deleted only when no queued/running job payload still references that file path
 - Large result sets are never returned from the summary snapshot; the UI reads detail pages through backend pagination
 - Generated report archives are bounded by a server-side ZIP size ceiling before download
+- Report export performs a preflight size estimate before ZIP generation so oversized archives fail fast without first allocating the full buffer in memory
 - Archive / repository import fails only for whole-import safety boundaries such as invalid ZIP content, unsafe ZIP paths, total supported-source bytes, or supported-source file-count limits
 - Production Git host policy:
   - loopback hosts are blocked (`localhost`, `127.0.0.1`, `0.0.0.0`, `::1`)
@@ -455,6 +460,7 @@ Import pipeline is intentionally bounded:
 - Parsing is **heuristic static analysis**, not a compiler, language server, or full semantic index.
 - SQL / Delphi / Go extraction is meant to support legacy code exploration, initial dependency review, and first-pass impact analysis.
 - Delphi `.pas` / `.dpr` parsing is best-effort; `.dfm`, `.fmx`, `.dpk`, and `.inc` are imported with limited analysis warnings.
+- DFM event metadata can now emit UI event -> Pascal handler dependencies for straightforward `OnClick`-style bindings, but this still remains heuristic and should be verified during review.
 - SQL extraction handles common table/field and query patterns but is not a complete SQL parser, optimizer, or execution-plan analyzer.
 - Go extraction focuses on structural symbols and dependencies; it does not replace `go/types`, `gopls`, build tags, or module-aware compilation.
 - Go interface dispatch and package-alias-based construction are not resolved with compiler-grade certainty.
@@ -520,7 +526,6 @@ These are intentionally not half-shipped in code:
 - analysis diff / snapshot compare
 - interactive dependency graph
 - custom rule packs
-- Delphi form event mapping
 - ingestion preflight report
 
 ## License

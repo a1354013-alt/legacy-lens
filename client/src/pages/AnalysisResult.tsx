@@ -23,9 +23,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileTable, PaginationControls, ProjectSummaryCard, ReportActions, RiskPanel } from "./analysisResult/components";
 import { useAnalysisResultModel } from "./analysisResult/useAnalysisResultModel";
 
-function renderDocumentPreview(content: string | null | undefined) {
+export function renderDocumentPreview(content: string | null | undefined) {
   if (!content) {
-    return "No document content is available yet.";
+    return "目前沒有可預覽的文件內容。";
   }
 
   return content.split("\n").slice(0, 12).join("\n");
@@ -106,8 +106,8 @@ export default function AnalysisResult() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
-          <AlertTitle>Invalid project</AlertTitle>
-          <AlertDescription>The project id in the URL is invalid.</AlertDescription>
+          <AlertTitle>專案編號無效</AlertTitle>
+          <AlertDescription>請確認網址中的專案編號是否正確。</AlertDescription>
         </Alert>
       </div>
     );
@@ -125,8 +125,8 @@ export default function AnalysisResult() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
-          <AlertTitle>Project unavailable</AlertTitle>
-          <AlertDescription>{projectQuery.error?.message ?? "Unable to load the requested project."}</AlertDescription>
+          <AlertTitle>無法載入專案</AlertTitle>
+          <AlertDescription>{projectQuery.error?.message ?? "目前無法讀取這個專案，請稍後再試。"}</AlertDescription>
         </Alert>
       </div>
     );
@@ -139,11 +139,11 @@ export default function AnalysisResult() {
           <div className="flex items-center gap-4">
             <Button variant="ghost" onClick={() => setLocation("/")}>
               <ArrowLeft className="mr-2 size-4" />
-              Back to projects
+              返回專案列表
             </Button>
             <div>
               <h1 className="text-2xl font-semibold text-slate-950">{project.name}</h1>
-              <p className="text-sm text-slate-600">Persisted analysis snapshot, paged evidence, and export controls.</p>
+              <p className="text-sm text-slate-600">檢視已持久化的分析快照、相依關係、風險與可下載報告。</p>
             </div>
           </div>
           <ReportActions
@@ -159,36 +159,37 @@ export default function AnalysisResult() {
 
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         <div className="flex flex-wrap items-center gap-3">
-          <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>Project: {projectStatusLabels[project.status]}</Badge>
+          <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>專案狀態：{projectStatusLabels[project.status]}</Badge>
           <Badge variant={viewState === "failed" ? "destructive" : report?.status === "completed" || report?.status === "partial" ? "default" : "secondary"}>
-            Analysis: {analysisStatusLabels[analysisStatus]}
+            分析狀態：{analysisStatusLabels[analysisStatus]}
           </Badge>
-          <Badge variant="outline">Focus: {project.language.toUpperCase()}</Badge>
-          <Badge variant="outline">Source: {project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
+          <Badge variant="outline">焦點語言：{project.language.toUpperCase()}</Badge>
+          <Badge variant="outline">匯入來源：{project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
           {project.latestJob ? (
             <Badge variant="outline">
-              Job: {projectJobTypeLabels[project.latestJob.type]} / {projectJobStatusLabels[project.latestJob.status]} / {project.latestJob.progress}%
+              目前工作：{projectJobTypeLabels[project.latestJob.type]} / {projectJobStatusLabels[project.latestJob.status]} / {project.latestJob.progress}%
             </Badge>
           ) : null}
         </div>
 
         <Alert>
-          <AlertTitle>Review posture</AlertTitle>
+          <AlertTitle>分析說明</AlertTitle>
           <AlertDescription>
-            Legacy Lens is a legacy impact review assistant. Results are heuristic for Go, SQL, Delphi, and DFM analysis and should support, not replace, human review.
+            Legacy Lens 是 legacy impact review 工具，會對 Go、SQL、Delphi 與 DFM 做 heuristic analysis。
+            結果適合用來支援人工審查與現代化規劃，不代表 compiler-grade 的絕對語意真相。
           </AlertDescription>
         </Alert>
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>Latest project error</AlertTitle>
+            <AlertTitle>專案目前有錯誤</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
 
         {project.latestJob?.status === "failed" && project.latestJob.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>Latest job failed</AlertTitle>
+            <AlertTitle>最近一次工作失敗</AlertTitle>
             <AlertDescription>{project.latestJob.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
@@ -196,13 +197,13 @@ export default function AnalysisResult() {
         {(viewState === "queued" || viewState === "running") && project.latestJob ? (
           <Card data-testid="analysis-running">
             <CardHeader>
-              <CardTitle>{viewState === "queued" ? "Analysis queued" : "Analysis running"}</CardTitle>
-              <CardDescription>The backend job is still progressing. Snapshot data will refresh automatically.</CardDescription>
+              <CardTitle>{viewState === "queued" ? "分析工作已排入佇列" : "分析工作進行中"}</CardTitle>
+              <CardDescription>系統會持續更新工作進度。完成後此頁會自動顯示最新的持久化結果。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-slate-700">
-              <p>Job type: {projectJobTypeLabels[project.latestJob.type]}</p>
-              <p>Status: {projectJobStatusLabels[project.latestJob.status]}</p>
-              <p>Progress: {project.latestJob.progress}%</p>
+              <p>工作類型：{projectJobTypeLabels[project.latestJob.type]}</p>
+              <p>工作狀態：{projectJobStatusLabels[project.latestJob.status]}</p>
+              <p>進度：{project.latestJob.progress}%</p>
             </CardContent>
           </Card>
         ) : null}
@@ -210,17 +211,17 @@ export default function AnalysisResult() {
         {!report && viewState === "idle" ? (
           <Card>
             <CardHeader>
-              <CardTitle>No analysis report yet</CardTitle>
-              <CardDescription>Import the project source and run analysis to create the persisted report snapshot.</CardDescription>
+              <CardTitle>尚未產生分析報告</CardTitle>
+              <CardDescription>這個專案已完成匯入，但還沒有可瀏覽的分析結果。請先啟動分析工作。</CardDescription>
             </CardHeader>
             <CardContent>
               {canRunAnalysis ? (
                 <Button onClick={() => void handleRunAnalysis()} disabled={triggerAnalysisMutation.isPending}>
                   {triggerAnalysisMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <ShieldAlert className="mr-2 size-4" />}
-                  Run analysis
+                  開始分析
                 </Button>
               ) : (
-                <p className="text-sm text-slate-600">This project is not in a runnable state yet.</p>
+                <p className="text-sm text-slate-600">目前專案狀態不允許重新啟動分析。</p>
               )}
             </CardContent>
           </Card>
@@ -235,34 +236,34 @@ export default function AnalysisResult() {
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList>
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="impact">Impact</TabsTrigger>
-            <TabsTrigger value="symbols">Symbols</TabsTrigger>
-            <TabsTrigger value="fields">Fields</TabsTrigger>
-            <TabsTrigger value="dependencies">Dependencies</TabsTrigger>
-            <TabsTrigger value="fieldDependencies">Field Dependencies</TabsTrigger>
-            <TabsTrigger value="risks">Risks</TabsTrigger>
-            <TabsTrigger value="rules">Rules</TabsTrigger>
-            <TabsTrigger value="documents">Documents</TabsTrigger>
+            <TabsTrigger value="overview">總覽</TabsTrigger>
+            <TabsTrigger value="impact">影響分析</TabsTrigger>
+            <TabsTrigger value="symbols">符號</TabsTrigger>
+            <TabsTrigger value="fields">欄位</TabsTrigger>
+            <TabsTrigger value="dependencies">相依關係</TabsTrigger>
+            <TabsTrigger value="fieldDependencies">欄位相依</TabsTrigger>
+            <TabsTrigger value="risks">風險</TabsTrigger>
+            <TabsTrigger value="rules">規則</TabsTrigger>
+            <TabsTrigger value="documents">文件</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4">
             <ProjectSummaryCard
               rows={[
-                { label: "Project status", value: projectStatusLabels[project.status] },
-                { label: "Analysis status", value: analysisStatusLabels[analysisStatus] },
-                { label: "Eligible files", value: String(metrics?.eligibleFileCount ?? 0) },
-                { label: "Analyzed files", value: String(metrics?.analyzedFileCount ?? 0) },
-                { label: "Skipped files", value: String(metrics?.skippedFileCount ?? 0) },
-                { label: "Field dependencies", value: String(metrics?.fieldDependencyCount ?? snapshot?.totals.fieldDependencies ?? 0) },
+                { label: "專案狀態", value: projectStatusLabels[project.status] },
+                { label: "分析狀態", value: analysisStatusLabels[analysisStatus] },
+                { label: "可分析檔案", value: String(metrics?.eligibleFileCount ?? 0) },
+                { label: "已分析檔案", value: String(metrics?.analyzedFileCount ?? 0) },
+                { label: "已略過檔案", value: String(metrics?.skippedFileCount ?? 0) },
+                { label: "欄位相依數", value: String(metrics?.fieldDependencyCount ?? snapshot?.totals.fieldDependencies ?? 0) },
               ]}
             />
 
             {importWarnings.length > 0 ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Import warnings</CardTitle>
-                  <CardDescription>These warnings were recorded during import and are included in the persisted snapshot.</CardDescription>
+                  <CardTitle>匯入警告</CardTitle>
+                  <CardDescription>這些警告是在匯入期間記錄，並已一併存入持久化快照。</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm text-slate-700">
                   {importWarnings.map((warning, index) => (
@@ -278,19 +279,19 @@ export default function AnalysisResult() {
 
             <div className="grid gap-4 lg:grid-cols-3">
               <SimpleListCard
-                title="Top Symbols"
+                title="重點符號"
                 items={(snapshot?.topSymbols ?? []).map((item) => `${item.name} (${item.type})${item.filePath ? ` - ${item.filePath}` : ""}`)}
-                emptyText="No symbols were highlighted."
+                emptyText="目前沒有特別突出的符號。"
               />
               <SimpleListCard
-                title="Top Risks"
+                title="重點風險"
                 items={(snapshot?.topRisks ?? []).map((item) => `[${item.severity}] ${item.title}`)}
-                emptyText="No risks were highlighted."
+                emptyText="目前沒有特別突出的風險。"
               />
               <SimpleListCard
-                title="Top Rules"
+                title="重點規則"
                 items={(snapshot?.topRules ?? []).map((item) => `${item.name} (${item.ruleType})`)}
-                emptyText="No rules were highlighted."
+                emptyText="目前沒有特別突出的規則。"
               />
             </div>
 
@@ -302,13 +303,13 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="symbols" className="space-y-4">
-            <FilterCard title="Symbols" description="Filter persisted symbols by name or kind.">
+            <FilterCard title="符號" description="依名稱或類型篩選已持久化的符號結果。">
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={symbolSearch} onChange={(event) => { setSymbolSearch(event.target.value); setSymbolPage(1); }} placeholder="Search symbol name" />
+                <Input value={symbolSearch} onChange={(event) => { setSymbolSearch(event.target.value); setSymbolPage(1); }} placeholder="搜尋符號名稱" />
                 <Select value={symbolKind} onValueChange={(value) => { setSymbolKind(value); setSymbolPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Kind" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="類型" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All kinds</SelectItem>
+                    <SelectItem value="all">全部類型</SelectItem>
                     {symbolKinds.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -323,22 +324,22 @@ export default function AnalysisResult() {
                     <span className="font-medium text-slate-950">{symbol.name}</span>
                     <Badge variant="outline">{symbol.type}</Badge>
                   </div>
-                  <p className="text-slate-600">{symbol.filePath ?? "unknown file"}</p>
+                  <p className="text-slate-600">{symbol.filePath ?? "未知檔案"}</p>
                   <p className="text-slate-500">line {symbol.startLine} - {symbol.endLine}</p>
                 </div>
               ))}
-              emptyText="No symbols matched the current filters."
+              emptyText="目前篩選條件下沒有符號結果。"
             />
           </TabsContent>
 
           <TabsContent value="fields" className="space-y-4">
-            <FilterCard title="Fields" description="Filter persisted field evidence by table or name.">
+            <FilterCard title="欄位" description="依資料表或欄位名稱篩選欄位證據。">
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={fieldSearch} onChange={(event) => { setFieldSearch(event.target.value); setFieldPage(1); }} placeholder="Search table or field" />
+                <Input value={fieldSearch} onChange={(event) => { setFieldSearch(event.target.value); setFieldPage(1); }} placeholder="搜尋資料表或欄位" />
                 <Select value={fieldTable} onValueChange={(value) => { setFieldTable(value); setFieldPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Table" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="資料表" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All tables</SelectItem>
+                    <SelectItem value="all">全部資料表</SelectItem>
                     {(snapshot?.fieldTables ?? []).map((table) => <SelectItem key={table.tableName} value={table.tableName}>{table.tableName}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -356,25 +357,25 @@ export default function AnalysisResult() {
                   <p className="text-slate-500">references {field.referenceCount} / reads {field.readCount} / writes {field.writeCount}</p>
                 </div>
               ))}
-              emptyText="No fields matched the current filters."
+              emptyText="目前篩選條件下沒有欄位結果。"
             />
           </TabsContent>
 
           <TabsContent value="dependencies" className="space-y-4">
-            <FilterCard title="Dependencies" description="Inspect symbol-to-symbol and symbol-to-external dependencies.">
+            <FilterCard title="相依關係" description="檢視符號到符號、或符號到外部目標的相依關係。">
               <div className="grid gap-3 md:grid-cols-3">
-                <Input value={dependencySearch} onChange={(event) => { setDependencySearch(event.target.value); setDependencyPage(1); }} placeholder="Search source, target, or external name" />
+                <Input value={dependencySearch} onChange={(event) => { setDependencySearch(event.target.value); setDependencyPage(1); }} placeholder="搜尋來源、目標或外部名稱" />
                 <Select value={dependencyType} onValueChange={(value) => { setDependencyType(value); setDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Dependency type" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="相依類型" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All dependency types</SelectItem>
+                    <SelectItem value="all">全部相依類型</SelectItem>
                     {dependencyKinds.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={dependencyTargetKind} onValueChange={(value) => { setDependencyTargetKind(value); setDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Target kind" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="目標類型" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All target kinds</SelectItem>
+                    <SelectItem value="all">全部目標類型</SelectItem>
                     {dependencyTargetKinds.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -393,25 +394,25 @@ export default function AnalysisResult() {
                   <p className="text-slate-500">{dependency.targetKind}{dependency.lineNumber ? ` / line ${dependency.lineNumber}` : ""}</p>
                 </div>
               ))}
-              emptyText="No dependencies matched the current filters."
+              emptyText="目前篩選條件下沒有相依關係結果。"
             />
           </TabsContent>
 
           <TabsContent value="fieldDependencies" className="space-y-4">
-            <FilterCard title="Field Dependencies" description="Inspect field-level read/write/calculate evidence.">
+            <FilterCard title="欄位相依" description="檢視欄位層級的讀取、寫入與計算證據。">
               <div className="grid gap-3 md:grid-cols-3">
-                <Input value={fieldDependencySearch} onChange={(event) => { setFieldDependencySearch(event.target.value); setFieldDependencyPage(1); }} placeholder="Search table, field, symbol, or context" />
+                <Input value={fieldDependencySearch} onChange={(event) => { setFieldDependencySearch(event.target.value); setFieldDependencyPage(1); }} placeholder="搜尋資料表、欄位、符號或上下文" />
                 <Select value={fieldDependencyTable} onValueChange={(value) => { setFieldDependencyTable(value); setFieldDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Table" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="資料表" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All tables</SelectItem>
+                    <SelectItem value="all">全部資料表</SelectItem>
                     {(snapshot?.fieldTables ?? []).map((table) => <SelectItem key={table.tableName} value={table.tableName}>{table.tableName}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={fieldDependencyOperationType} onValueChange={(value) => { setFieldDependencyOperationType(value); setFieldDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Operation" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="操作類型" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All operations</SelectItem>
+                    <SelectItem value="all">全部操作類型</SelectItem>
                     {fieldDependencyOperationTypes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -427,21 +428,21 @@ export default function AnalysisResult() {
                     <Badge variant="outline">{item.operationType}</Badge>
                   </div>
                   <p className="text-slate-600">{item.symbolName}</p>
-                  <p className="text-slate-500">{item.context ?? "no context"}{item.lineNumber ? ` / line ${item.lineNumber}` : ""}</p>
+                  <p className="text-slate-500">{item.context ?? "無上下文"}{item.lineNumber ? ` / line ${item.lineNumber}` : ""}</p>
                 </div>
               ))}
-              emptyText="No field dependencies matched the current filters."
+              emptyText="目前篩選條件下沒有欄位相依結果。"
             />
           </TabsContent>
 
           <TabsContent value="risks" className="space-y-4">
-            <FilterCard title="Risks" description="Review heuristic risks and filter them by severity or search terms.">
+            <FilterCard title="風險" description="檢視 heuristic 風險，並依嚴重度或關鍵字篩選。">
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={riskSearch} onChange={(event) => { setRiskSearch(event.target.value); setRiskPage(1); }} placeholder="Search title, description, or file" />
+                <Input value={riskSearch} onChange={(event) => { setRiskSearch(event.target.value); setRiskPage(1); }} placeholder="搜尋標題、描述或檔案" />
                 <Select value={riskSeverity} onValueChange={(value) => { setRiskSeverity(value); setRiskPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Severity" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="嚴重度" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All severities</SelectItem>
+                    <SelectItem value="all">全部嚴重度</SelectItem>
                     {riskSeverities.map((severity) => <SelectItem key={severity} value={severity}>{severity}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -452,13 +453,13 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="rules" className="space-y-4">
-            <FilterCard title="Rules" description="Review derived business-rule candidates and supporting metadata.">
+            <FilterCard title="規則" description="檢視推導出的商業規則候選與相關中繼資料。">
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="Search rule name or description" />
+                <Input value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜尋規則名稱或描述" />
                 <Select value={ruleType} onValueChange={(value) => { setRuleType(value); setRulePage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Rule type" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="規則類型" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All rule types</SelectItem>
+                    <SelectItem value="all">全部規則類型</SelectItem>
                     {ruleTypes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -473,19 +474,19 @@ export default function AnalysisResult() {
                     <span className="font-medium text-slate-950">{rule.name}</span>
                     <Badge variant="outline">{rule.ruleType}</Badge>
                   </div>
-                  <p className="text-slate-600">{rule.description ?? "No rule description was generated."}</p>
-                  <p className="text-slate-500">{rule.sourceFile ?? "unknown file"}{rule.lineNumber ? `:${rule.lineNumber}` : ""}</p>
+                  <p className="text-slate-600">{rule.description ?? "這筆規則沒有產生額外描述。"}</p>
+                  <p className="text-slate-500">{rule.sourceFile ?? "未知檔案"}{rule.lineNumber ? `:${rule.lineNumber}` : ""}</p>
                 </div>
               ))}
-              emptyText="No rules matched the current filters."
+              emptyText="目前篩選條件下沒有規則結果。"
             />
           </TabsContent>
 
           <TabsContent value="documents" className="grid gap-4 lg:grid-cols-2">
-            <DocumentCard title="FLOW.md" description="Flow summary" content={renderDocumentPreview(report?.flowMarkdown)} />
-            <DocumentCard title="DATA_DEPENDENCY.md" description="Field dependency summary" content={renderDocumentPreview(report?.dataDependencyMarkdown)} />
-            <DocumentCard title="RISKS.md" description="Risk register" content={renderDocumentPreview(report?.risksMarkdown)} />
-            <DocumentCard title="RULES.yaml" description="Derived rules" content={renderDocumentPreview(report?.rulesYaml)} />
+            <DocumentCard title="FLOW.md" description="流程摘要" content={renderDocumentPreview(report?.flowMarkdown)} />
+            <DocumentCard title="DATA_DEPENDENCY.md" description="欄位相依摘要" content={renderDocumentPreview(report?.dataDependencyMarkdown)} />
+            <DocumentCard title="RISKS.md" description="風險列表" content={renderDocumentPreview(report?.risksMarkdown)} />
+            <DocumentCard title="RULES.yaml" description="推導規則" content={renderDocumentPreview(report?.rulesYaml)} />
           </TabsContent>
         </Tabs>
       </main>

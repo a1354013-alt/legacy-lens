@@ -24,7 +24,7 @@ async function downloadReportZip(projectId: number) {
   });
 
   if (!response.ok) {
-    let message = "Unable to download the report archive.";
+    let message = "無法下載分析報告。";
     try {
       const payload = (await response.json()) as { error?: string; code?: string; remediation?: string };
       message = [payload.error, payload.remediation].filter(Boolean).join(" ");
@@ -165,7 +165,7 @@ export function useAnalysisResultModel(projectId: number) {
   const triggerAnalysisMutation = trpc.analysis.trigger.useMutation({
     onSuccess: async () => {
       await Promise.all([utils.projects.getById.invalidate(projectId), utils.analysis.getSnapshot.invalidate(projectId)]);
-      toast.success("Analysis job queued.");
+      toast.success("分析工作已排入佇列。");
     },
   });
 
@@ -188,7 +188,7 @@ export function useAnalysisResultModel(projectId: number) {
     try {
       await triggerAnalysisMutation.mutateAsync(project.id);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to queue analysis.");
+      toast.error(error instanceof Error ? error.message : "無法啟動分析工作。");
     }
   };
 
@@ -196,9 +196,9 @@ export function useAnalysisResultModel(projectId: number) {
     setIsReportDownloading(true);
     try {
       await downloadReportZip(projectId);
-      toast.success("Report ZIP downloaded.");
+      toast.success("報告 ZIP 已開始下載。");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to download report ZIP.");
+      toast.error(error instanceof Error ? error.message : "無法下載報告 ZIP。");
     } finally {
       setIsReportDownloading(false);
     }

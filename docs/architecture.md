@@ -8,10 +8,13 @@ This document captures the operational boundaries that matter for real deploymen
 - Enqueue writes the job row and project status in the same transaction.
 - Only one active job per project is allowed through the `(projectId, activeKey)` unique index and transaction-time conflict checks.
 - The worker claims queued jobs from MySQL instead of relying on process-local promises.
-- Distributed-safe job leasing is not implemented yet; production deployments must enable `PROJECT_WORKER_ENABLED` on exactly one instance and set it to `false` on all other replicas.
-- This means multi-instance web deployments are supported only in a single-worker topology until lease owner / heartbeat coordination is implemented.
+- Running jobs are leased with `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts`.
+- Claiming is distributed-safe through an atomic conditional update. Competing workers may read the same candidate row, but only one claim update is allowed to win.
+- Workers heartbeat the lease while processing. If the heartbeat stops and the lease expires, the job can be retried safely until `maxAttempts` is reached.
 - Startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks `projects.status in (importing, analyzing)` as failed when no active job remains.
+- Startup recovery does not reset still-valid leases. Older rows without lease metadata fall back to the legacy stale-window check.
 - `PROJECT_JOB_STALE_MS` controls when a running job is considered stale.
+- Projects with queued/running jobs cannot be deleted. Deletion is rejected until the active work finishes or fails.
 
 ## tRPC Rate Limiting
 
@@ -38,6 +41,7 @@ This document captures the operational boundaries that matter for real deploymen
   - total extracted bytes
 - Unsafe archive paths reject the whole import.
 - Oversize supported files are skipped with persisted warnings instead of exhausting memory.
+- Upload temp-file cleanup preserves ZIPs that are still referenced by active queued/running `import_zip` jobs.
 
 ### Git
 
@@ -55,5 +59,6 @@ This document captures the operational boundaries that matter for real deploymen
 ## Persistence Model
 
 - Reports are generated from persisted analysis snapshots only.
+- Report ZIP export performs a preflight size estimate before `jszip.generateAsync()` so oversized archives fail before allocating the full buffer.
 - Home/detail polling speeds up only while a project or latest job is active.
 - `projects.lastAnalyzedAt` tracks the latest successful analysis completion time.

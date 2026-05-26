@@ -19,6 +19,7 @@ vi.mock("../_core/sdk", () => ({
 }));
 
 vi.mock("./projectWorkflow", () => ({
+  getActiveImportZipTempFilePaths: vi.fn(async () => new Set<string>()),
   queueImportProjectGit: vi.fn(async () => ({ jobId: 22, projectId: 42, status: "queued" })),
   queueImportProjectZipFromTempFile: vi.fn(async (_projectId: number, _userId: number, tempFilePath: string) => {
     lastTempFilePath = tempFilePath;
@@ -251,6 +252,34 @@ describe("projectUploadRoute", () => {
     await expectFileMissing(oldZipPath);
     await expectFileExists(freshZipPath);
     await expectFileExists(textPath);
+  });
+
+  it("keeps expired temp files that are still referenced by queued or running import jobs", async () => {
+    const { getActiveImportZipTempFilePaths } = await import("./projectWorkflow");
+    await mkdir(uploadTempDir, { recursive: true });
+    const activeZipPath = join(uploadTempDir, "active.zip");
+    const oldDate = new Date("2026-01-01T00:00:00.000Z");
+    await writeFile(activeZipPath, "zip");
+    await utimes(activeZipPath, oldDate, oldDate);
+    vi.mocked(getActiveImportZipTempFilePaths).mockResolvedValueOnce(new Set([activeZipPath]));
+
+    await cleanupExpiredUploadTempFiles(new Date("2026-01-03T00:00:00.000Z"), 24 * 60 * 60 * 1000);
+
+    await expectFileExists(activeZipPath);
+  });
+
+  it("removes expired orphan temp zip files after completed or failed jobs release them", async () => {
+    const { getActiveImportZipTempFilePaths } = await import("./projectWorkflow");
+    await mkdir(uploadTempDir, { recursive: true });
+    const orphanZipPath = join(uploadTempDir, "orphan.zip");
+    const oldDate = new Date("2026-01-01T00:00:00.000Z");
+    await writeFile(orphanZipPath, "zip");
+    await utimes(orphanZipPath, oldDate, oldDate);
+    vi.mocked(getActiveImportZipTempFilePaths).mockResolvedValueOnce(new Set());
+
+    await cleanupExpiredUploadTempFiles(new Date("2026-01-03T00:00:00.000Z"), 24 * 60 * 60 * 1000);
+
+    await expectFileMissing(orphanZipPath);
   });
 
   it("never deletes files outside the managed upload temp directory", async () => {

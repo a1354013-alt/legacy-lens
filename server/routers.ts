@@ -1,13 +1,28 @@
 import { COOKIE_NAME, MAX_LEGACY_BASE64_ZIP_BYTES, formatBytes } from "@shared/const";
 import {
+  analysisResultOutputSchema,
+  analysisSnapshotOutputSchema,
+  dependenciesPageOutputSchema,
+  fieldDependenciesPageOutputSchema,
   dependenciesPageInputSchema,
+  fieldsPageOutputSchema,
   fieldDependenciesPageInputSchema,
   fieldsPageInputSchema,
   focusLanguageSchema,
   impactTargetTypeSchema,
+  impactAnalysisResultSchema,
+  jobByIdOutputSchema,
+  projectByIdOutputSchema,
+  projectCreateOutputSchema,
+  projectDeleteOutputSchema,
+  projectsListOutputSchema,
   projectSourceTypeSchema,
+  reportArchivePayloadSchema,
+  risksPageOutputSchema,
   risksPageInputSchema,
+  rulesPageOutputSchema,
   rulesPageInputSchema,
+  symbolsPageOutputSchema,
   symbolsPageInputSchema,
   type AnalysisStatus,
   type ProjectStatus,
@@ -130,6 +145,33 @@ function raiseAsTrpc(error: unknown): never {
   throw toTrpcError(error);
 }
 
+function toProjectSummary(
+  project: Awaited<ReturnType<typeof getOwnedProject>> | Record<string, unknown>,
+  analysisStatus: AnalysisStatus,
+  latestJob: ReturnType<typeof getLatestJobsByProjectIds> extends Promise<Map<number, infer T>> ? T | null : never
+) {
+  return {
+    id: Number(project.id),
+    userId: Number(project.userId),
+    name: String(project.name ?? ""),
+    description: typeof project.description === "string" ? project.description : null,
+    language: project.language as ReturnType<typeof focusLanguageSchema.parse>,
+    sourceType: project.sourceType as ReturnType<typeof projectSourceTypeSchema.parse>,
+    sourceUrl: typeof project.sourceUrl === "string" ? project.sourceUrl : null,
+    status: project.status as ProjectStatus,
+    importProgress: Number(project.importProgress ?? 0),
+    analysisProgress: Number(project.analysisProgress ?? 0),
+    errorMessage: typeof project.errorMessage === "string" ? project.errorMessage : null,
+    lastErrorCode: typeof project.lastErrorCode === "string" ? project.lastErrorCode : null,
+    importWarningsJson: Array.isArray(project.importWarningsJson) ? project.importWarningsJson : [],
+    lastAnalyzedAt: project.lastAnalyzedAt instanceof Date ? project.lastAnalyzedAt : project.lastAnalyzedAt ? new Date(String(project.lastAnalyzedAt)) : null,
+    createdAt: project.createdAt instanceof Date ? project.createdAt : project.createdAt ? new Date(String(project.createdAt)) : new Date(0),
+    updatedAt: project.updatedAt instanceof Date ? project.updatedAt : project.updatedAt ? new Date(String(project.updatedAt)) : new Date(0),
+    analysisStatus,
+    latestJob: latestJob ?? null,
+  };
+}
+
 export const appRouter = router({
   system: systemRouter,
   auth: router({
@@ -142,7 +184,7 @@ export const appRouter = router({
   }),
 
   projects: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: protectedProcedure.output(projectsListOutputSchema).query(async ({ ctx }) => {
       try {
         const db = await getDb();
         if (!db) return [];
@@ -160,17 +202,19 @@ export const appRouter = router({
         const analysisStatusByProjectId = new Map(reportRows.map((row) => [row.projectId, row.status]));
         const latestJobsByProjectId = await getLatestJobsByProjectIds(projectRows.map((project) => project.id), ctx.user.id);
 
-        return projectRows.map((project) => ({
-          ...project,
-          analysisStatus: deriveProjectAnalysisStatus(project.status, analysisStatusByProjectId.get(project.id)),
-          latestJob: latestJobsByProjectId.get(project.id) ?? null,
-        }));
+        return projectRows.map((project) =>
+          toProjectSummary(
+            project,
+            deriveProjectAnalysisStatus(project.status, analysisStatusByProjectId.get(project.id)),
+            latestJobsByProjectId.get(project.id) ?? null
+          )
+        );
       } catch (error) {
         raiseAsTrpc(error);
       }
     }),
 
-    getById: protectedProcedure.input(projectIdSchema).query(async ({ ctx, input }) => {
+    getById: protectedProcedure.input(projectIdSchema).output(projectByIdOutputSchema).query(async ({ ctx, input }) => {
       try {
         const db = await getDb();
         if (!db) return null;
@@ -184,17 +228,13 @@ export const appRouter = router({
 
         const latestJobsByProjectId = await getLatestJobsByProjectIds([input], ctx.user.id);
 
-        return {
-          ...project,
-          analysisStatus: deriveProjectAnalysisStatus(project.status, report?.status),
-          latestJob: latestJobsByProjectId.get(input) ?? null,
-        };
+        return toProjectSummary(project, deriveProjectAnalysisStatus(project.status, report?.status), latestJobsByProjectId.get(input) ?? null);
       } catch (error) {
         raiseAsTrpc(error);
       }
     }),
 
-    create: protectedProcedure.input(createProjectSchema).mutation(async ({ ctx, input }) => {
+    create: protectedProcedure.input(createProjectSchema).output(projectCreateOutputSchema).mutation(async ({ ctx, input }) => {
       try {
         const projectId = await createProjectForUser(ctx.user.id, {
           name: input.name,
@@ -208,7 +248,7 @@ export const appRouter = router({
       }
     }),
 
-    delete: protectedProcedure.input(projectIdSchema).mutation(async ({ ctx, input }) => {
+    delete: protectedProcedure.input(projectIdSchema).output(projectDeleteOutputSchema).mutation(async ({ ctx, input }) => {
       try {
         await deleteProjectCascade(input, ctx.user.id);
         return { success: true };
@@ -237,7 +277,7 @@ export const appRouter = router({
   }),
 
   jobs: router({
-    getById: protectedProcedure.input(z.number().int().positive()).query(async ({ ctx, input }) => {
+    getById: protectedProcedure.input(z.number().int().positive()).output(jobByIdOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getProjectJob(input, ctx.user.id);
       } catch (error) {
@@ -255,7 +295,7 @@ export const appRouter = router({
       }
     }),
 
-    getResult: protectedProcedure.input(projectIdSchema).query(async ({ ctx, input }) => {
+    getResult: protectedProcedure.input(projectIdSchema).output(analysisResultOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getAnalysisResult(input, ctx.user.id);
       } catch (error) {
@@ -263,7 +303,7 @@ export const appRouter = router({
       }
     }),
 
-    getSnapshot: protectedProcedure.input(projectIdSchema).query(async ({ ctx, input }) => {
+    getSnapshot: protectedProcedure.input(projectIdSchema).output(analysisSnapshotOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getAnalysisSnapshot(input, ctx.user.id);
       } catch (error) {
@@ -271,7 +311,7 @@ export const appRouter = router({
       }
     }),
 
-    getSymbolsPage: protectedProcedure.input(symbolsPageInputSchema).query(async ({ ctx, input }) => {
+    getSymbolsPage: protectedProcedure.input(symbolsPageInputSchema).output(symbolsPageOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getSymbolsPage(input, ctx.user.id);
       } catch (error) {
@@ -279,7 +319,7 @@ export const appRouter = router({
       }
     }),
 
-    getFieldsPage: protectedProcedure.input(fieldsPageInputSchema).query(async ({ ctx, input }) => {
+    getFieldsPage: protectedProcedure.input(fieldsPageInputSchema).output(fieldsPageOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getFieldsPage(input, ctx.user.id);
       } catch (error) {
@@ -287,7 +327,7 @@ export const appRouter = router({
       }
     }),
 
-    getRisksPage: protectedProcedure.input(risksPageInputSchema).query(async ({ ctx, input }) => {
+    getRisksPage: protectedProcedure.input(risksPageInputSchema).output(risksPageOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getRisksPage(input, ctx.user.id);
       } catch (error) {
@@ -295,7 +335,7 @@ export const appRouter = router({
       }
     }),
 
-    getRulesPage: protectedProcedure.input(rulesPageInputSchema).query(async ({ ctx, input }) => {
+    getRulesPage: protectedProcedure.input(rulesPageInputSchema).output(rulesPageOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getRulesPage(input, ctx.user.id);
       } catch (error) {
@@ -303,7 +343,7 @@ export const appRouter = router({
       }
     }),
 
-    getDependenciesPage: protectedProcedure.input(dependenciesPageInputSchema).query(async ({ ctx, input }) => {
+    getDependenciesPage: protectedProcedure.input(dependenciesPageInputSchema).output(dependenciesPageOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getDependenciesPage(input, ctx.user.id);
       } catch (error) {
@@ -311,7 +351,7 @@ export const appRouter = router({
       }
     }),
 
-    getFieldDependenciesPage: protectedProcedure.input(fieldDependenciesPageInputSchema).query(async ({ ctx, input }) => {
+    getFieldDependenciesPage: protectedProcedure.input(fieldDependenciesPageInputSchema).output(fieldDependenciesPageOutputSchema).query(async ({ ctx, input }) => {
       try {
         return await getFieldDependenciesPage(input, ctx.user.id);
       } catch (error) {
@@ -324,6 +364,7 @@ export const appRouter = router({
     // HTTP ZIP download is preferred to avoid base64 encoding overhead
     downloadReport: protectedProcedure
       .input(z.object({ projectId: projectIdSchema, format: z.literal("zip").default("zip") }))
+      .output(reportArchivePayloadSchema)
       .query(async ({ ctx, input }) => {
         try {
           return await buildReportArchive(input.projectId, ctx.user.id);
@@ -340,6 +381,7 @@ export const appRouter = router({
           type: impactTargetTypeSchema.default("auto"),
         })
       )
+      .output(impactAnalysisResultSchema)
       .query(async ({ ctx, input }) => {
         try {
           return await runImpactAnalysis(input.projectId, ctx.user.id, input.target, input.type);

@@ -416,12 +416,23 @@ function extractSqlAliasMap(sql: string) {
     if (tableName) {
       aliasMap.set(tableName.toLowerCase(), tableName);
     }
-    if (alias) {
+    if (alias && !isSqlReservedIdentifier(alias) && !isSqlKeyword(alias)) {
       aliasMap.set(alias.toLowerCase(), tableName);
     }
   }
 
   return aliasMap;
+}
+
+function resolveDeleteWriteTable(sql: string, aliasMap: Map<string, string>) {
+  const deleteAliasMatch = sql.match(/\bDELETE\s+([A-Za-z_][\w$]*)\s+FROM\b/i);
+  if (deleteAliasMatch) {
+    const deleteAlias = normalizeSqlIdentifier(deleteAliasMatch[1]);
+    return aliasMap.get(deleteAlias.toLowerCase()) ?? deleteAlias;
+  }
+
+  const deleteTableMatch = sql.match(new RegExp(String.raw`DELETE\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
+  return deleteTableMatch ? normalizeSqlTableName(deleteTableMatch[1]) : null;
 }
 
 function resolveSqlFieldTarget(rawField: string, primaryTable: string | undefined, aliasMap: Map<string, string>) {
@@ -598,13 +609,56 @@ function extractLeadingCteBodies(sql: string) {
   return bodies;
 }
 
+function stripLeadingCtes(sql: string) {
+  if (!/^\s*WITH\b/i.test(sql)) {
+    return sql;
+  }
+
+  let cursor = sql.search(/\bWITH\b/i);
+  let afterCtesIndex = 0;
+
+  while (cursor >= 0 && cursor < sql.length) {
+    const asMatch = /\bAS\s*\(/gi;
+    asMatch.lastIndex = cursor;
+    const match = asMatch.exec(sql);
+    if (!match) {
+      break;
+    }
+
+    let index = asMatch.lastIndex;
+    let depth = 1;
+    while (index < sql.length && depth > 0) {
+      const character = sql[index];
+      if (character === "(") depth += 1;
+      if (character === ")") depth -= 1;
+      index += 1;
+    }
+
+    if (depth !== 0) {
+      break;
+    }
+
+    afterCtesIndex = index;
+    const suffix = sql.slice(index);
+    if (/^\s*,/.test(suffix)) {
+      cursor = index + 1;
+      continue;
+    }
+
+    return suffix.trim();
+  }
+
+  return sql.slice(afterCtesIndex).trim() || sql;
+}
+
 function parseSqlReference(sql: string, line: number, file: string, owner?: AnalyzedSymbol): FieldReference[] {
   const normalizedSql = normalizeSqlStatement(sql);
   const references: FieldReference[] = [];
   for (const cteBody of extractLeadingCteBodies(normalizedSql)) {
     references.push(...parseSqlReference(cteBody, line, file, owner));
   }
-  const aliasMap = extractSqlAliasMap(normalizedSql);
+  const mainSql = stripLeadingCtes(normalizedSql);
+  const aliasMap = extractSqlAliasMap(mainSql);
 
   const base = {
     file,
@@ -614,7 +668,7 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
     context: normalizedSql,
   };
 
-  const insertMatch = normalizedSql.match(new RegExp(String.raw`INSERT\s+INTO\s+(${SQL_IDENTIFIER_PATTERN})\s*\(([^)]+)\)`, "i"));
+  const insertMatch = mainSql.match(new RegExp(String.raw`INSERT\s+INTO\s+(${SQL_IDENTIFIER_PATTERN})\s*\(([^)]+)\)`, "i"));
   if (insertMatch) {
     const table = normalizeSqlTableName(insertMatch[1]);
     const fields = splitSqlList(insertMatch[2]).map((value) => normalizeSqlFieldName(value));
@@ -622,55 +676,62 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
       if (!field) continue;
       references.push({ table, field, type: "write", ...base });
     }
-    const selectMatch = normalizedSql.match(/\)\s+SELECT\s+(.+?)\s+FROM\s+/i);
+    const selectMatch = mainSql.match(/\)\s+SELECT\s+(.+?)\s+FROM\s+/i);
     if (selectMatch) {
-      const readTableMatch = normalizedSql.match(new RegExp(String.raw`\)\s+SELECT\s+(.+?)\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
+      const readTableMatch = mainSql.match(new RegExp(String.raw`\)\s+SELECT\s+(.+?)\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
       const primaryTable = readTableMatch ? normalizeSqlTableName(readTableMatch[2]) : undefined;
       for (const expression of splitSqlList(selectMatch[1])) {
         for (const reference of extractSqlReferencesFromExpression(expression, primaryTable, aliasMap)) {
           references.push({ ...reference, type: "read", ...base });
         }
       }
-      for (const predicate of extractSqlPredicateFields(normalizedSql, primaryTable, aliasMap)) {
+      for (const predicate of extractSqlPredicateFields(mainSql, primaryTable, aliasMap)) {
         references.push({ ...predicate, type: "read", ...base });
       }
     }
     return references;
   }
 
-  const updateMatch = normalizedSql.match(new RegExp(String.raw`UPDATE\s+(${SQL_IDENTIFIER_PATTERN})\s+SET\s+(.+?)(?:\s+WHERE|$)`, "i"));
+  const updateMatch = mainSql.match(
+    new RegExp(String.raw`UPDATE\s+(${SQL_IDENTIFIER_PATTERN})(?:\s+(?:AS\s+)?([A-Za-z_][\w$]*))?\s+SET\s+(.+?)(?:\s+WHERE|$)`, "i")
+  );
   if (updateMatch) {
     const table = normalizeSqlTableName(updateMatch[1]);
-    const assignments = splitSqlList(updateMatch[2]);
+    const assignments = splitSqlList(updateMatch[3]);
     for (const assignment of assignments) {
-      const field = normalizeSqlFieldName(assignment.split("=")[0] ?? "");
-      if (!field) continue;
-      references.push({ table, field, type: "write", ...base });
+      const [leftExpression, rightExpression = ""] = assignment.split(/=(.*)/s);
+      const writeTarget = resolveSqlFieldTarget(leftExpression ?? "", table, aliasMap);
+      if (writeTarget?.field) {
+        references.push({ table: writeTarget.table, field: writeTarget.field, type: "write", ...base });
+      }
+
+      for (const reference of extractSqlReferencesFromExpression(rightExpression, table, aliasMap)) {
+        references.push({ ...reference, type: "read", ...base });
+      }
     }
 
-    for (const predicate of extractSqlPredicateFields(normalizedSql, table, aliasMap)) {
+    for (const predicate of extractSqlPredicateFields(mainSql, table, aliasMap)) {
       references.push({ ...predicate, type: "read", ...base });
     }
     return references;
   }
 
-  const deleteMatch = normalizedSql.match(new RegExp(String.raw`DELETE\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
-  if (deleteMatch) {
-    const table = normalizeSqlTableName(deleteMatch[1]);
+  const deleteTable = resolveDeleteWriteTable(mainSql, aliasMap);
+  if (deleteTable) {
     references.push({
-      table,
+      table: deleteTable,
       field: "*",
       type: "write",
       ...base,
     });
 
-    for (const predicate of extractSqlPredicateFields(normalizedSql, table, aliasMap)) {
+    for (const predicate of extractSqlPredicateFields(mainSql, deleteTable, aliasMap)) {
       references.push({ ...predicate, type: "read", ...base });
     }
     return references;
   }
 
-  const selectMatch = normalizedSql.match(new RegExp(String.raw`SELECT\s+(.+?)\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
+  const selectMatch = mainSql.match(new RegExp(String.raw`SELECT\s+(.+?)\s+FROM\s+(${SQL_IDENTIFIER_PATTERN})`, "i"));
   if (selectMatch) {
     const table = normalizeSqlTableName(selectMatch[2]);
     for (const expression of splitSqlList(selectMatch[1])) {
@@ -679,7 +740,7 @@ function parseSqlReference(sql: string, line: number, file: string, owner?: Anal
       }
     }
 
-    for (const predicate of extractSqlPredicateFields(normalizedSql, table, aliasMap)) {
+    for (const predicate of extractSqlPredicateFields(mainSql, table, aliasMap)) {
       references.push({ ...predicate, type: "read", ...base });
     }
   }
@@ -1541,14 +1602,14 @@ export class DfmParser implements FileParser {
       for (const handler of dfmObject.eventHandlers) {
         symbols.push(
           createSymbol({
-            name: handler.handlerName,
-            qualifiedName: `${dfmObject.objectName}.${handler.handlerName}`,
+            name: handler.eventName,
+            qualifiedName: `${this.parsed.formName ?? dfmObject.objectName}.${dfmObject.objectName}.${handler.eventName}`,
             type: "method",
             file: this.file,
             startLine: objectIndex + 1,
             endLine: objectIndex + 1,
             signature: `${dfmObject.objectName}.${handler.eventName} -> ${handler.handlerName}`,
-            description: `DFM event handler for ${dfmObject.objectName}`,
+            description: `DFM event binding for ${dfmObject.objectName}`,
           })
         );
       }
@@ -1557,8 +1618,30 @@ export class DfmParser implements FileParser {
     return symbols;
   }
 
-  parseDependencies(): SymbolDependency[] {
-    return [];
+  parseDependencies(symbols: AnalyzedSymbol[]): SymbolDependency[] {
+    const dependencies: SymbolDependency[] = [];
+
+    for (const [objectIndex, dfmObject] of this.parsed.objects.entries()) {
+      for (const handler of dfmObject.eventHandlers) {
+        const eventSymbol =
+          symbols.find((symbol) => symbol.signature === `${dfmObject.objectName}.${handler.eventName} -> ${handler.handlerName}`) ??
+          symbols.find((symbol) => symbol.name === handler.eventName);
+
+        if (!eventSymbol) {
+          continue;
+        }
+
+        dependencies.push({
+          from: eventSymbol.stableKey,
+          toName: handler.handlerName,
+          fromName: eventSymbol.qualifiedName ?? eventSymbol.name,
+          type: "references",
+          line: objectIndex + 1,
+        });
+      }
+    }
+
+    return dependencies;
   }
 
   parseFieldReferences(): FieldReference[] {

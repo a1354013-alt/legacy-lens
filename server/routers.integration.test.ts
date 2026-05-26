@@ -2,6 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 import JSZip from "jszip";
 import { MAX_LEGACY_BASE64_ZIP_BYTES } from "../shared/const";
+import {
+  analysisSnapshotOutputSchema,
+  fieldsPageOutputSchema,
+  jobByIdOutputSchema,
+  projectByIdOutputSchema,
+  projectsListOutputSchema,
+  reportArchivePayloadSchema,
+  risksPageOutputSchema,
+  symbolsPageOutputSchema,
+} from "../shared/contracts";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -270,6 +280,7 @@ describe("appRouter integration", () => {
     await waitForProjectJobForTests(importJob.jobId);
 
     const projectAfterImport = await caller.projects.getById(created.projectId);
+    expect(projectByIdOutputSchema.parse(projectAfterImport)).toEqual(projectAfterImport);
     expect(projectAfterImport?.importWarningsJson).toEqual(importWarnings);
     expect(projectAfterImport?.latestJob?.type).toBe("import_zip");
     expect(projectAfterImport?.latestJob?.status).toBe("completed");
@@ -278,6 +289,7 @@ describe("appRouter integration", () => {
     expect(analyzeJob.status).toBe("queued");
     await waitForProjectJobForTests(analyzeJob.jobId);
     const analyzeJobStatus = await caller.jobs.getById(analyzeJob.jobId);
+    expect(jobByIdOutputSchema.parse(analyzeJobStatus)).toEqual(analyzeJobStatus);
     expect(analyzeJobStatus).toMatchObject({
       id: analyzeJob.jobId,
       projectId: created.projectId,
@@ -286,6 +298,7 @@ describe("appRouter integration", () => {
     });
 
     const snapshot = await caller.analysis.getSnapshot(created.projectId);
+    expect(analysisSnapshotOutputSchema.parse(snapshot)).toEqual(snapshot);
     expect(snapshot.report?.status).toBe("partial");
     expect(snapshot.importWarnings).toEqual(importWarnings);
     expect(snapshot.totals.symbols).toBe(1);
@@ -295,6 +308,7 @@ describe("appRouter integration", () => {
       page: 1,
       pageSize: 25,
     });
+    expect(symbolsPageOutputSchema.parse(symbolsPage)).toEqual(symbolsPage);
     expect(symbolsPage.items).toHaveLength(1);
     expect(symbolsPage.total).toBe(1);
 
@@ -303,6 +317,7 @@ describe("appRouter integration", () => {
       page: 1,
       pageSize: 25,
     });
+    expect(fieldsPageOutputSchema.parse(fieldsPage)).toEqual(fieldsPage);
     expect(fieldsPage.items).toEqual([expect.objectContaining({ tableName: "dbo.Users", fieldName: "Name" })]);
 
     const risksPage = await caller.analysis.getRisksPage({
@@ -310,12 +325,14 @@ describe("appRouter integration", () => {
       page: 1,
       pageSize: 25,
     });
+    expect(risksPageOutputSchema.parse(risksPage)).toEqual(risksPage);
     expect(risksPage.items).toEqual([expect.objectContaining({ title: "Dynamic SQL review", severity: "medium" })]);
 
     const archive = await caller.analysis.downloadReport({
       projectId: created.projectId,
       format: "zip",
     });
+    expect(reportArchivePayloadSchema.parse(archive)).toEqual(archive);
     expect(archive.mimeType).toBe("application/zip");
 
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
@@ -354,6 +371,7 @@ describe("appRouter integration", () => {
 
     const caller = appRouter.createCaller(createContext());
     const projects = await caller.projects.list();
+    expect(projectsListOutputSchema.parse(projects)).toEqual(projects);
 
     expect(projects).toEqual([
       expect.objectContaining({ id: 2, analysisStatus: "pending", latestJob: null }),
@@ -374,6 +392,42 @@ describe("appRouter integration", () => {
         pageSize: 101,
       })
     ).rejects.toThrow(/100/);
+  });
+
+  it("blocks project deletion while an active job still exists", async () => {
+    const { appRouter } = await import("./routers");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "busy-project",
+      language: "go",
+      sourceType: "upload",
+      status: "importing",
+      importWarningsJson: [],
+    });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/busy.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    const caller = appRouter.createCaller(createContext());
+
+    await expect(caller.projects.delete(1)).rejects.toMatchObject({
+      message: expect.stringContaining("queued or running"),
+    });
+    expect(fakeDb.store.projects).toHaveLength(1);
+    expect(fakeDb.store.projectJobs).toHaveLength(1);
   });
 
   it("limits the legacy base64 ZIP endpoint to small compatibility payloads", async () => {

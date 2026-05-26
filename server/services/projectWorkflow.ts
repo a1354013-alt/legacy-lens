@@ -1,6 +1,7 @@
 import JSZip from "jszip";
+import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
-import { and, asc, count, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
   AnalysisSnapshot,
@@ -83,6 +84,10 @@ type ProjectJobPayload =
 const queuedJobPromises = new Map<number, Promise<void>>();
 const ACTIVE_PROJECT_JOB_KEY = "active";
 const STALE_PROJECT_JOB_MS = Number.parseInt(process.env.PROJECT_JOB_STALE_MS ?? "900000", 10);
+const PROJECT_JOB_LEASE_MS = Number.parseInt(process.env.PROJECT_JOB_LEASE_MS ?? "30000", 10);
+const PROJECT_JOB_HEARTBEAT_MS = Number.parseInt(process.env.PROJECT_JOB_HEARTBEAT_MS ?? "10000", 10);
+const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = Number.parseInt(process.env.PROJECT_JOB_MAX_ATTEMPTS ?? "3", 10);
+const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
 let projectJobWorkerLoop: Promise<void> | null = null;
 
 function isProjectWorkerEnabled() {
@@ -151,6 +156,56 @@ function isInMemoryDb(db: DbHandle): db is DbHandle & { store: Record<string, Ar
 
 function isActiveProjectJobStatus(status: ProjectJobRow["status"]) {
   return status === "queued" || status === "running";
+}
+
+function isProjectJobLeaseExpired(job: Pick<ProjectJobRow, "status" | "leaseUntil">, now = new Date()) {
+  if (job.status !== "running") {
+    return false;
+  }
+
+  const leaseUntil = toDate(job.leaseUntil);
+  return !leaseUntil || leaseUntil.getTime() <= now.getTime();
+}
+
+function hasProjectJobLease(job: Pick<ProjectJobRow, "leaseUntil">) {
+  return toDate(job.leaseUntil) !== null;
+}
+
+function getProjectJobAttemptCount(job: Pick<ProjectJobRow, "attemptCount">) {
+  return Number(job.attemptCount ?? 0);
+}
+
+function getProjectJobMaxAttempts(job: Pick<ProjectJobRow, "maxAttempts">) {
+  return Math.max(1, Number(job.maxAttempts ?? DEFAULT_PROJECT_JOB_MAX_ATTEMPTS));
+}
+
+function canRetryProjectJob(job: Pick<ProjectJobRow, "attemptCount" | "maxAttempts">) {
+  return getProjectJobAttemptCount(job) < getProjectJobMaxAttempts(job);
+}
+
+function buildProjectJobLease(now = new Date()) {
+  return {
+    heartbeatAt: now,
+    leaseUntil: new Date(now.getTime() + PROJECT_JOB_LEASE_MS),
+  };
+}
+
+function toPublicProjectJobRecord(job: ProjectJobRow): ProjectJobRecord {
+  return {
+    id: job.id,
+    projectId: job.projectId,
+    userId: job.userId,
+    type: job.type,
+    status: job.status,
+    progress: job.progress,
+    errorCode: job.errorCode ?? null,
+    errorMessage: job.errorMessage ?? null,
+    createdAt: toDate(job.createdAt) ?? new Date(0),
+    startedAt: toDate(job.startedAt),
+    finishedAt: toDate(job.finishedAt),
+    attemptCount: getProjectJobAttemptCount(job),
+    maxAttempts: getProjectJobMaxAttempts(job),
+  };
 }
 
 function serializeProjectJobPayload(payload: ProjectJobPayload) {
@@ -334,6 +389,12 @@ async function getProjectJobById(jobId: number) {
   return job ?? null;
 }
 
+async function getProjectById(projectId: number) {
+  const db = await requireDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  return project ?? null;
+}
+
 async function createQueuedProjectJob(projectId: number, userId: number, payload: ProjectJobPayload): Promise<number> {
   const db = await requireDb();
   const nextStatus = payload.type === "analyze" ? "analyzing" : "importing";
@@ -364,6 +425,11 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
         errorMessage: null,
         payloadJson: serializeProjectJobPayload(payload),
         activeKey: ACTIVE_PROJECT_JOB_KEY,
+        lockedBy: null,
+        leaseUntil: null,
+        heartbeatAt: null,
+        attemptCount: 0,
+        maxAttempts: DEFAULT_PROJECT_JOB_MAX_ATTEMPTS,
         startedAt: null,
         finishedAt: null,
       });
@@ -437,46 +503,88 @@ function kickProjectJobWorker() {
 
 async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
   const db = await requireDb();
-  const queuedRows = await db.select().from(projectJobs).where(eq(projectJobs.status, "queued")).orderBy(asc(projectJobs.id)).limit(1);
-  const nextJob = queuedRows[0];
-  if (!nextJob) {
-    return null;
+  const now = new Date();
+  const legacyStaleBefore = new Date(now.getTime() - STALE_PROJECT_JOB_MS);
+  const candidateRows = (await db.select().from(projectJobs)).filter(
+    (job) => {
+      if (!canRetryProjectJob(job)) {
+        return false;
+      }
+
+      if (job.status === "queued") {
+        return true;
+      }
+
+      if (job.status !== "running") {
+        return false;
+      }
+
+      if (hasProjectJobLease(job)) {
+        return isProjectJobLeaseExpired(job, now);
+      }
+
+      const startedAt = toDate(job.startedAt);
+      return !startedAt || startedAt.getTime() <= legacyStaleBefore.getTime();
+    }
+  );
+
+  for (const nextJob of candidateRows.sort((left, right) => Number(left.id) - Number(right.id))) {
+    const startedAt = nextJob.startedAt ? toDate(nextJob.startedAt) ?? now : now;
+    const lease = buildProjectJobLease(now);
+    const updateConditions = [eq(projectJobs.id, nextJob.id)];
+
+    if (nextJob.status === "queued") {
+      updateConditions.push(eq(projectJobs.status, "queued"));
+    } else {
+      updateConditions.push(eq(projectJobs.status, "running"));
+      updateConditions.push(nextJob.lockedBy ? eq(projectJobs.lockedBy, nextJob.lockedBy) : isNull(projectJobs.lockedBy));
+      updateConditions.push(nextJob.leaseUntil ? eq(projectJobs.leaseUntil, nextJob.leaseUntil) : isNull(projectJobs.leaseUntil));
+    }
+
+    const updateResult = await db
+      .update(projectJobs)
+      .set({
+        status: "running",
+        progress: nextJob.status === "queued" ? 10 : Math.max(10, Number(nextJob.progress ?? 0)),
+        startedAt,
+        finishedAt: null,
+        errorCode: null,
+        errorMessage: null,
+        lockedBy: PROJECT_JOB_LOCK_OWNER,
+        heartbeatAt: lease.heartbeatAt,
+        leaseUntil: lease.leaseUntil,
+        attemptCount: getProjectJobAttemptCount(nextJob) + 1,
+      })
+      .where(andAll(updateConditions));
+
+    const affectedRows = extractAffectedRows(updateResult);
+    if (typeof affectedRows === "number" && affectedRows === 0) {
+      continue;
+    }
+
+    const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
+    if (!claimedJob || claimedJob.status !== "running" || claimedJob.lockedBy !== PROJECT_JOB_LOCK_OWNER) {
+      continue;
+    }
+
+    const queuedAt = toDate(claimedJob.createdAt);
+    logger.info("Project job claimed", {
+      action: "project.job.claimed",
+      status: "ok",
+      jobId: claimedJob.id,
+      projectId: claimedJob.projectId,
+      type: claimedJob.type,
+      queueWaitMs: queuedAt ? Math.max(0, now.getTime() - queuedAt.getTime()) : null,
+      attemptCount: claimedJob.attemptCount,
+      maxAttempts: claimedJob.maxAttempts,
+      leaseUntil: claimedJob.leaseUntil,
+      lockedBy: claimedJob.lockedBy,
+    });
+
+    return claimedJob;
   }
 
-  const startedAt = new Date();
-  const updateResult = await db
-    .update(projectJobs)
-    .set({
-      status: "running",
-      progress: 10,
-      startedAt,
-      finishedAt: null,
-      errorCode: null,
-      errorMessage: null,
-    })
-    .where(and(eq(projectJobs.id, nextJob.id), eq(projectJobs.status, "queued")));
-
-  const affectedRows = extractAffectedRows(updateResult);
-  if (typeof affectedRows === "number" && affectedRows === 0) {
-    return null;
-  }
-
-  const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
-  if (!claimedJob || claimedJob.status !== "running") {
-    return null;
-  }
-
-  const queuedAt = toDate(claimedJob.createdAt);
-  logger.info("Project job claimed", {
-    action: "project.job.claimed",
-    status: "ok",
-    jobId: claimedJob.id,
-    projectId: claimedJob.projectId,
-    type: claimedJob.type,
-    queueWaitMs: queuedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null,
-  });
-
-  return claimedJob ?? null;
+  return null;
 }
 
 export async function claimNextQueuedProjectJobForTests() {
@@ -566,6 +674,25 @@ function buildProjectJobFailureFallback(job: Pick<ProjectJobRow, "type">) {
   return new AppError("IMPORT_FAILED", "Project job failed.");
 }
 
+async function heartbeatProjectJobLease(jobId: number, lockedBy: string) {
+  const db = await requireDb();
+  const lease = buildProjectJobLease();
+  await db
+    .update(projectJobs)
+    .set({
+      heartbeatAt: lease.heartbeatAt,
+      leaseUntil: lease.leaseUntil,
+    })
+    .where(and(eq(projectJobs.id, jobId), eq(projectJobs.status, "running"), eq(projectJobs.lockedBy, lockedBy)));
+}
+
+async function assertProjectJobProjectExists(projectId: number) {
+  const project = await getProjectById(projectId);
+  if (!project) {
+    throw new AppError("PROJECT_NOT_FOUND", "Project no longer exists.");
+  }
+}
+
 async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "failed", error?: AppError) {
   const now = new Date();
   const queuedAt = toDate(job.createdAt);
@@ -578,6 +705,9 @@ async function finalizeProjectJob(job: ProjectJobRow, status: "completed" | "fai
     progress: 100,
     activeKey: null,
     payloadJson: null,
+    lockedBy: null,
+    leaseUntil: null,
+    heartbeatAt: null,
     errorCode: error?.code ?? null,
     errorMessage: error?.message ?? null,
     finishedAt: now,
@@ -611,17 +741,29 @@ export async function runClaimedProjectJob(jobId: number) {
     throw new AppError("PROJECT_JOB_NOT_FOUND", `Project job ${jobId} was not found.`);
   }
   let tempFilePath: string | null = null;
+  let heartbeatTimer: NodeJS.Timeout | null = null;
 
   try {
     const payload = parseProjectJobPayload(claimedJob);
     tempFilePath = getImportZipPayloadTempPath(payload);
+    await assertProjectJobProjectExists(claimedJob.projectId);
+    if (claimedJob.lockedBy) {
+      heartbeatTimer = setInterval(() => {
+        void heartbeatProjectJobLease(claimedJob.id, claimedJob.lockedBy ?? "")
+          .catch(() => undefined);
+      }, Math.max(1_000, PROJECT_JOB_HEARTBEAT_MS));
+    }
     await executeProjectJob(claimedJob);
+    await assertProjectJobProjectExists(claimedJob.projectId);
     await finalizeProjectJob(claimedJob, "completed");
   } catch (error) {
     const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
     await finalizeProjectJob(claimedJob, "failed", appError);
     throw appError;
   } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
     if (tempFilePath) {
       await rm(tempFilePath, { force: true }).catch(() => undefined);
     }
@@ -749,33 +891,67 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
       continue;
     }
 
-    const startedAt = job.startedAt instanceof Date ? job.startedAt : job.startedAt ? new Date(job.startedAt) : null;
-    const isStale = !startedAt || startedAt.getTime() <= staleBefore.getTime();
-    if (!isStale) {
+    const heartbeatAt = toDate(job.heartbeatAt);
+    const leaseUntil = toDate(job.leaseUntil);
+    const startedAt = toDate(job.startedAt);
+    const isLeaseExpired = hasProjectJobLease(job) && isProjectJobLeaseExpired(job, now);
+    const isStaleByLegacyWindow = !heartbeatAt && !leaseUntil && (!startedAt || startedAt.getTime() <= staleBefore.getTime());
+
+    if (!isLeaseExpired && !isStaleByLegacyWindow) {
       continue;
     }
 
+    if (canRetryProjectJob(job)) {
+      await db
+        .update(projectJobs)
+        .set({
+          status: "queued",
+          progress: 0,
+          errorCode: null,
+          errorMessage: null,
+          lockedBy: null,
+          leaseUntil: null,
+          heartbeatAt: null,
+          startedAt: null,
+          finishedAt: null,
+        })
+        .where(eq(projectJobs.id, job.id));
+      recoveredJobCount += 1;
+      continue;
+    }
+
+    const retryMessage = `Project job exceeded its retry budget (${getProjectJobAttemptCount(job)}/${getProjectJobMaxAttempts(job)}) after lease recovery.`;
     await db
       .update(projectJobs)
       .set({
-        status: "queued",
-        progress: 0,
-        errorCode: null,
-        errorMessage: null,
-        startedAt: null,
-        finishedAt: null,
+        status: "failed",
+        progress: 100,
+        activeKey: null,
+        payloadJson: null,
+        lockedBy: null,
+        leaseUntil: null,
+        heartbeatAt: null,
+        errorCode: "PROJECT_JOB_STALE",
+        errorMessage: retryMessage,
+        finishedAt: now,
       })
       .where(eq(projectJobs.id, job.id));
-    recoveredJobCount += 1;
+
+    if (job.type === "analyze") {
+      await failAnalysisProjectIfStillAnalyzing(job, now, new AppError("PROJECT_JOB_STALE", retryMessage));
+    } else {
+      await failImportProjectIfStillImporting(job, now, new AppError("PROJECT_JOB_STALE", retryMessage));
+    }
   }
 
+  const activeJobsAfterRecovery = await db.select().from(projectJobs);
   const projectRows = await db.select().from(projects);
   for (const project of projectRows) {
     if (project.status !== "importing" && project.status !== "analyzing") {
       continue;
     }
 
-    const hasActiveJob = allJobs.some((job) => job.projectId === project.id && isActiveProjectJobStatus(job.status));
+    const hasActiveJob = activeJobsAfterRecovery.some((job) => job.projectId === project.id && isActiveProjectJobStatus(job.status));
     if (hasActiveJob) {
       continue;
     }
@@ -1708,8 +1884,8 @@ export async function getSymbolsPage(input: SymbolsPageInput, userId: number): P
         filePath: filePathById.get(row.fileId) ?? null,
         startLine: row.startLine,
         endLine: row.endLine,
-        signature: row.signature,
-        description: row.description,
+        signature: row.signature ?? null,
+        description: row.description ?? null,
       }))
       .filter((row) => (input.kind ? row.type === input.kind : true))
       .filter((row) => {
@@ -1759,8 +1935,8 @@ export async function getSymbolsPage(input: SymbolsPageInput, userId: number): P
       filePath: filePathById.get(row.fileId) ?? null,
       startLine: row.startLine,
       endLine: row.endLine,
-      signature: row.signature,
-      description: row.description,
+      signature: row.signature ?? null,
+      description: row.description ?? null,
     })),
     total,
     page: pagination.page,
@@ -1785,8 +1961,8 @@ export async function getFieldsPage(input: FieldsPageInput, userId: number): Pro
         id: row.id,
         tableName: row.tableName,
         fieldName: row.fieldName,
-        fieldType: row.fieldType,
-        description: row.description,
+        fieldType: row.fieldType ?? null,
+        description: row.description ?? null,
         readCount: fieldUsageById.get(row.id)?.readCount ?? 0,
         writeCount: fieldUsageById.get(row.id)?.writeCount ?? 0,
         referenceCount: fieldUsageById.get(row.id)?.referenceCount ?? 0,
@@ -1851,8 +2027,8 @@ export async function getFieldsPage(input: FieldsPageInput, userId: number): Pro
       id: row.id,
       tableName: row.tableName,
       fieldName: row.fieldName,
-      fieldType: row.fieldType,
-      description: row.description,
+      fieldType: row.fieldType ?? null,
+      description: row.description ?? null,
       readCount: usageById.get(row.id)?.readCount ?? 0,
       writeCount: usageById.get(row.id)?.writeCount ?? 0,
       referenceCount: usageById.get(row.id)?.referenceCount ?? 0,
@@ -1877,10 +2053,10 @@ export async function getRisksPage(input: RisksPageInput, userId: number): Promi
         riskType: row.riskType,
         severity: row.severity,
         title: row.title,
-        description: row.description,
-        sourceFile: row.sourceFile,
+        description: row.description ?? null,
+        sourceFile: row.sourceFile ?? null,
         lineNumber: row.lineNumber,
-        recommendation: row.recommendation,
+        recommendation: row.recommendation ?? null,
       }))
       .filter((row) => (input.severity ? row.severity === input.severity : true))
       .filter((row) => {
@@ -1935,10 +2111,10 @@ export async function getRisksPage(input: RisksPageInput, userId: number): Promi
       riskType: row.riskType,
       severity: row.severity,
       title: row.title,
-      description: row.description,
-      sourceFile: row.sourceFile,
+      description: row.description ?? null,
+      sourceFile: row.sourceFile ?? null,
       lineNumber: row.lineNumber,
-      recommendation: row.recommendation,
+      recommendation: row.recommendation ?? null,
     })),
     total,
     page: pagination.page,
@@ -1959,9 +2135,9 @@ export async function getRulesPage(input: RulesPageInput, userId: number): Promi
         id: row.id,
         ruleType: row.ruleType,
         name: row.name,
-        description: row.description,
-        condition: row.condition,
-        sourceFile: row.sourceFile,
+        description: row.description ?? null,
+        condition: row.condition ?? null,
+        sourceFile: row.sourceFile ?? null,
         lineNumber: row.lineNumber,
       }))
       .filter((row) => (input.ruleType ? row.ruleType === input.ruleType : true))
@@ -2000,9 +2176,9 @@ export async function getRulesPage(input: RulesPageInput, userId: number): Promi
       id: row.id,
       ruleType: row.ruleType,
       name: row.name,
-      description: row.description,
-      condition: row.condition,
-      sourceFile: row.sourceFile,
+      description: row.description ?? null,
+      condition: row.condition ?? null,
+      sourceFile: row.sourceFile ?? null,
       lineNumber: row.lineNumber,
     })),
     total,
@@ -2031,12 +2207,12 @@ export async function getDependenciesPage(
         id: row.id,
         sourceSymbolId: row.sourceSymbolId,
         sourceSymbolName: symbolById.get(row.sourceSymbolId)?.name ?? `symbol:${row.sourceSymbolId}`,
-        targetSymbolId: row.targetSymbolId,
+        targetSymbolId: row.targetSymbolId ?? null,
         targetSymbolName: row.targetSymbolId ? symbolById.get(row.targetSymbolId)?.name ?? null : null,
-        targetExternalName: row.targetExternalName,
+        targetExternalName: row.targetExternalName ?? null,
         targetKind: row.targetKind,
         dependencyType: row.dependencyType,
-        lineNumber: row.lineNumber,
+        lineNumber: row.lineNumber ?? null,
       }))
       .filter((row) => (input.dependencyType ? row.dependencyType === input.dependencyType : true))
       .filter((row) => (input.targetKind ? row.targetKind === input.targetKind : true))
@@ -2097,12 +2273,12 @@ export async function getDependenciesPage(
       id: row.id,
       sourceSymbolId: row.sourceSymbolId,
       sourceSymbolName: symbolById.get(row.sourceSymbolId) ?? `symbol:${row.sourceSymbolId}`,
-      targetSymbolId: row.targetSymbolId,
+      targetSymbolId: row.targetSymbolId ?? null,
       targetSymbolName: row.targetSymbolId ? symbolById.get(row.targetSymbolId) ?? null : null,
-      targetExternalName: row.targetExternalName,
+      targetExternalName: row.targetExternalName ?? null,
       targetKind: row.targetKind,
       dependencyType: row.dependencyType,
-      lineNumber: row.lineNumber,
+      lineNumber: row.lineNumber ?? null,
     })),
     total,
     page: pagination.page,
@@ -2136,8 +2312,8 @@ export async function getFieldDependenciesPage(
         symbolId: row.symbolId,
         symbolName: symbolById.get(row.symbolId)?.name ?? `symbol:${row.symbolId}`,
         operationType: row.operationType,
-        lineNumber: row.lineNumber,
-        context: row.context,
+        lineNumber: row.lineNumber ?? null,
+        context: row.context ?? null,
       }))
       .filter((row) => (input.tableName ? row.tableName === input.tableName : true))
       .filter((row) => (input.operationType ? row.operationType === input.operationType : true))
@@ -2224,8 +2400,8 @@ export async function getFieldDependenciesPage(
       symbolId: row.symbolId,
       symbolName: symbolById.get(row.symbolId) ?? `symbol:${row.symbolId}`,
       operationType: row.operationType,
-      lineNumber: row.lineNumber,
-      context: row.context,
+      lineNumber: row.lineNumber ?? null,
+      context: row.context ?? null,
     })),
     total,
     page: pagination.page,
@@ -2236,6 +2412,12 @@ export async function getFieldDependenciesPage(
 
 function buildReportFileName(projectId: number) {
   return `legacy-lens-report-${projectId}.zip`;
+}
+
+function estimateReportArchiveBytes(entries: Array<{ path: string; content: string }>) {
+  const rawBytes = entries.reduce((total, entry) => total + Buffer.byteLength(entry.content, "utf8"), 0);
+  const zipOverheadBytes = entries.length * 512 + 4096;
+  return rawBytes + zipOverheadBytes;
 }
 
 export async function buildReportArchiveBuffer(projectId: number, userId: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
@@ -2253,23 +2435,13 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
   }
   const readyReport = report;
 
-  const archive = new JSZip();
   const deterministicFileOptions = { date: new Date(0) };
-  archive.file("FLOW.md", readyReport.flowMarkdown, deterministicFileOptions);
-  archive.file("DATA_DEPENDENCY.md", readyReport.dataDependencyMarkdown, deterministicFileOptions);
-  archive.file("RISKS.md", readyReport.risksMarkdown, deterministicFileOptions);
-  archive.file("RULES.yaml", readyReport.rulesYaml, deterministicFileOptions);
-
   const version = getAppVersion();
   const metrics = readyReport.summaryJson ?? null;
   const createdAtSource = readyReport.createdAt ?? readyReport.updatedAt ?? new Date(0);
   const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
   const impactSummary = await generateProjectImpactSummary(db, projectId);
   const impactMarkdown = renderProjectImpactSummaryMarkdown(impactSummary, createdAtIso);
-
-  archive.file("IMPACT_ANALYSIS.md", impactMarkdown, deterministicFileOptions);
-  archive.file("impact-analysis.json", JSON.stringify(impactSummary, null, 2), deterministicFileOptions);
-  archive.file("import-warnings.json", JSON.stringify(project?.importWarningsJson ?? [], null, 2), deterministicFileOptions);
 
   const metadata = {
     projectName: project?.name ?? "project",
@@ -2283,24 +2455,45 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     importWarningCount: project?.importWarningsJson?.length ?? 0,
   } as const;
 
-  archive.file("metadata.json", JSON.stringify(metadata, null, 2), deterministicFileOptions);
-  archive.file(
-    "analysis-summary.json",
-    JSON.stringify(
-      {
-        analysisResultId: readyReport.id,
-        status: readyReport.status,
-        metrics: readyReport.summaryJson,
-        warnings: readyReport.warningsJson,
-        importWarnings: project?.importWarningsJson ?? [],
-        limitationSummary:
-          "Legacy Lens is a legacy impact review assistant that uses heuristic static analysis for Go, SQL, and Delphi. Review skipped files, degraded files, warnings, dynamic SQL paths, complex Delphi inheritance, Go interface dispatch, and cross-package type resolution limits before treating the report as source-of-truth.",
-      },
-      null,
-      2
-    ),
-    deterministicFileOptions
-  );
+  const archiveEntries = [
+    { path: "FLOW.md", content: readyReport.flowMarkdown },
+    { path: "DATA_DEPENDENCY.md", content: readyReport.dataDependencyMarkdown },
+    { path: "RISKS.md", content: readyReport.risksMarkdown },
+    { path: "RULES.yaml", content: readyReport.rulesYaml },
+    { path: "IMPACT_ANALYSIS.md", content: impactMarkdown },
+    { path: "impact-analysis.json", content: JSON.stringify(impactSummary, null, 2) },
+    { path: "import-warnings.json", content: JSON.stringify(project?.importWarningsJson ?? [], null, 2) },
+    { path: "metadata.json", content: JSON.stringify(metadata, null, 2) },
+    {
+      path: "analysis-summary.json",
+      content: JSON.stringify(
+        {
+          analysisResultId: readyReport.id,
+          status: readyReport.status,
+          metrics: readyReport.summaryJson,
+          warnings: readyReport.warningsJson,
+          importWarnings: project?.importWarningsJson ?? [],
+          limitationSummary:
+            "Legacy Lens is a legacy impact review assistant that uses heuristic static analysis for Go, SQL, and Delphi. Review skipped files, degraded files, warnings, dynamic SQL paths, complex Delphi inheritance, Go interface dispatch, and cross-package type resolution limits before treating the report as source-of-truth.",
+        },
+        null,
+        2
+      ),
+    },
+  ] as const;
+
+  const estimatedArchiveBytes = estimateReportArchiveBytes([...archiveEntries]);
+  if (estimatedArchiveBytes > MAX_REPORT_ARCHIVE_BYTES) {
+    throw new AppError(
+      "REPORT_TOO_LARGE",
+      `Report export is too large to package safely (estimated ${estimatedArchiveBytes} bytes, limit ${MAX_REPORT_ARCHIVE_BYTES}). Try a smaller project slice, narrower import scope, or paged API results.`
+    );
+  }
+
+  const archive = new JSZip();
+  for (const entry of archiveEntries) {
+    archive.file(entry.path, entry.content, deterministicFileOptions);
+  }
 
   logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
   const buffer = await archive.generateAsync({ type: "nodebuffer" });
@@ -2335,7 +2528,7 @@ export async function getProjectJob(jobId: number, userId: number): Promise<Proj
   if (!job) {
     throw new AppError("PROJECT_JOB_NOT_FOUND", "Project job not found.");
   }
-  return job;
+  return toPublicProjectJobRecord(job);
 }
 
 export async function getLatestJobsByProjectIds(projectIds: number[], userId: number) {
@@ -2353,7 +2546,7 @@ export async function getLatestJobsByProjectIds(projectIds: number[], userId: nu
       .sort((left, right) => Number(right.id) - Number(left.id))
       .forEach((row) => {
         if (!jobByProjectId.has(row.projectId)) {
-          jobByProjectId.set(row.projectId, row);
+          jobByProjectId.set(row.projectId, toPublicProjectJobRecord(row as ProjectJobRow));
         }
       });
 
@@ -2375,7 +2568,35 @@ export async function getLatestJobsByProjectIds(projectIds: number[], userId: nu
   }
 
   const rows = await db.select().from(projectJobs).where(inArray(projectJobs.id, ids));
-  return new Map(rows.map((row) => [row.projectId, row]));
+  return new Map(rows.map((row) => [row.projectId, toPublicProjectJobRecord(row)]));
+}
+
+export async function getActiveImportZipTempFilePaths() {
+  const db = await getDb();
+  if (!db) {
+    return new Set<string>();
+  }
+
+  const rows = await db.select().from(projectJobs);
+  const activeTempPaths = new Set<string>();
+
+  for (const row of rows) {
+    if (!isActiveProjectJobStatus(row.status) || row.type !== "import_zip" || !row.payloadJson) {
+      continue;
+    }
+
+    try {
+      const payload = parseProjectJobPayload(row);
+      const tempFilePath = getImportZipPayloadTempPath(payload);
+      if (tempFilePath) {
+        activeTempPaths.add(tempFilePath);
+      }
+    } catch {
+      // Ignore malformed payloads during cleanup scanning; worker recovery handles them separately.
+    }
+  }
+
+  return activeTempPaths;
 }
 
 export async function deleteProjectCascade(projectId: number, userId: number) {
@@ -2383,6 +2604,18 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
   const db = await requireDb();
 
   await db.transaction(async (tx) => {
+    const activeJobs = await tx
+      .select()
+      .from(projectJobs)
+      .where(and(eq(projectJobs.projectId, projectId), eq(projectJobs.userId, userId)));
+
+    if (activeJobs.some((job) => isActiveProjectJobStatus(job.status))) {
+      throw new AppError(
+        "DELETE_FAILED",
+        "Project cannot be deleted while an import or analysis job is queued or running. Wait for it to finish or recover first."
+      );
+    }
+
     await clearProjectAnalysisGraph(tx, projectId, true);
     await tx.delete(projectJobs).where(eq(projectJobs.projectId, projectId));
     await tx.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId)));

@@ -8,7 +8,7 @@ import multer from "multer";
 import { AppError } from "../appError";
 import { sdk } from "../_core/sdk";
 import { logger } from "../_core/logger";
-import { queueImportProjectGit, queueImportProjectZipFromTempFile } from "./projectWorkflow";
+import { getActiveImportZipTempFilePaths, queueImportProjectGit, queueImportProjectZipFromTempFile } from "./projectWorkflow";
 
 export const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
 export const UPLOAD_TEMP_ZIP_TTL_MS = Number.parseInt(process.env.UPLOAD_TEMP_ZIP_TTL_MS ?? "86400000", 10);
@@ -41,6 +41,7 @@ export async function cleanupExpiredUploadTempFiles(
 ) {
   await mkdir(uploadTempDir, { recursive: true });
   const expiresBefore = now.getTime() - ttlMs;
+  const activeTempPaths = await getActiveImportZipTempFilePaths().catch(() => new Set<string>());
   const entries = await readdir(uploadTempDir, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -53,6 +54,10 @@ export async function cleanupExpiredUploadTempFiles(
     try {
       const fileStats = await stat(filePath);
       if (fileStats.mtimeMs > expiresBefore) {
+        continue;
+      }
+
+      if (activeTempPaths.has(filePath)) {
         continue;
       }
 

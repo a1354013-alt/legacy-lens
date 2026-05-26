@@ -117,13 +117,20 @@ describe("DelphiParser", () => {
           qualifiedName: "Form1",
         }),
         expect.objectContaining({
-          name: "Button1Click",
-          qualifiedName: "Button1.Button1Click",
+          name: "OnClick",
+          qualifiedName: "Form1.Button1.OnClick",
           type: "method",
-          description: "DFM event handler for Button1",
+          description: "DFM event binding for Button1",
         }),
       ])
     );
+    expect(parser.parseDependencies(symbols)).toEqual([
+      expect.objectContaining({
+        fromName: "Form1.Button1.OnClick",
+        toName: "Button1Click",
+        type: "references",
+      }),
+    ]);
   });
 
   it("parses Go structs as classes and preserves descriptions on created symbols", () => {
@@ -637,5 +644,39 @@ describe("SQLParser", () => {
       ])
     );
     expect(warnings.some((warning) => warning.code === "HEURISTIC_ANALYSIS")).toBe(true);
+  });
+
+  it("keeps aliases out of field names and supports UPDATE aliases, CTEs, and DELETE JOIN targets", () => {
+    const parser = ParserFactory.createParser(
+      "sql",
+      [
+        "SELECT u.id, u.name FROM users u WHERE u.id = 1;",
+        "SELECT o.id, c.name FROM orders o JOIN customers c ON o.customer_id = c.id;",
+        "UPDATE users u SET u.name = 'A' WHERE u.id = 1;",
+        "WITH recent AS (SELECT id, amount FROM orders) SELECT recent.id, recent.amount FROM recent;",
+        "DELETE u FROM users u JOIN logs l ON u.id = l.user_id WHERE l.expired = 1;",
+      ].join("\n"),
+      "aliases.sql"
+    );
+
+    const references = parser.parseFieldReferences(parser.parseSymbols());
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "users", field: "id", type: "read" }),
+        expect.objectContaining({ table: "users", field: "name", type: "read" }),
+        expect.objectContaining({ table: "orders", field: "id", type: "read" }),
+        expect.objectContaining({ table: "customers", field: "name", type: "read" }),
+        expect.objectContaining({ table: "orders", field: "customer_id", type: "read" }),
+        expect.objectContaining({ table: "customers", field: "id", type: "read" }),
+        expect.objectContaining({ table: "users", field: "name", type: "write" }),
+        expect.objectContaining({ table: "recent", field: "id", type: "read" }),
+        expect.objectContaining({ table: "recent", field: "amount", type: "read" }),
+        expect.objectContaining({ table: "users", field: "*", type: "write" }),
+        expect.objectContaining({ table: "logs", field: "user_id", type: "read" }),
+        expect.objectContaining({ table: "logs", field: "expired", type: "read" }),
+      ])
+    );
+    expect(references.some((reference) => reference.field.includes(".") && reference.field !== "*")).toBe(false);
   });
 });

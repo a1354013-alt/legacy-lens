@@ -34,6 +34,8 @@ export const sessionPayloadSchema = z.object({
 
 export type SessionPayload = z.infer<typeof sessionPayloadSchema>;
 
+const LAST_SIGNED_IN_WRITE_THROTTLE_MS = Number.parseInt(process.env.LAST_SIGNED_IN_WRITE_THROTTLE_MS ?? "900000", 10);
+
 const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
 const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;
 const GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfoWithJwt`;
@@ -117,6 +119,15 @@ class SDKServer {
 
   private getSessionSecret() {
     return new TextEncoder().encode(ENV.cookieSecret);
+  }
+
+  private shouldRefreshLastSignedIn(lastSignedIn: Date | string | null | undefined, now: Date) {
+    if (!lastSignedIn) {
+      return true;
+    }
+
+    const lastSeenAt = lastSignedIn instanceof Date ? lastSignedIn : new Date(lastSignedIn);
+    return now.getTime() - lastSeenAt.getTime() >= LAST_SIGNED_IN_WRITE_THROTTLE_MS;
   }
 
   async createSessionToken(
@@ -223,10 +234,12 @@ class SDKServer {
       throw ForbiddenError("User not found");
     }
 
-    await db.upsertUser({
-      openId: user.openId,
-      lastSignedIn: signedInAt,
-    });
+    if (this.shouldRefreshLastSignedIn(user.lastSignedIn, signedInAt)) {
+      await db.upsertUser({
+        openId: user.openId,
+        lastSignedIn: signedInAt,
+      });
+    }
 
     return user;
   }

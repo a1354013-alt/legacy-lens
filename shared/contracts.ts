@@ -163,12 +163,6 @@ export interface AppErrorShape {
   details?: string;
 }
 
-export interface ReportArchivePayload {
-  fileName: string;
-  mimeType: string;
-  base64: string;
-}
-
 export const projectStatusLabels: Record<ProjectStatus, string> = {
   draft: "Draft",
   importing: "Importing",
@@ -239,6 +233,8 @@ export const projectRecordSummarySchema = z.object({
       createdAt: z.date(),
       startedAt: z.date().nullable(),
       finishedAt: z.date().nullable(),
+      attemptCount: z.number().int().nonnegative(),
+      maxAttempts: z.number().int().positive(),
     })
     .nullable(),
 });
@@ -426,6 +422,8 @@ export const projectJobSchema = z.object({
   createdAt: z.date(),
   startedAt: z.date().nullable(),
   finishedAt: z.date().nullable(),
+  attemptCount: z.number().int().nonnegative(),
+  maxAttempts: z.number().int().positive(),
 });
 
 export type ProjectJobRecord = z.infer<typeof projectJobSchema>;
@@ -438,9 +436,73 @@ export const projectJobCreateResultSchema = z.object({
 
 export type ProjectJobCreateResult = z.infer<typeof projectJobCreateResultSchema>;
 
+export const reportArchivePayloadSchema = z.object({
+  fileName: z.string().min(1),
+  mimeType: z.string().min(1),
+  base64: z.string(),
+});
+
+export type ReportArchivePayload = z.infer<typeof reportArchivePayloadSchema>;
+
+export function pagedResultSchema<T extends z.ZodTypeAny>(itemSchema: T) {
+  return z.object({
+    items: z.array(itemSchema),
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    pageSize: z.number().int().positive(),
+    pageCount: z.number().int().nonnegative(),
+  });
+}
+
+export const projectsListOutputSchema = z.array(projectRecordSummarySchema);
+export const projectByIdOutputSchema = projectRecordSummarySchema.nullable();
+export const analysisResultOutputSchema = analysisSnapshotReportSchema.nullable();
+export const analysisSnapshotOutputSchema = analysisSnapshotSummarySchema;
+export const symbolsPageOutputSchema = pagedResultSchema(symbolListItemSchema);
+export const fieldsPageOutputSchema = pagedResultSchema(fieldListItemSchema);
+export const risksPageOutputSchema = pagedResultSchema(riskListItemSchema);
+export const rulesPageOutputSchema = pagedResultSchema(ruleListItemSchema);
+export const dependenciesPageOutputSchema = pagedResultSchema(dependencyListItemSchema);
+export const fieldDependenciesPageOutputSchema = pagedResultSchema(fieldDependencyListItemSchema);
+export const jobByIdOutputSchema = projectJobSchema;
+export const projectCreateOutputSchema = z.object({
+  success: z.literal(true),
+  projectId: z.number().int().positive(),
+});
+export const projectDeleteOutputSchema = z.object({
+  success: z.literal(true),
+});
+
 export const impactTargetTypes = ["auto", "symbol", "file", "sql_table", "sql_field", "risk", "rule"] as const;
 export const impactTargetTypeSchema = z.enum(impactTargetTypes);
 export type ImpactTargetType = z.infer<typeof impactTargetTypeSchema>;
+
+export const impactAnalysisResultSchema = z.object({
+  target: z.string(),
+  targetType: impactTargetTypeSchema,
+  confidence: z.number(),
+  affectedCount: z.number().int().nonnegative(),
+  summary: z.string(),
+  affectedFiles: z.array(z.string()),
+  affectedSymbols: z.array(
+    z.object({
+      name: z.string(),
+      file: z.string(),
+      type: z.string(),
+    })
+  ),
+  affectedTables: z.array(z.string()),
+  affectedFields: z.array(
+    z.object({
+      table: z.string(),
+      field: z.string(),
+    })
+  ),
+  affectedRules: z.array(z.string()),
+  affectedRisks: z.array(z.string()),
+  dependencyChains: z.array(z.array(z.string())),
+  warnings: z.array(z.string()),
+});
 
 export interface ImpactAnalysisResult {
   target: string;

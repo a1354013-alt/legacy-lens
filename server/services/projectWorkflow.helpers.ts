@@ -120,9 +120,14 @@ export function mapSnapshotReport<T extends {
   summaryJson: AnalysisMetrics | null;
   warningsJson: AnalysisWarning[];
   errorMessage: string | null;
-  createdAt: Date;
-  updatedAt: Date;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
 }>(report: T) {
+  const createdAt =
+    report.createdAt instanceof Date ? report.createdAt : report.createdAt ? new Date(String(report.createdAt)) : new Date(0);
+  const updatedAt =
+    report.updatedAt instanceof Date ? report.updatedAt : report.updatedAt ? new Date(String(report.updatedAt)) : createdAt;
+
   return {
     id: report.id,
     projectId: report.projectId,
@@ -134,8 +139,8 @@ export function mapSnapshotReport<T extends {
     summaryJson: report.summaryJson,
     warningsJson: report.warningsJson,
     errorMessage: report.errorMessage,
-    createdAt: report.createdAt,
-    updatedAt: report.updatedAt,
+    createdAt,
+    updatedAt,
   };
 }
 
