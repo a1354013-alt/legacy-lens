@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { AppError } from "../appError";
-import { sendAppErrorResponse } from "../httpApiErrors";
+import { sendAppErrorResponse, sendHttpErrorResponse } from "../httpApiErrors";
 import { buildReportArchiveBuffer } from "../services/projectWorkflow";
 import { createRateLimiter } from "./rateLimiter";
 import { sdk } from "./sdk";
@@ -9,12 +9,16 @@ export function registerReportDownloadRoute(app: Express) {
   app.get("/api/projects/:projectId/report.zip", createRateLimiter("heavyRead"), async (req: Request, res: Response) => {
     const projectId = Number(req.params.projectId);
     if (!Number.isInteger(projectId) || projectId <= 0) {
-      res.status(400).json({ error: "Project id must be a positive integer.", code: "INVALID_PROJECT_STATE" });
+      sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Project id must be a positive integer.");
       return;
     }
 
     try {
-      const user = await sdk.authenticateRequest(req);
+      const user = await sdk.authenticateRequest(req).catch(() => null);
+      if (!user) {
+        sendHttpErrorResponse(res, 401, "UNAUTHORIZED", "Invalid session.");
+        return;
+      }
       const archive = await buildReportArchiveBuffer(projectId, user.id);
       res.setHeader("Content-Type", archive.mimeType);
       res.setHeader("Content-Disposition", `attachment; filename="${archive.fileName}"`);
@@ -36,8 +40,7 @@ export function registerReportDownloadRoute(app: Express) {
       }
 
       const message = error instanceof Error ? error.message : "Report download failed.";
-      const status = message.toLowerCase().includes("session") || message.toLowerCase().includes("auth") ? 401 : 500;
-      res.status(status).json({ error: message });
+      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", message);
     }
   });
 }

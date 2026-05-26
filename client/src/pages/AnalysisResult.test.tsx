@@ -21,7 +21,7 @@ describe("AnalysisResult", () => {
     useAnalysisResultModelMock.mockReset();
   });
 
-  it("renders queued state and localized empty copy without crashing", () => {
+  it("renders queued state without crashing", () => {
     useAnalysisResultModelMock.mockReturnValue({
       activeTab: "overview",
       setActiveTab: vi.fn(),
@@ -119,8 +119,6 @@ describe("AnalysisResult", () => {
 
     const html = renderToString(<AnalysisResult />);
 
-    expect(html).toContain("分析工作已排入佇列");
-    expect(html).toContain("返回專案列表");
     expect(html).toContain("Legacy Demo");
   });
 

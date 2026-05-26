@@ -2,6 +2,7 @@ import JSZip from "jszip";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { and, asc, count, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
   AnalysisSnapshot,
@@ -129,12 +130,20 @@ function normalizePagination(page: number, pageSize: number, total: number) {
   };
 }
 
-function andAll(conditions: any[]) {
-  return conditions.length === 1 ? conditions[0] : and(conditions[0], ...conditions.slice(1));
+function andAll(conditions: SQL[]): SQL {
+  const [first, ...rest] = conditions;
+  if (!first) {
+    throw new Error("andAll requires at least one SQL condition.");
+  }
+  return rest.length === 0 ? first : (and(first, ...rest) as SQL);
 }
 
-function orAll(conditions: any[]) {
-  return conditions.length === 1 ? conditions[0] : or(conditions[0], ...conditions.slice(1));
+function orAll(conditions: SQL[]): SQL {
+  const [first, ...rest] = conditions;
+  if (!first) {
+    throw new Error("orAll requires at least one SQL condition.");
+  }
+  return rest.length === 0 ? first : (or(first, ...rest) as SQL);
 }
 
 function paginateItems<T>(items: T[], page: number, pageSize: number): PagedResult<T> {
@@ -261,7 +270,7 @@ function extractAffectedRows(result: unknown) {
 
 async function countRows(
   table: typeof files | typeof symbols | typeof dependencies | typeof fields | typeof fieldDependencies | typeof risks | typeof rules,
-  condition: any
+  condition: SQL
 ) {
   const db = await requireDb();
   const [row] = await db.select({ value: count() }).from(table).where(condition);

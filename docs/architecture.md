@@ -46,6 +46,15 @@ This document captures the operational boundaries that matter for real deploymen
 - Oversize supported files are skipped with persisted warnings instead of exhausting memory.
 - Upload temp-file cleanup preserves ZIPs that are still referenced by active queued/running `import_zip` jobs.
 
+## Worker Deployment
+
+- Set `PROJECT_WORKER_ENABLED=false` on web-only replicas.
+- Multiple worker-enabled replicas are supported when they share the same MySQL database.
+- Project job claiming relies on `lockedBy`, `leaseUntil`, `heartbeatAt`, and an atomic conditional update so only one worker can own a lease at a time.
+- If a worker dies and its lease expires, another worker may reclaim the job within the configured retry budget.
+- If your deployment cannot rely on shared-database conditional updates and transactions, run a single worker replica.
+- SQLite or in-memory test doubles are useful for development/testing, but they are not the reference deployment path for multi-worker safety.
+
 ### Git
 
 - Git import validates hostnames and resolved IPs before clone.

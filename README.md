@@ -350,11 +350,21 @@ ZIP safety contract:
 - Claiming uses a DB-selected candidate plus an atomic conditional update. Competing workers may examine the same candidate row, but only one claim update is allowed to win for a given lease window.
 - Running jobs extend their lease through periodic heartbeats while work is in flight. If a worker dies and the lease expires, another worker may safely reclaim the job until its retry budget is exhausted.
 - Startup recovery respects still-valid leases. Legacy rows without lease metadata fall back to the older stale-window heuristic instead of being reset immediately.
-- If a deployment cannot provide reliable shared-database semantics, run a single worker replica instead of weakening the claim logic.
+- If a deployment cannot provide reliable shared-MySQL transaction and conditional-update semantics, run a single worker replica instead of weakening the claim logic.
+- SQLite or in-memory test doubles are not the target for multi-worker deployment guarantees; the distributed-safe claim path assumes shared MySQL state.
 - `PROJECT_JOB_STALE_MS` controls when a running job is treated as stale during startup recovery (default `900000` / 15 minutes).
 - The UI polls project state plus the latest job state instead of waiting on a single long-running request.
 - The backend enforces one active job per project across `import_zip`, `import_git`, and `analyze`; conflicting requests fail with a stable conflict error instead of relying on disabled buttons.
 - Projects with active queued/running jobs cannot be deleted. This avoids dangling state while an import/analyze workflow is still in progress.
+
+## Analysis Limitations
+
+Legacy Lens provides heuristic impact analysis intended to guide code review. It is not a compiler-grade guarantee of complete call graph or data lineage coverage.
+
+- Dynamic SQL may not be fully resolved.
+- Go interface dispatch, reflection, and dynamic calls may not be fully traced.
+- Delphi `with`, inheritance-heavy flows, and DFM/source mismatches can reduce precision.
+- Treat the report as the start of code review and change planning, not as the only source of truth.
 
 ### Snapshot / Pagination Model
 

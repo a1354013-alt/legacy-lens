@@ -196,6 +196,24 @@ describe("zipHandler", () => {
     });
   });
 
+  it("rejects archives with Windows backslash traversal paths", async () => {
+    vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
+      files: [
+        {
+          path: "safe\\..\\..\\evil.go",
+          type: "File",
+          vars: { uncompressedSize: 13 },
+          stream: () => Readable.from([Buffer.from("package main\n")]),
+        },
+      ],
+    } as any);
+
+    await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
+      code: "ZIP_UNSAFE_PATH",
+      message: expect.stringContaining("unsafe path"),
+    });
+  });
+
   it("rejects archives whose extracted supported-source bytes exceed the limit", async () => {
     const nearSingleFileLimitBuffer = Buffer.alloc(MAX_SINGLE_FILE_BYTES, "a");
     const openBufferSpy = vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({

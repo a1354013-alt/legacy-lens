@@ -1,5 +1,6 @@
 import { COOKIE_NAME } from "@shared/const";
 import type { Express, Request, Response, NextFunction } from "express";
+import { sendHttpErrorResponse } from "../httpApiErrors";
 import { logger } from "./logger";
 
 // Dynamic import to avoid issues if package not installed
@@ -272,10 +273,7 @@ export function createRateLimiter(configName: keyof typeof defaultConfigs = "api
           standardHeaders: config.standardHeaders,
           legacyHeaders: config.legacyHeaders,
           handler: (_req: Request, response: Response) => {
-            response.status(429).json({
-              error: "Too Many Requests",
-              message: config.message,
-            });
+            sendHttpErrorResponse(response, 429, "RATE_LIMITED", config.message ?? "Too many requests, please try again later");
           },
           keyGenerator: (request: Request) => `${config.keyPrefix ?? configName}:${getClientIp(request)}`,
           skip: (request: Request) => {

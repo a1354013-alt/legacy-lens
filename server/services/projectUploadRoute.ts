@@ -6,7 +6,7 @@ import { MAX_ZIP_RAW_BYTES, UNAUTHED_ERR_MSG } from "@shared/const";
 import type { Express, NextFunction, Request, Response } from "express";
 import multer from "multer";
 import { AppError } from "../appError";
-import { sendAppErrorResponse } from "../httpApiErrors";
+import { sendAppErrorResponse, sendHttpErrorResponse } from "../httpApiErrors";
 import { sdk } from "../_core/sdk";
 import { logger } from "../_core/logger";
 import { createRateLimiter } from "../_core/rateLimiter";
@@ -80,7 +80,7 @@ async function requireAuthenticatedUser(req: Request, res: Response) {
   try {
     return await sdk.authenticateRequest(req);
   } catch {
-    res.status(401).json({ error: UNAUTHED_ERR_MSG });
+    sendHttpErrorResponse(res, 401, "UNAUTHORIZED", UNAUTHED_ERR_MSG);
     return null;
   }
 }
@@ -132,16 +132,13 @@ export function registerProjectUploadRoute(app: Express) {
       await cleanupUploadedFile(req.file);
 
       if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
-        res.status(413).json({
-          error: `ZIP upload exceeds the raw archive limit (${MAX_ZIP_RAW_BYTES} bytes).`,
-          code: "ZIP_INVALID",
-        });
+        sendHttpErrorResponse(res, 413, "ZIP_INVALID", `ZIP upload exceeds the raw archive limit (${MAX_ZIP_RAW_BYTES} bytes).`);
         return;
       }
 
       if (error) {
         const message = error instanceof Error ? error.message : String(error);
-        res.status(400).json({ error: message });
+        sendHttpErrorResponse(res, 400, "BAD_REQUEST", message);
         return;
       }
     }
@@ -149,7 +146,7 @@ export function registerProjectUploadRoute(app: Express) {
     const user = res.locals.user as { id: number } | undefined;
     if (!user) {
       await cleanupUploadedFile(req.file);
-      res.status(401).json({ error: UNAUTHED_ERR_MSG });
+      sendHttpErrorResponse(res, 401, "UNAUTHORIZED", UNAUTHED_ERR_MSG);
       return;
     }
 
@@ -159,7 +156,7 @@ export function registerProjectUploadRoute(app: Express) {
       const projectId = Number(req.params.projectId);
       if (!Number.isInteger(projectId) || projectId <= 0) {
         await cleanupUploadedFile(file);
-        res.status(400).json({ error: "Invalid project id." });
+        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Invalid project id.");
         return;
       }
 
@@ -167,7 +164,7 @@ export function registerProjectUploadRoute(app: Express) {
 
       if ((file ? 1 : 0) + (gitUrl ? 1 : 0) !== 1) {
         await cleanupUploadedFile(file);
-        res.status(400).json({ error: "Exactly one import source is required." });
+        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Exactly one import source is required.");
         return;
       }
 
@@ -194,7 +191,7 @@ export function registerProjectUploadRoute(app: Express) {
         sendAppErrorResponse(res, caughtError);
         return;
       }
-      res.status(500).json({ error: errorToSend });
+      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", errorToSend);
     }
   });
 }

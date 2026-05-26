@@ -2,6 +2,7 @@ import { Download, Loader2, RefreshCcw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { analysisResultCopy } from "./copy";
 
 export function ReportActions({
   isRefreshing,
@@ -22,11 +23,11 @@ export function ReportActions({
     <div className="flex items-center gap-3">
       <Button variant="outline" onClick={onRefresh} disabled={isRefreshing}>
         <RefreshCcw className="mr-2 size-4" />
-        Refresh
+        {analysisResultCopy.actions.refresh}
       </Button>
       <Button onClick={onDownload} disabled={isDownloading || !canDownload || isRunning}>
         {isDownloading ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}
-        Download Report ZIP
+        {analysisResultCopy.actions.downloadReportZip}
       </Button>
     </div>
   );
@@ -40,8 +41,8 @@ export function ProjectSummaryCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Summary</CardTitle>
-        <CardDescription>Snapshot metrics and persisted project status.</CardDescription>
+        <CardTitle>{analysisResultCopy.summary.title}</CardTitle>
+        <CardDescription>{analysisResultCopy.summary.description}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3 text-sm md:grid-cols-2">
         {rows.map((row) => (
@@ -63,8 +64,8 @@ export function FileTable({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Field / Table Summary</CardTitle>
-        <CardDescription>Read and write hotspots per discovered table.</CardDescription>
+        <CardTitle>{analysisResultCopy.summary.fieldTableTitle}</CardTitle>
+        <CardDescription>{analysisResultCopy.summary.fieldTableDescription}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         {rows.length > 0 ? (
@@ -72,15 +73,13 @@ export function FileTable({
             <div key={table.tableName} className="rounded-lg border px-3 py-2">
               <div className="flex items-center justify-between gap-3">
                 <span className="font-medium text-slate-950">{table.tableName}</span>
-                <Badge variant="outline">{table.fieldCount} fields</Badge>
+                <Badge variant="outline">{analysisResultCopy.summary.fieldsBadge(table.fieldCount)}</Badge>
               </div>
-              <p className="text-slate-500">
-                reads {table.readCount} / writes {table.writeCount} / references {table.referenceCount}
-              </p>
+              <p className="text-slate-500">{analysisResultCopy.summary.fieldStats(table.readCount, table.writeCount, table.referenceCount)}</p>
             </div>
           ))
         ) : (
-          <p className="text-slate-500">No field/table summary is available yet.</p>
+          <p className="text-slate-500">{analysisResultCopy.summary.noFieldTableSummary}</p>
         )}
       </CardContent>
     </Card>
@@ -105,7 +104,7 @@ export function RiskPanel({
   if (items.length === 0) {
     return (
       <Card>
-        <CardContent className="py-10 text-center text-sm text-slate-600">No risks matched the current filters.</CardContent>
+        <CardContent className="py-10 text-center text-sm text-slate-600">{analysisResultCopy.risk.empty}</CardContent>
       </Card>
     );
   }
@@ -120,13 +119,13 @@ export function RiskPanel({
               <Badge variant={risk.severity === "critical" || risk.severity === "high" ? "destructive" : "secondary"}>{risk.severity}</Badge>
             </div>
             <CardDescription>
-              {risk.sourceFile ?? "unknown"}
+              {risk.sourceFile ?? analysisResultCopy.risk.unknownSource}
               {risk.lineNumber ? `:${risk.lineNumber}` : ""}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-slate-700">
-            <p>{risk.description ?? "No risk description was generated."}</p>
-            {risk.recommendation ? <p className="text-slate-600">Recommendation: {risk.recommendation}</p> : null}
+            <p>{risk.description ?? analysisResultCopy.risk.noDescription}</p>
+            {risk.recommendation ? <p className="text-slate-600">{analysisResultCopy.risk.recommendation(risk.recommendation)}</p> : null}
           </CardContent>
         </Card>
       ))}
@@ -150,14 +149,14 @@ export function PaginationControls({
   return (
     <div className="flex items-center justify-between gap-3 text-sm text-slate-600">
       <p>
-        Total {total} items, page {page} / {Math.max(pageCount, 1)}
+        {analysisResultCopy.pagination.summary(total, page, pageCount)}
       </p>
       <div className="flex items-center gap-2">
         <Button variant="outline" size="sm" onClick={onPrev} disabled={page <= 1}>
-          Previous
+          {analysisResultCopy.pagination.previous}
         </Button>
         <Button variant="outline" size="sm" onClick={onNext} disabled={pageCount === 0 || page >= pageCount}>
-          Next
+          {analysisResultCopy.pagination.next}
         </Button>
       </div>
     </div>

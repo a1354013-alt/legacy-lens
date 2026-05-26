@@ -15,7 +15,7 @@ describe("analysis result extracted components", () => {
       />
     );
 
-    expect(html).toContain("Download Report ZIP");
+    expect(html).toContain("下載報告 ZIP");
     expect(html).toContain("disabled");
   });
 
@@ -28,7 +28,7 @@ describe("analysis result extracted components", () => {
     expect(summaryHtml).toContain("Status");
     expect(summaryHtml).toContain("completed");
     expect(tableHtml).toContain("dbo.Users");
-    expect(tableHtml).toContain("reads 3 / writes 1 / references 4");
+    expect(tableHtml).toContain("讀取 3 / 寫入 1 / 參考 4");
   });
 
   it("renders risks and pagination summary without changing list semantics", () => {
@@ -54,6 +54,6 @@ describe("analysis result extracted components", () => {
 
     expect(risksHtml).toContain("Dynamic SQL");
     expect(risksHtml).toContain("Review the generated statement manually.");
-    expect(pagingHtml).toContain("Total 20 items, page 2 / 4");
+    expect(pagingHtml).toContain("共 20 筆，第 2 / 4 頁");
   });
 });

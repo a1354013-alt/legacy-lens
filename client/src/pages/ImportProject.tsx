@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { getImportUploadErrorMessage, readHttpApiError } from "@/lib/httpApiErrors";
 import { trpc } from "@/lib/trpc";
 import { t } from "@/locales";
 import { toast } from "sonner";
@@ -25,7 +26,6 @@ import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
 
 type WorkflowPhase = "idle" | "creating" | "waiting-import" | "waiting-analysis" | "redirecting";
 type ImportUploadResponse = { jobId: number; jobType: "import_zip" | "import_git" };
-type ApiErrorPayload = { error?: string; message?: string; code?: string };
 
 function getPhaseLabel(phase: WorkflowPhase) {
   return t(`importProject.phaseLabel.${phase}`);
@@ -36,13 +36,12 @@ function getPhaseDescription(phase: WorkflowPhase) {
 }
 
 async function readApiErrorMessage(response: Response) {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    const payload = (await response.json().catch(() => null)) as ApiErrorPayload | null;
-    return payload?.error ?? payload?.message ?? t("importProject.alerts.uploadFailed");
+  const payload = await readHttpApiError(response);
+  if (payload) {
+    return getImportUploadErrorMessage(response.status, payload, t("importProject.alerts.uploadFailed"));
   }
 
-  return (await response.text()) || t("importProject.alerts.uploadFailed");
+  return (await response.text()) || getImportUploadErrorMessage(response.status, null, t("importProject.alerts.uploadFailed"));
 }
 
 export default function ImportProject() {

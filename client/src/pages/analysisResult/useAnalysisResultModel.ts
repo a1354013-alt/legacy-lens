@@ -7,6 +7,7 @@ import {
   ruleTypes,
   symbolKinds,
 } from "@shared/contracts";
+import { getReportDownloadErrorMessage, readHttpApiError } from "@/lib/httpApiErrors";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
@@ -17,6 +18,7 @@ import {
   shouldPollProjectStatus,
   shouldPollSnapshot,
 } from "../analysisResultModel";
+import { analysisResultCopy } from "./copy";
 
 async function downloadReportZip(projectId: number) {
   const response = await fetch(`/api/projects/${projectId}/report.zip`, {
@@ -24,14 +26,8 @@ async function downloadReportZip(projectId: number) {
   });
 
   if (!response.ok) {
-    let message = "無法下載分析報告。";
-    try {
-      const payload = (await response.json()) as { error?: string; code?: string; remediation?: string };
-      message = [payload.error, payload.remediation].filter(Boolean).join(" ");
-    } catch {
-      message = response.statusText || message;
-    }
-    throw new Error(message);
+    const payload = await readHttpApiError(response);
+    throw new Error(getReportDownloadErrorMessage(response.status, payload));
   }
 
   const blob = await response.blob();
@@ -165,7 +161,7 @@ export function useAnalysisResultModel(projectId: number) {
   const triggerAnalysisMutation = trpc.analysis.trigger.useMutation({
     onSuccess: async () => {
       await Promise.all([utils.projects.getById.invalidate(projectId), utils.analysis.getSnapshot.invalidate(projectId)]);
-      toast.success("分析工作已排入佇列。");
+      toast.success(analysisResultCopy.toasts.analysisQueued);
     },
   });
 
@@ -188,7 +184,7 @@ export function useAnalysisResultModel(projectId: number) {
     try {
       await triggerAnalysisMutation.mutateAsync(project.id);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "無法啟動分析工作。");
+      toast.error(error instanceof Error ? error.message : analysisResultCopy.toasts.analysisQueueFailed);
     }
   };
 
@@ -196,9 +192,9 @@ export function useAnalysisResultModel(projectId: number) {
     setIsReportDownloading(true);
     try {
       await downloadReportZip(projectId);
-      toast.success("報告 ZIP 已開始下載。");
+      toast.success(analysisResultCopy.toasts.reportDownloadSucceeded);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "無法下載報告 ZIP。");
+      toast.error(error instanceof Error ? error.message : analysisResultCopy.toasts.reportDownloadFailed);
     } finally {
       setIsReportDownloading(false);
     }

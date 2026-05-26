@@ -107,7 +107,11 @@ describe("reportRoute", () => {
       const response = await fetch(`${baseUrl}/api/projects/42/report.zip`);
 
       expect(response.status).toBe(401);
-      await expect(response.json()).resolves.toMatchObject({ error: "Invalid session." });
+      await expect(response.json()).resolves.toMatchObject({
+        code: "UNAUTHORIZED",
+        error: "Invalid session.",
+        message: "Invalid session.",
+      });
     });
   });
 
@@ -119,7 +123,11 @@ describe("reportRoute", () => {
       const response = await fetch(`${baseUrl}/api/projects/42/report.zip`);
 
       expect(response.status).toBe(500);
-      await expect(response.json()).resolves.toMatchObject({ error: "disk read failed" });
+      await expect(response.json()).resolves.toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        error: "disk read failed",
+        message: "disk read failed",
+      });
     });
   });
 });

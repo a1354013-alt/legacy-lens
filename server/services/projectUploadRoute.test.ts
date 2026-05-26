@@ -87,6 +87,11 @@ describe("projectUploadRoute", () => {
       });
 
       expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "UNAUTHORIZED",
+        error: expect.any(String),
+        message: expect.any(String),
+      });
     });
 
     await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
@@ -174,7 +179,11 @@ describe("projectUploadRoute", () => {
       });
 
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({ error: "Invalid project id." });
+      await expect(response.json()).resolves.toMatchObject({
+        code: "BAD_REQUEST",
+        error: "Invalid project id.",
+        message: "Invalid project id.",
+      });
     });
 
     await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
@@ -194,7 +203,11 @@ describe("projectUploadRoute", () => {
       });
 
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({ error: "Exactly one import source is required." });
+      await expect(response.json()).resolves.toMatchObject({
+        code: "BAD_REQUEST",
+        error: "Exactly one import source is required.",
+        message: "Exactly one import source is required.",
+      });
     });
 
     await expect(listUploadTempFiles()).resolves.toEqual(beforeFiles);
@@ -248,13 +261,38 @@ describe("projectUploadRoute", () => {
     });
   });
 
+  it("returns 409 when the project already has an active job", async () => {
+    const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
+    vi.mocked(queueImportProjectZipFromTempFile).mockRejectedValueOnce(
+      new AppError("PROJECT_JOB_ACTIVE", "Project already has an active job.")
+    );
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "PROJECT_JOB_ACTIVE",
+        error: "Project already has an active job.",
+        message: "Project already has an active job.",
+      });
+    });
+  });
+
   it("applies the upload rate limiter before multer writes a temp file", async () => {
     const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
     const beforeFiles = await listUploadTempFiles();
     uploadLimiterMock.mockImplementationOnce(async (_req: unknown, res: unknown) => {
       const response = res as { status: (code: number) => { json: (payload: unknown) => void } };
       response.status(429).json({
-        error: "Too Many Requests",
+        code: "RATE_LIMITED",
+        error: "Too many upload requests, please try again later",
         message: "Too many upload requests, please try again later",
       });
     });
@@ -270,7 +308,8 @@ describe("projectUploadRoute", () => {
 
       expect(response.status).toBe(429);
       await expect(response.json()).resolves.toMatchObject({
-        error: "Too Many Requests",
+        code: "RATE_LIMITED",
+        error: "Too many upload requests, please try again later",
         message: "Too many upload requests, please try again later",
       });
     });

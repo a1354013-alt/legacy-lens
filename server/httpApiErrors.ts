@@ -1,6 +1,8 @@
 import type { Response } from "express";
 import { AppError } from "./appError";
 
+export type HttpApiErrorCode = AppError["code"] | "UNAUTHORIZED" | "RATE_LIMITED" | "BAD_REQUEST" | "INTERNAL_SERVER_ERROR";
+
 export function getHttpStatusForAppError(error: AppError) {
   switch (error.code) {
     case "PROJECT_NOT_FOUND":
@@ -29,10 +31,24 @@ export function getHttpStatusForAppError(error: AppError) {
   }
 }
 
+export function sendHttpErrorResponse(
+  res: Response,
+  status: number,
+  code: HttpApiErrorCode,
+  message: string,
+  extras?: Record<string, unknown>
+) {
+  res.status(status).json({
+    code,
+    error: message,
+    message,
+    ...(extras ?? {}),
+  });
+}
+
 export function sendAppErrorResponse(res: Response, error: AppError, extras?: Record<string, unknown>) {
-  res.status(getHttpStatusForAppError(error)).json({
-    error: error.message,
-    code: error.code,
+  sendHttpErrorResponse(res, getHttpStatusForAppError(error), error.code, error.message, {
+    ...(error.details ? { details: error.details } : {}),
     ...(extras ?? {}),
   });
 }

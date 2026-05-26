@@ -164,6 +164,19 @@ export interface AppErrorShape {
   details?: string;
 }
 
+export const httpApiErrorCodes = [...appErrorCodes, "UNAUTHORIZED", "RATE_LIMITED", "BAD_REQUEST", "INTERNAL_SERVER_ERROR"] as const;
+export const httpApiErrorCodeSchema = z.enum(httpApiErrorCodes);
+export type HttpApiErrorCode = z.infer<typeof httpApiErrorCodeSchema>;
+
+export const httpApiErrorResponseSchema = z.object({
+  code: httpApiErrorCodeSchema,
+  error: z.string(),
+  message: z.string(),
+  details: z.string().optional(),
+  remediation: z.string().optional(),
+});
+export type HttpApiErrorResponse = z.infer<typeof httpApiErrorResponseSchema>;
+
 export const projectStatusLabels: Record<ProjectStatus, string> = {
   draft: "Draft",
   importing: "Importing",
