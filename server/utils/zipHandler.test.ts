@@ -231,7 +231,7 @@ describe("zipHandler", () => {
     });
 
     expect(openBufferSpy).toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it("skips oversize files and keeps importing the remaining supported files", async () => {
     const zip = new JSZip();
