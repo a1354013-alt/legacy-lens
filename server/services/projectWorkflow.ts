@@ -3006,11 +3006,14 @@ export async function getActiveImportZipTempFilePaths() {
     return new Set<string>();
   }
 
-  const rows = await db.select().from(projectJobs);
+  const rows = await db
+    .select()
+    .from(projectJobs)
+    .where(and(eq(projectJobs.type, "import_zip"), inArray(projectJobs.status, ["queued", "running"])));
   const activeTempPaths = new Set<string>();
 
   for (const row of rows) {
-    if (!isActiveProjectJobStatus(row.status) || row.type !== "import_zip" || !row.payloadJson) {
+    if (!row.payloadJson) {
       continue;
     }
 

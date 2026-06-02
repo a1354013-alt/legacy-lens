@@ -70,6 +70,8 @@ This document captures the operational boundaries that matter for real deploymen
 - `partial`: analysis succeeded, but some files were skipped or degraded.
 - `failed`: no usable analysis result was produced.
 - Heuristic notes are preserved, but they do not automatically downgrade a successful result to `partial`.
+- The active analysis snapshot and the latest analysis job status are separate concepts. A project may keep serving a previous `completed` or `partial` snapshot while the latest re-analysis job is `failed`.
+- UI and report download flows should use the active persisted snapshot for report availability, while also surfacing the latest job failure so users know the current view is the last successful result.
 
 ## Persistence Model
 

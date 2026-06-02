@@ -4,16 +4,16 @@ Last reviewed: 2026-05-26
 
 `pnpm audit --audit-level high` currently passes.
 
-`pnpm audit --audit-level moderate` currently reports 10 moderate vulnerabilities. They are tracked here instead of being hidden with blanket overrides because the current findings are either:
+`pnpm audit --audit-level moderate` currently reports moderate vulnerabilities. They are tracked here instead of being hidden with blanket overrides because the current findings are either:
 
-- dev-server-only issues in transitive tooling used by `vitest`, `vite`, or `drizzle-kit`
+- dev-server-only issues in transitive tooling used by current `vitest@4`, `vite@8`, or `drizzle-kit`
 - indirect dependency issues that need an upstream package release path
 - low-likelihood UI exposure that is not exercised by the current product surface
 
 Current accepted moderate findings:
 
-- `esbuild` via `vite@5` and `drizzle-kit` helper packages. This is a dev-server CORS issue, not a production runtime exposure in the shipped Express app.
-- `vite` via `vitest`. Both current advisories are about Vite dev-server file access paths, not the production bundle served from `dist/public`.
+- `esbuild` through current build/test tooling, including `vite@8` and `drizzle-kit` helper packages. This is a dev-server CORS issue, not a production runtime exposure in the shipped Express app.
+- `vite` through current `vitest@4` / `vite@8` tooling. Current Vite advisories are about dev-server file access paths, not the production bundle served from `dist/public`.
 - `postcss` stringification XSS. Legacy Lens does not accept arbitrary user CSS and re-embed it inside a server-rendered `<style>` tag.
 - `mdast-util-to-hast` via `streamdown` / `react-markdown`. The app does not expose arbitrary end-user markdown authoring today; keep this under review if user-supplied markdown is introduced.
 - `uuid` via `mermaid`. This affects buffer-bound validation in UUID helper variants and is not on the server request path.

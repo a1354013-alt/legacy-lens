@@ -12,7 +12,6 @@ let _pool: mysql.Pool | null = null;
 const DB_CONFIG = {
   connectionLimit: Number.parseInt(process.env.DB_CONNECTION_LIMIT || "10", 10),
   queueLimit: Number.parseInt(process.env.DB_QUEUE_LIMIT || "0", 10),
-  acquireTimeoutMs: Number.parseInt(process.env.DB_ACQUIRE_TIMEOUT_MS || "60000", 10),
   waitForConnections: process.env.DB_WAIT_FOR_CONNECTIONS !== "false",
 } as const;
 

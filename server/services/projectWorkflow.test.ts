@@ -782,6 +782,59 @@ describe("project workflow", () => {
     });
   });
 
+  it("keeps the previous usable report and graph when startup recovery fails a stuck analyzing project", async () => {
+    const { buildReportArchive, recoverStaleProjectJobsOnStartup } = await import("./projectWorkflow");
+    seedProject(1, { status: "analyzing", analysisProgress: 42 });
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 1,
+      filePath: "main.go",
+      fileName: "main.go",
+      fileType: ".go",
+      content: "package main",
+      lineCount: 1,
+      status: "stored",
+    });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old_symbol", type: "function", startLine: 1, endLine: 1 });
+    fakeDb.store.dependencies.push({
+      id: 1,
+      projectId: 1,
+      sourceSymbolId: 1,
+      targetSymbolId: null,
+      targetExternalName: "LegacyApi",
+      targetKind: "external",
+      dependencyType: "references",
+      lineNumber: 1,
+    });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      status: "partial",
+      flowMarkdown: "# OLD FLOW",
+      dataDependencyMarkdown: "# OLD DATA",
+      risksMarkdown: "# OLD RISKS",
+      rulesYaml: "rules: []",
+      summaryJson: { fileCount: 1 },
+      warningsJson: [],
+      errorMessage: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-02T00:16:00.000Z"), 15 * 60 * 1000);
+
+    expect(recovered).toBe(0);
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "PROJECT_JOB_STALE", analysisProgress: 0 });
+    expect(fakeDb.store.analysisResults).toHaveLength(1);
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "partial", flowMarkdown: "# OLD FLOW" });
+    expect(fakeDb.store.symbols).toHaveLength(1);
+    expect(fakeDb.store.dependencies).toHaveLength(1);
+
+    const archive = await buildReportArchive(1, 7);
+    const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
+    await expect(zip.file("FLOW.md")!.async("text")).resolves.toBe("# OLD FLOW");
+  });
+
   it("skips startup recovery when the project worker is disabled", async () => {
     const originalValue = process.env.PROJECT_WORKER_ENABLED;
     process.env.PROJECT_WORKER_ENABLED = "false";
@@ -1369,6 +1422,63 @@ describe("project workflow", () => {
       lockedBy: expect.any(String),
       heartbeatAt: expect.any(Date),
       leaseUntil: expect.any(Date),
+    });
+  });
+
+  it.each([
+    ["attemptCount", (row: Row) => ({ attemptCount: Number(row.attemptCount ?? 0) + 1 })],
+    ["heartbeatAt", (row: Row) => ({ heartbeatAt: new Date(Number((row.heartbeatAt as Date).getTime()) + 1000) })],
+    ["leaseUntil", (row: Row) => ({ leaseUntil: new Date(Number((row.leaseUntil as Date).getTime()) + 1000) })],
+  ])("rejects a fallback claim when %s changes before reselect", async (_field, mutateClaimedRow) => {
+    const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
+    seedProject(1, { status: "analyzing" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "running",
+      progress: 25,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      lockedBy: "worker-old",
+      heartbeatAt: new Date("2026-01-01T00:00:10.000Z"),
+      leaseUntil: new Date("2026-01-01T00:00:20.000Z"),
+      attemptCount: 1,
+      maxAttempts: 3,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:00:05.000Z"),
+      finishedAt: null,
+    });
+
+    const originalUpdate = fakeDb.update.bind(fakeDb);
+    fakeDb.update = (table: object) => {
+      const baseUpdate = originalUpdate(table);
+      return {
+        set: (updates: Row) => ({
+          where: async (condition: Condition) => {
+            const result = await baseUpdate.set(updates).where(condition);
+            if (getTableName(table) === "projectJobs" && result.affectedRows === 1) {
+              fakeDb.store.projectJobs[0] = {
+                ...fakeDb.store.projectJobs[0],
+                ...mutateClaimedRow(fakeDb.store.projectJobs[0]),
+              };
+            }
+            return result;
+          },
+        }),
+      };
+    };
+
+    const claim = await claimNextQueuedProjectJobForTests();
+
+    expect(claim).toBeNull();
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      id: 1,
+      status: "running",
+      lockedBy: expect.any(String),
     });
   });
 

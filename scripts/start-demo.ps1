@@ -25,6 +25,14 @@ try {
   exit 1
 }
 
+cmd /c "docker info >NUL 2>NUL"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host ""
+  Write-Host "Docker is installed, but the Docker daemon is not running."
+  Write-Host "Start Docker Desktop, wait until it finishes starting, then run start-demo.cmd again."
+  exit 1
+}
+
 if (-not $env:LEGACY_LENS_PORT) {
   $env:LEGACY_LENS_PORT = "3000"
 }

@@ -4,6 +4,7 @@ import {
   canDownloadAnalysisReport,
   getAnalysisViewState,
   resolveAnalysisStatus,
+  shouldShowPreviousAnalysisFailureBanner,
   shouldPollProjectStatus,
   shouldPollSnapshot,
 } from "./analysisResultModel";
@@ -76,6 +77,15 @@ describe("analysisResultModel", () => {
     expect(getAnalysisViewState("analyzing", "processing", createJob({ status: "running", progress: 60 }), false)).toBe("running");
     expect(getAnalysisViewState("completed", "completed", createJob({ status: "completed", progress: 100 }), true)).toBe("completed");
     expect(getAnalysisViewState("failed", "failed", createJob({ status: "failed", errorMessage: "boom" }), false)).toBe("failed");
+  });
+
+  it("keeps a usable previous report visible when the latest analysis failed", () => {
+    const failedJob = createJob({ status: "failed", errorMessage: "boom" });
+
+    expect(getAnalysisViewState("failed", "completed", failedJob, true)).toBe("completed");
+    expect(shouldShowPreviousAnalysisFailureBanner("failed", "completed", failedJob, true)).toBe(true);
+    expect(shouldShowPreviousAnalysisFailureBanner("completed", "completed", createJob({ status: "completed" }), true)).toBe(false);
+    expect(shouldShowPreviousAnalysisFailureBanner("failed", "failed", failedJob, false)).toBe(false);
   });
 
   it("prefers the persisted report status and falls back to project analysis status", () => {

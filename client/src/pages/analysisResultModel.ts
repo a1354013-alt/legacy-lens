@@ -31,6 +31,10 @@ export function getAnalysisViewState(
   latestJob?: ProjectJobRecord | null,
   hasReport = false
 ) {
+  if (hasReport && (analysisStatus === "completed" || analysisStatus === "partial")) {
+    return "completed" satisfies AnalysisViewState;
+  }
+
   if (status === "failed" || analysisStatus === "failed" || latestJob?.status === "failed") {
     return "failed" satisfies AnalysisViewState;
   }
@@ -43,11 +47,20 @@ export function getAnalysisViewState(
     return "running" satisfies AnalysisViewState;
   }
 
-  if (hasReport && (analysisStatus === "completed" || analysisStatus === "partial")) {
-    return "completed" satisfies AnalysisViewState;
+  return "idle" satisfies AnalysisViewState;
+}
+
+export function shouldShowPreviousAnalysisFailureBanner(
+  status: ProjectStatus | null | undefined,
+  reportStatus: AnalysisStatus | null | undefined,
+  latestJob?: ProjectJobRecord | null,
+  hasReport = false
+) {
+  if (!hasReport || (reportStatus !== "completed" && reportStatus !== "partial")) {
+    return false;
   }
 
-  return "idle" satisfies AnalysisViewState;
+  return status === "failed" || latestJob?.status === "failed";
 }
 
 export function resolveAnalysisStatus(

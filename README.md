@@ -271,20 +271,24 @@ http://localhost:3000
 
 Click **Sign in** to enter the demo.
 
-To stop:
+CLI alternative:
+
+```bash
+pnpm demo
+```
+
+This runs the same Docker Compose demo stack from a terminal.
+
+To stop the demo stack:
 
 ```bash
 pnpm demo:down
 ```
 
-To reset the demo database:
+To reset the demo database and remove its volume:
 
 ```bash
 pnpm demo:reset
-```
-
-```bash
-pnpm demo
 ```
 
 The demo compose file brings up MySQL, waits for the one-shot `migrate` service to finish, and only then starts `app`.

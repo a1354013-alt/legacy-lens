@@ -15,6 +15,7 @@ import {
   canDownloadAnalysisReport,
   getAnalysisViewState,
   resolveAnalysisStatus,
+  shouldShowPreviousAnalysisFailureBanner,
   shouldPollProjectStatus,
   shouldPollSnapshot,
 } from "../analysisResultModel";
@@ -172,6 +173,12 @@ export function useAnalysisResultModel(projectId: number) {
   const metrics = report?.summaryJson;
   const analysisStatus = resolveAnalysisStatus(report?.status, project?.analysisStatus);
   const viewState = getAnalysisViewState(project?.status, analysisStatus, project?.latestJob, Boolean(report));
+  const showPreviousAnalysisFailureBanner = shouldShowPreviousAnalysisFailureBanner(
+    project?.status,
+    report?.status,
+    project?.latestJob,
+    Boolean(report)
+  );
   const importWarnings = snapshot?.importWarnings ?? project?.importWarningsJson ?? [];
   const canRunAnalysis = project ? ["ready", "failed", "completed"].includes(project.status) : false;
   const canDownloadReport = canDownloadAnalysisReport(snapshot);
@@ -260,6 +267,7 @@ export function useAnalysisResultModel(projectId: number) {
     metrics,
     analysisStatus,
     viewState,
+    showPreviousAnalysisFailureBanner,
     importWarnings,
     canRunAnalysis,
     canDownloadReport,

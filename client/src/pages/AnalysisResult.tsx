@@ -95,6 +95,7 @@ export default function AnalysisResult() {
     metrics,
     analysisStatus,
     viewState,
+    showPreviousAnalysisFailureBanner,
     importWarnings,
     canRunAnalysis,
     canDownloadReport,
@@ -179,6 +180,14 @@ export default function AnalysisResult() {
             結果適合用來支援人工審查與現代化規劃，不代表 compiler-grade 的絕對語意真相。
           </AlertDescription>
         </Alert>
+
+        {showPreviousAnalysisFailureBanner ? (
+          <Alert>
+            <ShieldAlert className="size-4" />
+            <AlertTitle>重新分析未完成</AlertTitle>
+            <AlertDescription>最新一次重新分析失敗，目前仍顯示上一份成功分析結果。</AlertDescription>
+          </Alert>
+        ) : null}
 
         {project.errorMessage ? (
           <Alert variant="destructive">
