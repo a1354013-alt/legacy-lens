@@ -249,8 +249,42 @@ This repo ships a Dockerfile plus separate compose files for demo and production
 - OAuth URLs are still required as placeholders (`VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL`) because the server config schema is consistent across modes.
 - `JWT_SECRET` demo default is long enough for runtime validation, but you must replace it in any real deployment.
 
+#### One-click Demo Start
+
+On Windows, double-click:
+
+```text
+start-demo.cmd
+```
+
+This starts the local demo stack with Docker Compose:
+- MySQL
+- migrations
+- Legacy Lens app
+- dev-only auth bypass
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+Click **Sign in** to enter the demo.
+
+To stop:
+
 ```bash
-docker compose -f docker-compose.demo.yml up --build
+pnpm demo:down
+```
+
+To reset the demo database:
+
+```bash
+pnpm demo:reset
+```
+
+```bash
+pnpm demo
 ```
 
 The demo compose file brings up MySQL, waits for the one-shot `migrate` service to finish, and only then starts `app`.
@@ -290,6 +324,13 @@ Port notes:
 - Demo compose defaults to `3000` for the app and `3306` for MySQL.
 - Production-like compose binds only the app port and expects `DATABASE_URL` to point at an existing MySQL-compatible database.
 - You can override host ports with `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT`, which is what the smoke test does in CI to avoid collisions.
+- On Windows, set alternate ports before starting the demo with:
+
+```powershell
+$env:LEGACY_LENS_PORT=3100
+$env:LEGACY_LENS_DB_PORT=3310
+.\start-demo.cmd
+```
 
 ### Docker Smoke / CI Environment Variables
 
@@ -445,10 +486,16 @@ Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `p
 | `pnpm check` | Typecheck (app + tests) |
 | `pnpm test` | Vitest |
 | `pnpm test:migration` | Run migration smoke against a real MySQL database (`DATABASE_URL` required) |
+| `pnpm demo` | Start the local Docker demo stack with MySQL and dev auth bypass |
+| `pnpm demo:down` | Stop the local Docker demo stack |
+| `pnpm demo:reset` | Stop the local Docker demo stack and remove its demo database volume |
+| `start-demo.cmd` | Windows one-click launcher for the local Docker demo stack |
 | `pnpm db:migrate` | Apply Drizzle migrations |
 
 Docker equivalents:
-- `docker compose -f docker-compose.demo.yml up --build` -> local demo stack with MySQL and dev auth bypass
+- `pnpm demo` or `docker compose -f docker-compose.demo.yml up --build` -> local demo stack with MySQL and dev auth bypass
+- `pnpm demo:down` or `docker compose -f docker-compose.demo.yml down` -> stop the local demo stack
+- `pnpm demo:reset` or `docker compose -f docker-compose.demo.yml down -v` -> reset the local demo database
 - `docker compose up --build` -> production-like app/migrate flow using external `DATABASE_URL`
 - `docker compose -f docker-compose.demo.yml run --rm migrate` -> run demo migrations only
 - `pnpm docker:smoke` -> build the compose stack, verify `/health`, `/ready`, `/api/health`, and demo dev-login redirect, then tear it down

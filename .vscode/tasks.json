@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Legacy Lens: Start Demo",
+      "type": "shell",
+      "command": "docker compose -f docker-compose.demo.yml up --build",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Legacy Lens: Stop Demo",
+      "type": "shell",
+      "command": "docker compose -f docker-compose.demo.yml down",
+      "problemMatcher": []
+    },
+    {
+      "label": "Legacy Lens: Reset Demo DB",
+      "type": "shell",
+      "command": "docker compose -f docker-compose.demo.yml down -v",
+      "problemMatcher": []
+    }
+  ]
+}

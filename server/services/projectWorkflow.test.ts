@@ -398,6 +398,188 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed", analysisProgress: 100 });
   });
 
+  it("queues re-analysis without replacing the previous usable analysis result", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "false";
+    const { queueAnalyzeProject } = await import("./projectWorkflow");
+    seedProject(1, { status: "completed", analysisProgress: 100 });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      status: "completed",
+      flowMarkdown: "# OLD FLOW",
+      dataDependencyMarkdown: "# OLD DATA",
+      risksMarkdown: "# OLD RISKS",
+      rulesYaml: "rules: []",
+      summaryJson: { fileCount: 1 },
+      warningsJson: [],
+      errorMessage: null,
+    });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old_symbol", type: "function", startLine: 1, endLine: 1 });
+
+    try {
+      await queueAnalyzeProject(1, 7);
+
+      expect(fakeDb.store.projects[0]).toMatchObject({ status: "analyzing", analysisProgress: 0 });
+      expect(fakeDb.store.analysisResults).toHaveLength(1);
+      expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "completed", flowMarkdown: "# OLD FLOW" });
+      expect(fakeDb.store.symbols).toHaveLength(1);
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
+  it("preserves the previous usable snapshot when re-analysis fails", async () => {
+    const { analyzeProject, buildReportArchive } = await import("./projectWorkflow");
+    seedProject(1, { status: "completed", analysisProgress: 100 });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      status: "completed",
+      flowMarkdown: "# OLD FLOW",
+      dataDependencyMarkdown: "# OLD DATA",
+      risksMarkdown: "# OLD RISKS",
+      rulesYaml: "rules: []",
+      summaryJson: { fileCount: 1 },
+      warningsJson: [],
+      errorMessage: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old_symbol", type: "function", startLine: 1, endLine: 1 });
+    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount", fieldType: null, description: null });
+    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "LegacyApi", targetKind: "external", dependencyType: "references", lineNumber: 1 });
+    fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", severity: "high", title: "Old risk", sourceFile: "main.go", lineNumber: 1 });
+    fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "OldRule", sourceFile: "main.go", lineNumber: 1 });
+    analyzerResult = {
+      projectId: 1,
+      status: "failed",
+      language: "go",
+      symbols: [],
+      dependencies: [],
+      fieldReferences: [],
+      schemaFields: [],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "",
+      dataDependencyDocument: "",
+      risksDocument: "",
+      rulesYaml: "",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 0,
+        skippedFileCount: 1,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 0,
+        dependencyCount: 0,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    await expect(analyzeProject(1, 7)).rejects.toMatchObject({ code: "ANALYSIS_FAILED" });
+
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_FAILED" });
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "completed", flowMarkdown: "# OLD FLOW" });
+    expect(fakeDb.store.symbols).toHaveLength(1);
+    expect(fakeDb.store.dependencies).toHaveLength(1);
+    expect(fakeDb.store.fields).toHaveLength(1);
+    expect(fakeDb.store.risks).toHaveLength(1);
+    expect(fakeDb.store.rules).toHaveLength(1);
+
+    const archive = await buildReportArchive(1, 7);
+    const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
+    await expect(zip.file("FLOW.md")!.async("text")).resolves.toBe("# OLD FLOW");
+  });
+
+  it("batch inserts ID-independent analysis artifacts in chunks", async () => {
+    const { analyzeProject } = await import("./projectWorkflow");
+    seedProject();
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    const riskBatchSizes: number[] = [];
+    const ruleBatchSizes: number[] = [];
+    const originalInsert = fakeDb.insert.bind(fakeDb);
+    fakeDb.insert = (table: object) => {
+      const tableName = getTableName(table);
+      const baseInsert = originalInsert(table);
+      return {
+        values: async (payload: Row | Row[]) => {
+          if (tableName === "risks") {
+            riskBatchSizes.push(Array.isArray(payload) ? payload.length : 1);
+          }
+          if (tableName === "rules") {
+            ruleBatchSizes.push(Array.isArray(payload) ? payload.length : 1);
+          }
+          return baseInsert.values(payload);
+        },
+      };
+    };
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "go",
+      symbols: [],
+      dependencies: [],
+      fieldReferences: [],
+      schemaFields: [],
+      risks: Array.from({ length: 251 }, (_value, index) => ({
+        title: `Risk ${index}`,
+        description: "risk",
+        severity: "medium",
+        category: "magic_value",
+        sourceFile: "main.go",
+        lineNumber: index + 1,
+        suggestion: "Review.",
+      })),
+      rules: Array.from({ length: 251 }, (_value, index) => ({
+        ruleType: "magic_value",
+        name: `rule_${index}`,
+        description: "rule",
+        condition: "condition",
+        sourceFile: "main.go",
+        lineNumber: index + 1,
+      })),
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 1,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 0,
+        dependencyCount: 0,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
+        riskCount: 251,
+        ruleCount: 251,
+        warningCount: 0,
+      },
+    };
+
+    await analyzeProject(1, 7);
+
+    expect(riskBatchSizes).toEqual([250, 1]);
+    expect(ruleBatchSizes).toEqual([250, 1]);
+  });
+
   it("returns a light snapshot summary instead of full arrays", async () => {
     const { getAnalysisSnapshot } = await import("./projectWorkflow");
     seedProject(1, { status: "completed", importWarningsJson: [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }] });

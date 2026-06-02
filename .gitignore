@@ -68,6 +68,8 @@ Desktop.ini
 # editor / IDE
 .idea/
 .vscode/
+!.vscode/
+!.vscode/tasks.json
 .vs/
 *.swp
 *.swo

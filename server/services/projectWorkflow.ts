@@ -100,6 +100,7 @@ const PROJECT_JOB_LEASE_MS = Number.parseInt(process.env.PROJECT_JOB_LEASE_MS ??
 const PROJECT_JOB_HEARTBEAT_MS = Number.parseInt(process.env.PROJECT_JOB_HEARTBEAT_MS ?? "10000", 10);
 const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = Number.parseInt(process.env.PROJECT_JOB_MAX_ATTEMPTS ?? "3", 10);
 const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
+const ANALYSIS_INSERT_CHUNK_SIZE = 250;
 let projectJobWorkerLoop: Promise<void> | null = null;
 
 class ProjectJobExecutionAbortedError extends Error {
@@ -205,6 +206,30 @@ function hasProjectJobLease(job: Pick<ProjectJobRow, "leaseUntil">) {
 
 function getProjectJobAttemptCount(job: Pick<ProjectJobRow, "attemptCount">) {
   return Number(job.attemptCount ?? 0);
+}
+
+function sameTimestamp(left: Date | string | null | undefined, right: Date | string | null | undefined) {
+  const leftDate = toDate(left);
+  const rightDate = toDate(right);
+  if (!leftDate || !rightDate) {
+    return leftDate === rightDate;
+  }
+
+  return leftDate.getTime() === rightDate.getTime();
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function insertInChunks<T extends Record<string, unknown>>(db: DbHandle, table: object, rows: T[]) {
+  for (const chunk of chunkArray(rows, ANALYSIS_INSERT_CHUNK_SIZE)) {
+    await db.insert(table as typeof dependencies).values(chunk as never);
+  }
 }
 
 function getProjectJobMaxAttempts(job: Pick<ProjectJobRow, "maxAttempts">) {
@@ -411,6 +436,34 @@ async function replaceAnalysisResult(db: DbHandle, projectId: number, values: Om
   });
 }
 
+async function getExistingUsableAnalysisResult(db: DbHandle, projectId: number) {
+  const [report] = await db
+    .select()
+    .from(analysisResults)
+    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["completed", "partial"])))
+    .limit(1);
+
+  return report ?? null;
+}
+
+async function writeProcessingAnalysisResultIfNoUsableSnapshot(db: DbHandle, projectId: number) {
+  const existingReport = await getExistingUsableAnalysisResult(db, projectId);
+  if (existingReport) {
+    return;
+  }
+
+  await replaceAnalysisResult(db, projectId, {
+    status: "processing",
+    flowMarkdown: null,
+    dataDependencyMarkdown: null,
+    risksMarkdown: null,
+    rulesYaml: null,
+    summaryJson: null,
+    warningsJson: [],
+    errorMessage: null,
+  });
+}
+
 async function transitionProjectState(
   db: DbHandle,
   projectId: number,
@@ -606,16 +659,7 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
       );
 
       if (payload.type === "analyze") {
-        await replaceAnalysisResult(tx, projectId, {
-          status: "processing",
-          flowMarkdown: null,
-          dataDependencyMarkdown: null,
-          risksMarkdown: null,
-          rulesYaml: null,
-          summaryJson: null,
-          warningsJson: [],
-          errorMessage: null,
-        });
+        await writeProcessingAnalysisResultIfNoUsableSnapshot(tx, projectId);
       }
 
       return jobId;
@@ -734,6 +778,9 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
 
     const startedAt = nextJob.startedAt ? toDate(nextJob.startedAt) ?? now : now;
     const lease = buildProjectJobLease(now);
+    const expectedAttemptCount = getProjectJobAttemptCount(nextJob) + 1;
+    const expectedHeartbeatAt = lease.heartbeatAt;
+    const expectedLeaseUntil = lease.leaseUntil;
     const updateConditions = [eq(projectJobs.id, nextJob.id)];
 
     if (nextJob.status === "queued") {
@@ -756,7 +803,7 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
         lockedBy: PROJECT_JOB_LOCK_OWNER,
         heartbeatAt: lease.heartbeatAt,
         leaseUntil: lease.leaseUntil,
-        attemptCount: getProjectJobAttemptCount(nextJob) + 1,
+        attemptCount: expectedAttemptCount,
       })
       .where(andAll(updateConditions));
 
@@ -766,7 +813,14 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
     }
 
     const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
-    if (!claimedJob || claimedJob.status !== "running" || claimedJob.lockedBy !== PROJECT_JOB_LOCK_OWNER) {
+    if (
+      !claimedJob ||
+      claimedJob.status !== "running" ||
+      claimedJob.lockedBy !== PROJECT_JOB_LOCK_OWNER ||
+      getProjectJobAttemptCount(claimedJob) !== expectedAttemptCount ||
+      !sameTimestamp(claimedJob.heartbeatAt, expectedHeartbeatAt) ||
+      !sameTimestamp(claimedJob.leaseUntil, expectedLeaseUntil)
+    ) {
       continue;
     }
 
@@ -830,19 +884,21 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
       .where(eq(projects.id, job.projectId));
 
     const existingResult = await tx.select().from(analysisResults).where(eq(analysisResults.projectId, job.projectId)).limit(1);
-
-    if (!existingResult[0]) {
+    const existingUsableResult = existingResult[0]?.status === "completed" || existingResult[0]?.status === "partial";
+    if (existingUsableResult) {
       return;
     }
 
-    await tx
-      .update(analysisResults)
-      .set({
-        status: "failed",
-        errorMessage: error?.message ?? "Analysis failed.",
-        updatedAt: now,
-      })
-      .where(eq(analysisResults.projectId, job.projectId));
+    await replaceAnalysisResult(tx, job.projectId, {
+      status: "failed",
+      flowMarkdown: null,
+      dataDependencyMarkdown: null,
+      risksMarkdown: null,
+      rulesYaml: null,
+      summaryJson: null,
+      warningsJson: [],
+      errorMessage: error?.message ?? "Analysis failed.",
+    });
   });
 }
 
@@ -1132,6 +1188,11 @@ async function markProjectAsRecoveryFailed(projectId: number, status: ProjectSta
   await db.update(projects).set(updates).where(eq(projects.id, projectId));
 
   if (status === "analyzing") {
+    const existingReport = await getExistingUsableAnalysisResult(db, projectId);
+    if (existingReport) {
+      return;
+    }
+
     await replaceAnalysisResult(db, projectId, {
       status: "failed",
       flowMarkdown: null,
@@ -1156,7 +1217,7 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
 
   const db = await requireDb();
   const staleBefore = new Date(now.getTime() - staleAfterMs);
-  const allJobs = await db.select().from(projectJobs);
+  const allJobs = await db.select().from(projectJobs).where(inArray(projectJobs.status, ["queued", "running"]));
   let recoveredJobCount = 0;
 
   for (const job of allJobs) {
@@ -1261,8 +1322,8 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
     }
   }
 
-  const activeJobsAfterRecovery = await db.select().from(projectJobs);
-  const projectRows = await db.select().from(projects);
+  const activeJobsAfterRecovery = await db.select().from(projectJobs).where(inArray(projectJobs.status, ["queued", "running"]));
+  const projectRows = await db.select().from(projects).where(inArray(projects.status, ["importing", "analyzing"]));
   for (const project of projectRows) {
     if (project.status !== "importing" && project.status !== "analyzing") {
       continue;
@@ -1678,6 +1739,7 @@ async function writeSuccessfulAnalysis(
     }
   }
 
+  const fieldDependencyRows: Array<typeof fieldDependencies.$inferInsert> = [];
   for (const reference of result.fieldReferences) {
     const fieldId = fieldIds.get(buildFieldIdentityKey(reference));
     const ownerSymbol = reference.symbolStableKey
@@ -1686,7 +1748,7 @@ async function writeSuccessfulAnalysis(
     const symbolId = ownerSymbol ? insertedSymbolIds.get(buildSymbolInsertKey(ownerSymbol)) : undefined;
 
     if (!fieldId || !symbolId) continue;
-    await tx.insert(fieldDependencies).values({
+    fieldDependencyRows.push({
       projectId,
       fieldId,
       symbolId,
@@ -1696,12 +1758,15 @@ async function writeSuccessfulAnalysis(
     });
   }
 
+  await insertInChunks(tx, fieldDependencies, fieldDependencyRows);
+
+  const dependencyRows: Array<typeof dependencies.$inferInsert> = [];
   for (const dependency of result.dependencies) {
     const sourceSymbolId = insertedSymbolIds.get(dependency.from);
     if (!sourceSymbolId) continue;
 
     const targetSymbolId = resolveInsertedTargetSymbolId(dependency, result.symbols, insertedSymbolIds);
-    await tx.insert(dependencies).values({
+    dependencyRows.push({
       projectId,
       sourceSymbolId,
       targetSymbolId: targetSymbolId ?? null,
@@ -1712,8 +1777,11 @@ async function writeSuccessfulAnalysis(
     });
   }
 
+  await insertInChunks(tx, dependencies, dependencyRows);
+
+  const riskRows: Array<typeof risks.$inferInsert> = [];
   for (const risk of result.risks) {
-    await tx.insert(risks).values({
+    riskRows.push({
       projectId,
       riskType: risk.category,
       severity: risk.severity,
@@ -1726,8 +1794,11 @@ async function writeSuccessfulAnalysis(
     });
   }
 
+  await insertInChunks(tx, risks, riskRows);
+
+  const ruleRows: Array<typeof rules.$inferInsert> = [];
   for (const rule of result.rules) {
-    await tx.insert(rules).values({
+    ruleRows.push({
       projectId,
       ruleType: rule.ruleType,
       name: rule.name,
@@ -1737,6 +1808,8 @@ async function writeSuccessfulAnalysis(
       lineNumber: rule.lineNumber,
     });
   }
+
+  await insertInChunks(tx, rules, ruleRows);
 
   await assertProjectJobExecutionActive(executionState, "analysis.write_success.persist");
   await transitionProjectState(tx, projectId, {
@@ -1750,17 +1823,20 @@ async function writeSuccessfulAnalysis(
 
 async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: AppError, executionState?: ProjectJobExecutionState) {
   await assertProjectJobExecutionActive(executionState, "analysis.write_failed.prepare", { refreshLease: true });
-  await clearProjectAnalysisGraph(tx, projectId);
-  await replaceAnalysisResult(tx, projectId, {
-    status: "failed",
-    flowMarkdown: null,
-    dataDependencyMarkdown: null,
-    risksMarkdown: null,
-    rulesYaml: null,
-    summaryJson: null,
-    warningsJson: [],
-    errorMessage: appError.message,
-  });
+  const existingReport = await getExistingUsableAnalysisResult(tx, projectId);
+  if (!existingReport) {
+    await clearProjectAnalysisGraph(tx, projectId);
+    await replaceAnalysisResult(tx, projectId, {
+      status: "failed",
+      flowMarkdown: null,
+      dataDependencyMarkdown: null,
+      risksMarkdown: null,
+      rulesYaml: null,
+      summaryJson: null,
+      warningsJson: [],
+      errorMessage: appError.message,
+    });
+  }
   await assertProjectJobExecutionActive(executionState, "analysis.write_failed.persist");
   await transitionProjectState(tx, projectId, {
     status: "failed",
@@ -1792,16 +1868,7 @@ export async function analyzeProject(projectId: number, userId: number, executio
       },
       userId
     );
-    await replaceAnalysisResult(tx, projectId, {
-      status: "processing",
-      flowMarkdown: null,
-      dataDependencyMarkdown: null,
-      risksMarkdown: null,
-      rulesYaml: null,
-      summaryJson: null,
-      warningsJson: [],
-      errorMessage: null,
-    });
+    await writeProcessingAnalysisResultIfNoUsableSnapshot(tx, projectId);
   });
 
   try {
