@@ -25,7 +25,7 @@ import { toast } from "sonner";
 import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
 
 type WorkflowPhase = "idle" | "creating" | "waiting-import" | "waiting-analysis" | "redirecting";
-type ImportUploadResponse = { jobId: number; jobType: "import_zip" | "import_git" };
+type ImportUploadResponse = { projectId: number; jobId: number; jobType: "import_zip" | "import_git" };
 
 function getPhaseLabel(phase: WorkflowPhase) {
   return t(`importProject.phaseLabel.${phase}`);
@@ -92,9 +92,8 @@ export default function ImportProject() {
     refetchOnWindowFocus: false,
   });
 
-  const createProjectMutation = trpc.projects.create.useMutation();
   const analyzeMutation = trpc.analysis.trigger.useMutation();
-  const isBusy = phase !== "idle" || createProjectMutation.isPending || analyzeMutation.isPending;
+  const isBusy = phase !== "idle" || analyzeMutation.isPending;
 
   useEffect(() => {
     const job = activeJobQuery.data;
@@ -171,18 +170,13 @@ export default function ImportProject() {
       validateForm();
       setPhase("creating");
 
-      const created = await createProjectMutation.mutateAsync({
-        name: projectName.trim(),
-        description: description.trim() || undefined,
-        focusLanguage,
-        sourceType,
-      });
-
-      const id = created.projectId;
-      setProjectId(id);
-
       const formData = new FormData();
-      formData.append("projectId", String(id));
+      formData.append("name", projectName.trim());
+      formData.append("focusLanguage", focusLanguage);
+      formData.append("sourceType", sourceType);
+      if (description.trim()) {
+        formData.append("description", description.trim());
+      }
       if (sourceType === "upload" && uploadedFile) {
         formData.append("file", uploadedFile, uploadedFile.name);
       }
@@ -191,7 +185,7 @@ export default function ImportProject() {
       }
 
       setPhase("waiting-import");
-      const response = await fetch(`/api/projects/${id}/upload`, {
+      const response = await fetch("/api/projects/import", {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -203,6 +197,7 @@ export default function ImportProject() {
       }
 
       const job = (await response.json()) as ImportUploadResponse;
+      setProjectId(job.projectId);
       setActiveJobId(job.jobId);
       setActiveJobType(job.jobType);
       toast.success(t("importProject.alerts.importQueued"));

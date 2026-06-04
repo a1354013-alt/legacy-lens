@@ -203,7 +203,9 @@ export const appRouter = router({
         const analysisStatusByProjectId = new Map(reportRows.map((row) => [row.projectId, row.status]));
         const latestJobsByProjectId = await getLatestJobsByProjectIds(projectRows.map((project) => project.id), ctx.user.id);
 
-        return projectRows.map((project) =>
+        const visibleProjectRows = projectRows.filter((project) => project.status !== "draft" || latestJobsByProjectId.has(project.id));
+
+        return visibleProjectRows.map((project) =>
           toProjectSummary(
             project,
             deriveProjectAnalysisStatus(project.status, analysisStatusByProjectId.get(project.id)),

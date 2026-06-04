@@ -297,6 +297,38 @@ describe("project workflow", () => {
     });
   });
 
+  it("creates a project and queued ZIP import job in one workflow transaction", async () => {
+    const { createProjectWithQueuedZipImport } = await import("./projectWorkflow");
+
+    const result = await createProjectWithQueuedZipImport(
+      7,
+      {
+        name: "delphi-demo",
+        description: "sample",
+        focusLanguage: "delphi",
+        sourceType: "upload",
+      },
+      "C:/tmp/demo.zip",
+      "demo.zip"
+    );
+
+    expect(result).toMatchObject({ projectId: 1, jobId: 1, status: "queued" });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      userId: 7,
+      name: "delphi-demo",
+      language: "delphi",
+      sourceType: "upload",
+      status: "importing",
+    });
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "queued",
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/demo.zip", originalFileName: "demo.zip" }),
+    });
+  });
+
   it("imports files from ZIP and Git, persisting warnings and source url", async () => {
     const { getOwnedProject, importProjectGit, importProjectZip } = await import("./projectWorkflow");
     fakeDb.store.projects.push(
@@ -1683,6 +1715,47 @@ describe("project workflow", () => {
     await expect(deleteProjectCascade(1, 7)).rejects.toMatchObject({ code: "DELETE_FAILED" });
     expect(fakeDb.store.projects).toHaveLength(1);
     expect(fakeDb.store.projectJobs).toHaveLength(1);
+  });
+
+  it("deletes a project together with completed jobs, files, graph data, and analysis results", async () => {
+    const { deleteProjectCascade } = await import("./projectWorkflow");
+    seedProject(1, { status: "completed" });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main" });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 1 });
+    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetKind: "external", dependencyType: "calls" });
+    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount" });
+    fakeDb.store.fieldDependencies.push({ id: 1, projectId: 1, fieldId: 1, symbolId: 1, operationType: "read" });
+    fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", severity: "medium", title: "Risk" });
+    fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "Rule" });
+    fakeDb.store.analysisResults.push({ id: 1, projectId: 1, status: "completed", warningsJson: [] });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "completed",
+      progress: 100,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: new Date("2026-01-01T00:00:10.000Z"),
+    });
+
+    await deleteProjectCascade(1, 7);
+
+    expect(fakeDb.store.projects).toHaveLength(0);
+    expect(fakeDb.store.projectJobs).toHaveLength(0);
+    expect(fakeDb.store.files).toHaveLength(0);
+    expect(fakeDb.store.symbols).toHaveLength(0);
+    expect(fakeDb.store.dependencies).toHaveLength(0);
+    expect(fakeDb.store.fields).toHaveLength(0);
+    expect(fakeDb.store.fieldDependencies).toHaveLength(0);
+    expect(fakeDb.store.risks).toHaveLength(0);
+    expect(fakeDb.store.rules).toHaveLength(0);
+    expect(fakeDb.store.analysisResults).toHaveLength(0);
   });
 
   it("enforces ownership on paged reads and job reads", async () => {

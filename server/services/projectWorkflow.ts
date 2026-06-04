@@ -842,6 +842,75 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
   }
 }
 
+async function createProjectAndQueuedImportJob(
+  userId: number,
+  input: {
+    name: string;
+    focusLanguage: typeof projects.$inferInsert.language;
+    sourceType: typeof projects.$inferInsert.sourceType;
+    description?: string;
+  },
+  payload: Extract<ProjectJobPayload, { type: "import_zip" | "import_git" }>
+): Promise<ProjectJobCreateResult> {
+  const db = await requireDb();
+
+  const result = await db.transaction(async (tx) => {
+    const projectInsert = await tx.insert(projects).values({
+      userId,
+      name: input.name,
+      description: input.description,
+      language: input.focusLanguage,
+      sourceType: input.sourceType,
+      sourceUrl: payload.type === "import_git" ? payload.gitUrl : null,
+      status: "importing",
+      importProgress: 0,
+      analysisProgress: 0,
+      errorMessage: null,
+      lastErrorCode: null,
+      importWarningsJson: [],
+    });
+
+    const projectId = Number((projectInsert as { insertId?: number }).insertId ?? 0);
+    if (projectId <= 0) {
+      throw new AppError("DATABASE_UNAVAILABLE", "Project was created but its identifier could not be resolved from the insert result.");
+    }
+
+    const jobInsert = await tx.insert(projectJobs).values({
+      projectId,
+      userId,
+      type: payload.type,
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: serializeProjectJobPayload(payload),
+      activeKey: ACTIVE_PROJECT_JOB_KEY,
+      lockedBy: null,
+      leaseUntil: null,
+      heartbeatAt: null,
+      attemptCount: 0,
+      maxAttempts: DEFAULT_PROJECT_JOB_MAX_ATTEMPTS,
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    const jobId = Number((jobInsert as { insertId?: number }).insertId ?? 0);
+    if (jobId <= 0) {
+      throw new AppError("DATABASE_UNAVAILABLE", "Job was created but its identifier could not be resolved.");
+    }
+
+    return { projectId, jobId };
+  });
+
+  void kickProjectJobWorker();
+
+  return {
+    jobId: result.jobId,
+    projectId: result.projectId,
+    status: "queued",
+  };
+}
+
 export async function claimNextQueuedProjectJobForTests() {
   return claimNextQueuedProjectJob();
 }
@@ -1555,6 +1624,24 @@ export async function queueImportProjectZipFromTempFile(
   });
 }
 
+export async function createProjectWithQueuedZipImport(
+  userId: number,
+  input: {
+    name: string;
+    focusLanguage: typeof projects.$inferInsert.language;
+    sourceType: "upload";
+    description?: string;
+  },
+  tempFilePath: string,
+  originalFileName?: string | null
+) {
+  return createProjectAndQueuedImportJob(userId, input, {
+    type: "import_zip",
+    tempFilePath,
+    originalFileName,
+  });
+}
+
 export async function importProjectGit(projectId: number, userId: number, gitUrl: string, executionState?: ProjectJobExecutionState) {
   await getOwnedProject(projectId, userId);
   await assertProjectJobExecutionActive(executionState, "import.git.start", { refreshLease: true });
@@ -1623,6 +1710,23 @@ export async function queueImportProjectGit(projectId: number, userId: number, g
   return enqueueProjectJob(projectId, userId, {
     type: "import_git",
     gitUrl,
+  });
+}
+
+export async function createProjectWithQueuedGitImport(
+  userId: number,
+  input: {
+    name: string;
+    focusLanguage: typeof projects.$inferInsert.language;
+    sourceType: "git";
+    description?: string;
+  },
+  gitUrl: string
+) {
+  const validatedGitUrl = await validateSafeGitUrl(gitUrl);
+  return createProjectAndQueuedImportJob(userId, input, {
+    type: "import_git",
+    gitUrl: validatedGitUrl.gitUrl,
   });
 }
 

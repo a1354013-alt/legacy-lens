@@ -26,6 +26,11 @@ vi.mock("../_core/rateLimiter", () => ({
 }));
 
 vi.mock("./projectWorkflow", () => ({
+  createProjectWithQueuedGitImport: vi.fn(async () => ({ jobId: 44, projectId: 99, status: "queued" })),
+  createProjectWithQueuedZipImport: vi.fn(async (_userId: number, _input: unknown, tempFilePath: string) => {
+    lastTempFilePath = tempFilePath;
+    return { jobId: 33, projectId: 99, status: "queued" };
+  }),
   getActiveImportZipTempFilePaths: vi.fn(async () => new Set<string>()),
   queueImportProjectGit: vi.fn(async () => ({ jobId: 22, projectId: 42, status: "queued" })),
   queueImportProjectZipFromTempFile: vi.fn(async (_projectId: number, _userId: number, tempFilePath: string) => {
@@ -119,6 +124,58 @@ describe("projectUploadRoute", () => {
       );
       expect(lastTempFilePath).toBeTruthy();
       await expectFileExists(lastTempFilePath!);
+    });
+  });
+
+  it("creates a project and queues a ZIP import from one multipart request", async () => {
+    const { createProjectWithQueuedZipImport } = await import("./projectWorkflow");
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("name", "delphi-demo");
+      formData.append("description", "sample");
+      formData.append("focusLanguage", "delphi");
+      formData.append("sourceType", "upload");
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/import`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ projectId: 99, jobId: 33, jobType: "import_zip" });
+      expect(vi.mocked(createProjectWithQueuedZipImport)).toHaveBeenCalledWith(
+        7,
+        { name: "delphi-demo", description: "sample", focusLanguage: "delphi", sourceType: "upload" },
+        expect.any(String),
+        "project.zip"
+      );
+    });
+  });
+
+  it("creates a project and queues a Git import from one multipart request", async () => {
+    const { createProjectWithQueuedGitImport } = await import("./projectWorkflow");
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("name", "git-demo");
+      formData.append("focusLanguage", "sql");
+      formData.append("sourceType", "git");
+      formData.append("gitUrl", "https://example.com/org/repo.git");
+
+      const response = await fetch(`${baseUrl}/api/projects/import`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ projectId: 99, jobId: 44, jobType: "import_git" });
+      expect(vi.mocked(createProjectWithQueuedGitImport)).toHaveBeenCalledWith(
+        7,
+        { name: "git-demo", description: undefined, focusLanguage: "sql", sourceType: "git" },
+        "https://example.com/org/repo.git"
+      );
     });
   });
 

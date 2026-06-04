@@ -208,6 +208,7 @@ DEV_AUTH_OPEN_ID=local-dev-user
 Important notes:
 - Bypass does **not** remove the need for OAuth env variables. The server still validates `VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL` as required placeholders.
 - While bypass is enabled, the UI "Sign in" button uses `/api/dev/login` instead of starting an OAuth redirect.
+- In Docker demo mode, clicking Sign in uses a local development auth bypass. The demo does not require a real external identity provider.
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW` exists only for local/demo containers that still run with `NODE_ENV=production` for static asset serving. It must never be enabled in a real production deployment.
 
 Dev login flow:
@@ -217,7 +218,7 @@ Dev login flow:
 
 Logout flow:
 - UI "Sign out" calls `POST /api/trpc/auth.logout` to clear the session cookie
-- In bypass mode, `/api/dev/logout?next=/` is also available
+- In bypass mode, sign-out clears the local demo session and redirects through `/api/dev/logout?next=/`
 
 ### 2) Install deps
 ```bash
