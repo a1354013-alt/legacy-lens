@@ -23,7 +23,7 @@ type ProjectRow = {
   id: number;
   name: string;
   description: string | null;
-  language: FocusLanguage;
+  language: FocusLanguage | string | null | undefined;
   sourceType: ProjectSourceType;
   status: ProjectStatus;
   importProgress: number;
@@ -103,8 +103,69 @@ export function isAnalysisResultReady(project: ProjectRow) {
   return project.analysisStatus === "completed" || project.analysisStatus === "partial";
 }
 
+export function getProjectPrimaryAction(project: ProjectRow) {
+  const latestJob = project.latestJob;
+  const hasPreviousSnapshot = isAnalysisResultReady(project);
+
+  if (latestJob?.status === "failed" && latestJob.type === "analyze" && hasPreviousSnapshot) {
+    return "View previous analysis result";
+  }
+
+  if (latestJob?.status === "failed" || project.status === "failed" || project.analysisStatus === "failed") {
+    return "View error";
+  }
+
+  if (
+    project.status === "importing" ||
+    project.status === "analyzing" ||
+    latestJob?.status === "queued" ||
+    latestJob?.status === "running"
+  ) {
+    return "View progress";
+  }
+
+  if (project.status === "ready") {
+    return "Start analysis";
+  }
+
+  if (hasPreviousSnapshot) {
+    return "View analysis result";
+  }
+
+  return "View progress";
+}
+
 export function getProjectOpenActionLabel(project: ProjectRow) {
-  return isAnalysisResultReady(project) ? "View analysis result" : "View progress";
+  return getProjectPrimaryAction(project);
+}
+
+type ProjectListRefreshUtils = {
+  projects: {
+    list: {
+      invalidate: () => Promise<unknown> | unknown;
+    };
+  };
+};
+
+type ProjectListRefreshQuery = {
+  refetch: () => Promise<unknown> | unknown;
+};
+
+export async function refreshProjectList(
+  utils: ProjectListRefreshUtils,
+  projectsQuery: ProjectListRefreshQuery,
+  notify = {
+    success: (message: string) => toast.success(message),
+    error: (message: string) => toast.error(message),
+  }
+) {
+  try {
+    await utils.projects.list.invalidate();
+    await projectsQuery.refetch();
+    notify.success("Project list refreshed.");
+  } catch (error) {
+    notify.error(error instanceof Error ? error.message : "Project refresh failed.");
+  }
 }
 
 export default function Home() {
@@ -125,16 +186,6 @@ export default function Home() {
       await utils.projects.list.invalidate();
     },
   });
-
-  const refreshProjects = async () => {
-    try {
-      await utils.projects.list.invalidate();
-      await projectsQuery.refetch();
-      toast.success("Project list refreshed.");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Project refresh failed.");
-    }
-  };
 
   if (loading) {
     return (
@@ -205,7 +256,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8 max-md:min-h-[calc(100vh-73px)]">
+      <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-5 px-6 py-6 max-md:min-h-[calc(100vh-73px)]">
         {projectsQuery.error ? (
           <Alert variant="destructive">
             <AlertTitle>Project list failed to load</AlertTitle>
@@ -218,7 +269,7 @@ export default function Home() {
             <h2 className="text-xl font-semibold text-slate-950">Projects</h2>
             <p className="text-sm text-slate-600">Refresh reads the latest project, job, and analysis-result state from the server.</p>
           </div>
-          <Button variant="outline" onClick={() => void refreshProjects()} disabled={projectsQuery.isFetching}>
+          <Button variant="outline" onClick={() => void refreshProjectList(utils, projectsQuery)} disabled={projectsQuery.isFetching}>
             {projectsQuery.isFetching ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCcw className="mr-2 size-4" />}
             Refresh
           </Button>
@@ -246,7 +297,7 @@ export default function Home() {
             </CardContent>
           </Card>
         ) : (
-          <div className="min-h-0 overflow-auto pr-1">
+          <div className="min-h-0 flex-1 overflow-auto pr-1 max-md:overflow-visible">
             <div className="grid gap-3 lg:grid-cols-2">
               {projects.map((project) => (
                 <ProjectCard
@@ -303,7 +354,7 @@ function ProjectCard({
 
   return (
     <Card className="transition-shadow hover:shadow-md">
-      <CardHeader className="gap-3 pb-3">
+      <CardHeader className="gap-2 pb-2">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <CardTitle>{project.name}</CardTitle>
@@ -312,7 +363,7 @@ function ProjectCard({
           <Badge variant={displayStatus.endsWith("failed") ? "destructive" : getBadgeVariant(project.status)}>{displayStatus}</Badge>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2.5">
         <div className="grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
           <div className="flex items-center gap-2">
             <FileText className="size-4" />
@@ -325,7 +376,7 @@ function ProjectCard({
         </div>
 
         {latestJob ? (
-          <div className="space-y-2 rounded-md border p-3">
+          <div className="space-y-2 rounded-md border p-2.5">
             <div className="flex items-center justify-between gap-3 text-sm">
               <span>{projectJobTypeLabels[latestJob.type]}</span>
               <Badge variant={getBadgeVariant(latestJob.status)}>{latestJob.status}</Badge>

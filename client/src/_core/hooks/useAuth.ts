@@ -8,6 +8,27 @@ type UseAuthOptions = {
   redirectPath?: string;
 };
 
+type AuthCacheUtils = {
+  auth: {
+    me: {
+      setData: (input: undefined, value: null) => void;
+      invalidate: () => Promise<unknown> | unknown;
+    };
+  };
+  projects: {
+    list: {
+      setData: (input: undefined, value: []) => void;
+      invalidate: () => Promise<unknown> | unknown;
+    };
+  };
+};
+
+export async function clearSignedOutCache(utils: AuthCacheUtils) {
+  utils.auth.me.setData(undefined, null);
+  utils.projects.list.setData(undefined, []);
+  await Promise.all([utils.projects.list.invalidate(), utils.auth.me.invalidate()]);
+}
+
 export function useAuth(options?: UseAuthOptions) {
   const { redirectOnUnauthenticated = false, redirectPath = getLoginUrl() } = options ?? {};
   const utils = trpc.useUtils();
@@ -19,8 +40,7 @@ export function useAuth(options?: UseAuthOptions) {
 
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: async () => {
-      utils.auth.me.setData(undefined, null);
-      await Promise.all([utils.projects.list.invalidate(), utils.auth.me.invalidate()]);
+      await clearSignedOutCache(utils);
     },
   });
 
@@ -33,8 +53,7 @@ export function useAuth(options?: UseAuthOptions) {
       }
       throw error;
     } finally {
-      utils.auth.me.setData(undefined, null);
-      await Promise.all([utils.projects.list.invalidate(), utils.auth.me.invalidate()]);
+      await clearSignedOutCache(utils);
     }
   }, [logoutMutation, utils]);
 

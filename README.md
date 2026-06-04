@@ -219,6 +219,7 @@ Dev login flow:
 Logout flow:
 - UI "Sign out" calls `POST /api/trpc/auth.logout` to clear the session cookie
 - In bypass mode, sign-out clears the local demo session and redirects through `/api/dev/logout?next=/`
+- The redirect returns to the signed-out landing page; it does not automatically call `/api/dev/login` again. The frontend also clears auth and project-list query cache before showing the logged-out state.
 
 ### 2) Install deps
 ```bash

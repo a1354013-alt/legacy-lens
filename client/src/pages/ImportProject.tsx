@@ -23,9 +23,15 @@ import { trpc } from "@/lib/trpc";
 import { t } from "@/locales";
 import { toast } from "sonner";
 import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
+import {
+  acquireSubmitLock,
+  invalidateProjectsListAfterImportSuccess,
+  releaseSubmitLock,
+  submitImportProject,
+  type ImportUploadResponse,
+} from "./importSubmit";
 
 type WorkflowPhase = "idle" | "creating" | "waiting-import" | "waiting-analysis" | "redirecting";
-type ImportUploadResponse = { projectId: number; jobId: number; jobType: "import_zip" | "import_git" };
 
 function getPhaseLabel(phase: WorkflowPhase) {
   return t(`importProject.phaseLabel.${phase}`);
@@ -59,6 +65,8 @@ export default function ImportProject() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const analysisQueuedRef = useRef(false);
+  const submittingRef = useRef(false);
+  const utils = trpc.useUtils();
 
   const projectQuery = trpc.projects.getById.useQuery(projectId ?? -1, {
     enabled: projectId !== null,
@@ -107,6 +115,7 @@ export default function ImportProject() {
       setPhase("idle");
       setActiveJobId(null);
       setActiveJobType(null);
+      releaseSubmitLock(submittingRef);
       toast.error(message);
       return;
     }
@@ -135,6 +144,7 @@ export default function ImportProject() {
           setActiveJobId(null);
           setActiveJobType(null);
           analysisQueuedRef.current = false;
+          releaseSubmitLock(submittingRef);
           toast.error(message);
         });
       return;
@@ -163,6 +173,10 @@ export default function ImportProject() {
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (!acquireSubmitLock(submittingRef)) {
+      return;
+    }
+
     setError(null);
     analysisQueuedRef.current = false;
 
@@ -170,33 +184,19 @@ export default function ImportProject() {
       validateForm();
       setPhase("creating");
 
-      const formData = new FormData();
-      formData.append("name", projectName.trim());
-      formData.append("focusLanguage", focusLanguage);
-      formData.append("sourceType", sourceType);
-      if (description.trim()) {
-        formData.append("description", description.trim());
-      }
-      if (sourceType === "upload" && uploadedFile) {
-        formData.append("file", uploadedFile, uploadedFile.name);
-      }
-      if (sourceType === "git") {
-        formData.append("gitUrl", gitUrl.trim());
-      }
-
       setPhase("waiting-import");
-      const response = await fetch("/api/projects/import", {
-        method: "POST",
-        body: formData,
-        credentials: "include",
-      });
-
-      if (!response.ok) {
-        const message = await readApiErrorMessage(response);
-        throw new Error(message);
-      }
-
-      const job = (await response.json()) as ImportUploadResponse;
+      const job: ImportUploadResponse = await submitImportProject(
+        {
+          projectName,
+          description,
+          focusLanguage,
+          sourceType,
+          uploadedFile,
+          gitUrl,
+        },
+        readApiErrorMessage
+      );
+      await invalidateProjectsListAfterImportSuccess(utils);
       setProjectId(job.projectId);
       setActiveJobId(job.jobId);
       setActiveJobType(job.jobType);
@@ -208,6 +208,7 @@ export default function ImportProject() {
       setActiveJobId(null);
       setActiveJobType(null);
       toast.error(message);
+      releaseSubmitLock(submittingRef);
     }
   };
 
@@ -215,9 +216,9 @@ export default function ImportProject() {
   const latestJob = projectQuery.data?.latestJob ?? activeJob ?? null;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b bg-white">
-        <div className="mx-auto flex max-w-4xl items-center gap-4 px-6 py-4">
+    <div className="flex min-h-screen flex-col bg-slate-50">
+      <header className="shrink-0 border-b bg-white">
+        <div className="mx-auto flex max-w-6xl items-center gap-4 px-6 py-4">
           <Button variant="ghost" onClick={() => setLocation("/")}>
             <ArrowLeft className="mr-2 size-4" />
             {t("importProject.backHome")}
@@ -229,7 +230,7 @@ export default function ImportProject() {
         </div>
       </header>
 
-      <main className="mx-auto flex max-w-4xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-4 px-6 py-4">
         {error ? (
           <Alert variant="destructive">
             <AlertTitle>{t("importProject.alerts.errorTitle")}</AlertTitle>
@@ -272,167 +273,172 @@ export default function ImportProject() {
           </Card>
         )}
 
-        <form className="space-y-6" onSubmit={handleSubmit}>
-          <Card>
-            <CardHeader>
-              <CardTitle>{t("importProject.sourceCard.title")}</CardTitle>
-              <CardDescription>{t("importProject.sourceCard.description")}</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2">
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => setSourceType("upload")}
-                className={`rounded-lg border p-4 text-left transition ${
-                  sourceType === "upload"
-                    ? "border-slate-950 bg-slate-950 text-white"
-                    : "border-slate-200 bg-white text-slate-900 hover:border-slate-400"
-                }`}
-              >
-                <div className="mb-3 flex items-center gap-2">
-                  <Upload className="size-5" />
-                  <span className="font-medium">{t("importProject.sourceCard.uploadTitle")}</span>
-                </div>
-                <p className={`text-sm ${sourceType === "upload" ? "text-slate-100" : "text-slate-600"}`}>
-                  {t("importProject.sourceCard.uploadDescription")}
-                </p>
-              </button>
-
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => setSourceType("git")}
-                className={`rounded-lg border p-4 text-left transition ${
-                  sourceType === "git"
-                    ? "border-slate-950 bg-slate-950 text-white"
-                    : "border-slate-200 bg-white text-slate-900 hover:border-slate-400"
-                }`}
-              >
-                <div className="mb-3 flex items-center gap-2">
-                  <GitBranch className="size-5" />
-                  <span className="font-medium">{t("importProject.sourceCard.gitTitle")}</span>
-                </div>
-                <p className={`text-sm ${sourceType === "git" ? "text-slate-100" : "text-slate-600"}`}>
-                  {t("importProject.sourceCard.gitDescription")}
-                </p>
-              </button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>{t("importProject.detailCard.title")}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="project-name">{t("importProject.detailCard.name")}</Label>
-                <Input
-                  id="project-name"
-                  value={projectName}
-                  onChange={(event) => setProjectName(event.target.value)}
-                  placeholder="legacy-erp-migration"
-                  disabled={isBusy}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="project-description">{t("importProject.detailCard.description")}</Label>
-                <Textarea
-                  id="project-description"
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  placeholder={t("importProject.detailCard.descriptionPlaceholder")}
-                  disabled={isBusy}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="project-language">{t("importProject.detailCard.language")}</Label>
-                <Select value={focusLanguage} onValueChange={(value) => setFocusLanguage(value as FocusLanguage)} disabled={isBusy}>
-                  <SelectTrigger id="project-language">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {focusLanguages.map((value) => (
-                      <SelectItem key={value} value={value}>
-                        {value.toUpperCase()}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-slate-500">{t("importProject.detailCard.languageHint")}</p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {sourceType === "upload" ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("importProject.uploadCard.title")}</CardTitle>
-                <CardDescription>{t("importProject.uploadCard.description")}</CardDescription>
+        <form className="flex min-h-0 flex-1 flex-col gap-4" onSubmit={handleSubmit}>
+          <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <Card className="min-h-0">
+              <CardHeader className="pb-3">
+                <CardTitle>{t("importProject.detailCard.title")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isBusy}
-                  className="flex w-full flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-sm text-slate-600 transition hover:border-slate-500"
-                >
-                  <Upload className="size-8" />
-                  <span>{uploadedFile ? uploadedFile.name : t("importProject.uploadCard.pickFile")}</span>
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".zip"
-                  className="hidden"
-                  onChange={(event) => {
-                    const nextFile = event.target.files?.[0] ?? null;
-                    if (!nextFile) {
-                      setUploadedFile(null);
-                      return;
-                    }
+                <div className="space-y-2">
+                  <Label htmlFor="project-name">{t("importProject.detailCard.name")}</Label>
+                  <Input
+                    id="project-name"
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    placeholder="legacy-erp-migration"
+                    disabled={isBusy}
+                  />
+                </div>
 
-                    const uploadError = validateUploadedZip(nextFile);
-                    if (uploadError) {
-                      event.target.value = "";
-                      setUploadedFile(null);
-                      setError(uploadError);
-                      toast.error(uploadError);
-                      return;
-                    }
+                <div className="space-y-2">
+                  <Label htmlFor="project-description">{t("importProject.detailCard.description")}</Label>
+                  <Textarea
+                    id="project-description"
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    placeholder={t("importProject.detailCard.descriptionPlaceholder")}
+                    disabled={isBusy}
+                    className="min-h-20"
+                  />
+                </div>
 
-                    setError(null);
-                    setUploadedFile(nextFile);
-                  }}
-                />
-                <p className="text-xs text-slate-500">
-                  {t("importProject.uploadCard.fileLimit", {
-                    size: (MAX_UPLOAD_ZIP_SIZE / (1024 * 1024)).toFixed(0),
-                  })}
-                </p>
+                <div className="space-y-2">
+                  <Label htmlFor="project-language">{t("importProject.detailCard.language")}</Label>
+                  <Select value={focusLanguage} onValueChange={(value) => setFocusLanguage(value as FocusLanguage)} disabled={isBusy}>
+                    <SelectTrigger id="project-language">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {focusLanguages.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {value.toUpperCase()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-slate-500">{t("importProject.detailCard.languageHint")}</p>
+                </div>
               </CardContent>
             </Card>
-          ) : (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("importProject.gitCard.title")}</CardTitle>
-                <CardDescription>{t("importProject.gitCard.description")}</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Label htmlFor="git-url">{t("importProject.gitCard.urlLabel")}</Label>
-                <Input
-                  id="git-url"
-                  value={gitUrl}
-                  onChange={(event) => setGitUrl(event.target.value)}
-                  placeholder="https://github.com/org/repo.git"
-                  disabled={isBusy}
-                />
-              </CardContent>
-            </Card>
-          )}
 
-          <div className="flex items-center gap-3">
+            <div className="flex min-h-0 flex-col gap-4">
+              <Card className="shrink-0">
+                <CardHeader className="pb-3">
+                  <CardTitle>{t("importProject.sourceCard.title")}</CardTitle>
+                  <CardDescription>{t("importProject.sourceCard.description")}</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-3 md:grid-cols-2">
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => setSourceType("upload")}
+                    className={`rounded-lg border p-3 text-left transition ${
+                      sourceType === "upload"
+                        ? "border-slate-950 bg-slate-950 text-white"
+                        : "border-slate-200 bg-white text-slate-900 hover:border-slate-400"
+                    }`}
+                  >
+                    <div className="mb-2 flex items-center gap-2">
+                      <Upload className="size-5" />
+                      <span className="font-medium">{t("importProject.sourceCard.uploadTitle")}</span>
+                    </div>
+                    <p className={`text-sm ${sourceType === "upload" ? "text-slate-100" : "text-slate-600"}`}>
+                      {t("importProject.sourceCard.uploadDescription")}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => setSourceType("git")}
+                    className={`rounded-lg border p-3 text-left transition ${
+                      sourceType === "git"
+                        ? "border-slate-950 bg-slate-950 text-white"
+                        : "border-slate-200 bg-white text-slate-900 hover:border-slate-400"
+                    }`}
+                  >
+                    <div className="mb-2 flex items-center gap-2">
+                      <GitBranch className="size-5" />
+                      <span className="font-medium">{t("importProject.sourceCard.gitTitle")}</span>
+                    </div>
+                    <p className={`text-sm ${sourceType === "git" ? "text-slate-100" : "text-slate-600"}`}>
+                      {t("importProject.sourceCard.gitDescription")}
+                    </p>
+                  </button>
+                </CardContent>
+              </Card>
+
+              {sourceType === "upload" ? (
+                <Card className="min-h-0">
+                  <CardHeader className="pb-3">
+                    <CardTitle>{t("importProject.uploadCard.title")}</CardTitle>
+                    <CardDescription>{t("importProject.uploadCard.description")}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isBusy}
+                      className="flex h-40 w-full flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm text-slate-600 transition hover:border-slate-500"
+                    >
+                      <Upload className="size-8" />
+                      <span>{uploadedFile ? uploadedFile.name : t("importProject.uploadCard.pickFile")}</span>
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".zip"
+                      className="hidden"
+                      onChange={(event) => {
+                        const nextFile = event.target.files?.[0] ?? null;
+                        if (!nextFile) {
+                          setUploadedFile(null);
+                          return;
+                        }
+
+                        const uploadError = validateUploadedZip(nextFile);
+                        if (uploadError) {
+                          event.target.value = "";
+                          setUploadedFile(null);
+                          setError(uploadError);
+                          toast.error(uploadError);
+                          return;
+                        }
+
+                        setError(null);
+                        setUploadedFile(nextFile);
+                      }}
+                    />
+                    <p className="text-xs text-slate-500">
+                      {t("importProject.uploadCard.fileLimit", {
+                        size: (MAX_UPLOAD_ZIP_SIZE / (1024 * 1024)).toFixed(0),
+                      })}
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="min-h-0">
+                  <CardHeader>
+                    <CardTitle>{t("importProject.gitCard.title")}</CardTitle>
+                    <CardDescription>{t("importProject.gitCard.description")}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <Label htmlFor="git-url">{t("importProject.gitCard.urlLabel")}</Label>
+                    <Input
+                      id="git-url"
+                      value={gitUrl}
+                      onChange={(event) => setGitUrl(event.target.value)}
+                      placeholder="https://github.com/org/repo.git"
+                      disabled={isBusy}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </section>
+
+          <div className="sticky bottom-0 z-10 flex items-center gap-3 border-t bg-slate-50/95 py-3 backdrop-blur">
             <Button type="button" variant="outline" onClick={() => setLocation("/")} disabled={isBusy}>
               {t("importProject.actions.cancel")}
             </Button>

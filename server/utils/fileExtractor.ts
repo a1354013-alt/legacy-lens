@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { files as filesTable } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { extractInsertId } from "./insertResult";
 import type { ExtractedFile } from "./zipHandler";
 
 type DbLike = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "insert" | "select" | "delete">;
@@ -53,7 +54,7 @@ export async function saveExtractedFiles(projectId: number, extractedFiles: Extr
       lineCount: file.content.split(/\r?\n/).length,
     });
 
-    const insertId = Number((insertResult as { insertId?: number }).insertId ?? 0);
+    const insertId = extractInsertId(insertResult);
     if (insertId > 0) {
       fileIds.push(insertId);
     }

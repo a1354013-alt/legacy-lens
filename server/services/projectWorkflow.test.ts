@@ -16,6 +16,7 @@ let importWarnings: Array<{ code: string; message: string; filePath?: string }> 
 let analyzerResult: Record<string, unknown> | null = null;
 let fakeDb: ReturnType<typeof createFakeDb>;
 let failRootProjectReadsDuringTransaction = false;
+let failNextProjectJobInsert = false;
 let transactionDepth = 0;
 const cloneAndExtractFilesMock = vi.fn(async () => ({ files: gitFiles, warnings: importWarnings }));
 const { readFileMock, rmMock } = vi.hoisted(() => ({
@@ -128,6 +129,17 @@ function createFakeDb(initialStore?: Partial<Store>) {
     Object.entries(store).map(([key, rows]) => [key, rows.reduce((max, row) => Math.max(max, Number(row.id ?? 0)), 0)])
   );
 
+  const cloneStore = () =>
+    Object.fromEntries(Object.entries(store).map(([key, rows]) => [key, rows.map((row) => ({ ...row }))])) as Store;
+
+  const cloneCounters = () => new Map(idCounters);
+
+  const restoreStore = (snapshot: Store) => {
+    for (const key of Object.keys(store)) {
+      store[key] = snapshot[key].map((row) => ({ ...row }));
+    }
+  };
+
   class SelectQuery {
     private condition: Condition;
     private limitCount?: number;
@@ -176,6 +188,11 @@ function createFakeDb(initialStore?: Partial<Store>) {
         values: async (payload: Row | Row[]) => {
           const rows = Array.isArray(payload) ? payload : [payload];
           const tableName = getTableName(table);
+          if (tableName === "projectJobs" && failNextProjectJobInsert) {
+            failNextProjectJobInsert = false;
+            throw new Error("project job insert failed");
+          }
+
           let lastId = 0;
           for (const row of rows) {
             const nextId = (idCounters.get(tableName) ?? 0) + 1;
@@ -216,6 +233,8 @@ function createFakeDb(initialStore?: Partial<Store>) {
       };
     },
     transaction: async <T>(callback: (tx: typeof db) => Promise<T>) => {
+      const storeSnapshot = cloneStore();
+      const counterSnapshot = cloneCounters();
       transactionDepth += 1;
       const tx = {
         ...db,
@@ -225,6 +244,13 @@ function createFakeDb(initialStore?: Partial<Store>) {
       };
       try {
         return await callback(tx);
+      } catch (error) {
+        restoreStore(storeSnapshot);
+        idCounters.clear();
+        for (const [key, value] of counterSnapshot) {
+          idCounters.set(key, value);
+        }
+        throw error;
       } finally {
         transactionDepth -= 1;
       }
@@ -269,6 +295,7 @@ beforeEach(() => {
   importWarnings = [];
   analyzerResult = null;
   failRootProjectReadsDuringTransaction = false;
+  failNextProjectJobInsert = false;
   transactionDepth = 0;
   cloneAndExtractFilesMock.mockClear();
   readFileMock.mockClear();
@@ -327,6 +354,28 @@ describe("project workflow", () => {
       status: "queued",
       payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/demo.zip", originalFileName: "demo.zip" }),
     });
+  });
+
+  it("rolls back the project when queued import job creation fails", async () => {
+    const { createProjectWithQueuedZipImport } = await import("./projectWorkflow");
+    failNextProjectJobInsert = true;
+
+    await expect(
+      createProjectWithQueuedZipImport(
+        7,
+        {
+          name: "rollback-demo",
+          description: "sample",
+          focusLanguage: "delphi",
+          sourceType: "upload",
+        },
+        "C:/tmp/rollback.zip",
+        "rollback.zip"
+      )
+    ).rejects.toThrow("project job insert failed");
+
+    expect(fakeDb.store.projects).toHaveLength(0);
+    expect(fakeDb.store.projectJobs).toHaveLength(0);
   });
 
   it("imports files from ZIP and Git, persisting warnings and source url", async () => {

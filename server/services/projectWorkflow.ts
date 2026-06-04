@@ -47,6 +47,7 @@ import { getDb } from "../db";
 import type { DatabaseClient, InsertProjectRecord } from "../dbTypes";
 import { deleteProjectFiles, getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
 import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../utils/gitHandler";
+import { extractInsertId } from "../utils/insertResult";
 import { extractFilesFromZip, extractFilesFromZipBuffer } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
 import { buildContainsLikePattern, likeContainsEscaped } from "../_core/sqlLike";
@@ -639,7 +640,7 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
         finishedAt: null,
       });
 
-      const jobId = Number((insertResult as { insertId?: number }).insertId ?? 0);
+      const jobId = extractInsertId(insertResult);
       if (jobId <= 0) {
         throw new AppError("DATABASE_UNAVAILABLE", "Job was created but its identifier could not be resolved.");
       }
@@ -870,7 +871,7 @@ async function createProjectAndQueuedImportJob(
       importWarningsJson: [],
     });
 
-    const projectId = Number((projectInsert as { insertId?: number }).insertId ?? 0);
+    const projectId = extractInsertId(projectInsert);
     if (projectId <= 0) {
       throw new AppError("DATABASE_UNAVAILABLE", "Project was created but its identifier could not be resolved from the insert result.");
     }
@@ -894,7 +895,7 @@ async function createProjectAndQueuedImportJob(
       finishedAt: null,
     });
 
-    const jobId = Number((jobInsert as { insertId?: number }).insertId ?? 0);
+    const jobId = extractInsertId(jobInsert);
     if (jobId <= 0) {
       throw new AppError("DATABASE_UNAVAILABLE", "Job was created but its identifier could not be resolved.");
     }
@@ -1441,7 +1442,7 @@ export async function createProjectForUser(
     importWarningsJson: [],
   });
 
-  const insertId = Number((insertResult as { insertId?: number }).insertId ?? 0);
+  const insertId = extractInsertId(insertResult);
   if (insertId <= 0) {
     throw new AppError("DATABASE_UNAVAILABLE", "Project was created but its identifier could not be resolved from the insert result.");
   }
@@ -1797,7 +1798,7 @@ async function writeSuccessfulAnalysis(
         parser: "heuristic",
       },
     });
-    const symbolId = Number((insertResult as { insertId?: number }).insertId ?? 0);
+    const symbolId = extractInsertId(insertResult);
     if (symbolId > 0) {
       insertedSymbolIds.set(buildSymbolInsertKey(symbol), symbolId);
     }
@@ -1837,7 +1838,7 @@ async function writeSuccessfulAnalysis(
       fieldType: schemaField?.fieldType ?? null,
       description,
     });
-    const fieldId = Number((insertResult as { insertId?: number }).insertId ?? 0);
+    const fieldId = extractInsertId(insertResult);
     if (fieldId > 0) {
       fieldIds.set(fieldKey, fieldId);
     }
