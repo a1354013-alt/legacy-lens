@@ -7,14 +7,9 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Progress } from "@/components/ui/progress";
 import { getAuthModeLabel, getLoginUrl, getLogoutRedirectUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import {
-  projectJobTypeLabels,
-  projectStatusLabels,
-  type AnalysisStatus,
-  type FocusLanguage,
-  type ProjectSourceType,
-  type ProjectStatus,
-} from "@shared/contracts";
+import { t } from "@/locales";
+import { projectJobStatusLabel, projectJobTypeLabel, projectStatusLabel } from "@/locales/uiLabels";
+import { type AnalysisStatus, type FocusLanguage, type ProjectSourceType, type ProjectStatus } from "@shared/contracts";
 import { FileSearch, FileText, GitBranch, Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -48,7 +43,7 @@ function hasActiveProjectWork(project: ProjectRow) {
   );
 }
 
-export const activeProjectDeleteMessage = "Project has an import or analysis job queued or running. Wait for it to finish before deleting.";
+export const activeProjectDeleteMessage = t("home.activeDeleteMessage");
 
 export function isProjectDeleteDisabled(project: ProjectRow) {
   return hasActiveProjectWork(project);
@@ -68,41 +63,41 @@ export function getDisplayLanguage(language: string | null | undefined) {
   if (language === "go") return "Go";
   if (language === "delphi") return "Delphi";
   if (language === "sql") return "SQL";
-  return "Unknown";
+  return t("common.unknown");
 }
 
 export function getProjectDisplayStatus(project: ProjectRow) {
   const latestJob = project.latestJob;
 
   if (latestJob?.status === "failed") {
-    return latestJob.type === "analyze" ? "Analysis failed" : "Import failed";
+    return latestJob.type === "analyze" ? t("status.display.analysisFailed") : t("status.display.importFailed");
   }
 
   if (project.status === "failed" || project.analysisStatus === "failed") {
-    return project.analysisStatus === "failed" ? "Analysis failed" : "Import failed";
+    return project.analysisStatus === "failed" ? t("status.display.analysisFailed") : t("status.display.importFailed");
   }
 
   if (latestJob?.status === "queued") {
-    return latestJob.type === "analyze" ? "Analysis queued" : "Import pending";
+    return latestJob.type === "analyze" ? t("status.display.analysisQueued") : t("status.display.importPending");
   }
 
   if (latestJob?.status === "running") {
-    return latestJob.type === "analyze" ? "Analyzing" : "Importing";
+    return latestJob.type === "analyze" ? t("status.display.analyzing") : t("status.display.importing");
   }
 
   if (project.analysisStatus === "completed" || project.analysisStatus === "partial") {
-    return "Analysis ready";
+    return t("status.display.analysisReady");
   }
 
   if (project.status === "ready") {
-    return "Ready for analysis";
+    return t("status.display.readyForAnalysis");
   }
 
   if (project.status === "draft") {
-    return latestJob ? "Import pending" : "Import not started";
+    return latestJob ? t("status.display.importPending") : t("status.display.importNotStarted");
   }
 
-  return projectStatusLabels[project.status];
+  return projectStatusLabel(project.status);
 }
 
 export function isAnalysisResultReady(project: ProjectRow) {
@@ -114,11 +109,11 @@ export function getProjectPrimaryAction(project: ProjectRow) {
   const hasPreviousSnapshot = isAnalysisResultReady(project);
 
   if (latestJob?.status === "failed" && latestJob.type === "analyze" && hasPreviousSnapshot) {
-    return "View previous analysis result";
+    return t("status.action.viewPreviousAnalysis");
   }
 
   if (latestJob?.status === "failed" || project.status === "failed" || project.analysisStatus === "failed") {
-    return "View error";
+    return t("status.action.viewError");
   }
 
   if (
@@ -127,22 +122,26 @@ export function getProjectPrimaryAction(project: ProjectRow) {
     latestJob?.status === "queued" ||
     latestJob?.status === "running"
   ) {
-    return "View progress";
+    return t("status.action.viewProgress");
   }
 
   if (project.status === "ready") {
-    return "Start analysis";
+    return t("status.action.startAnalysis");
   }
 
   if (hasPreviousSnapshot) {
-    return "View analysis result";
+    return t("status.action.viewAnalysis");
   }
 
-  return "View progress";
+  return t("status.action.viewProgress");
 }
 
 export function getProjectOpenActionLabel(project: ProjectRow) {
   return getProjectPrimaryAction(project);
+}
+
+function hasProjectFailure(project: ProjectRow) {
+  return project.status === "failed" || project.analysisStatus === "failed" || project.latestJob?.status === "failed";
 }
 
 type ProjectListRefreshUtils = {
@@ -168,9 +167,9 @@ export async function refreshProjectList(
   try {
     await utils.projects.list.invalidate();
     await projectsQuery.refetch();
-    notify.success("Project list refreshed.");
+    notify.success(t("home.refreshSuccess"));
   } catch (error) {
-    notify.error(error instanceof Error ? error.message : "Project refresh failed.");
+    notify.error(error instanceof Error ? error.message : t("home.refreshFailed"));
   }
 }
 
@@ -207,23 +206,19 @@ export default function Home() {
         <main className="mx-auto flex min-h-screen max-w-5xl flex-col justify-center gap-10 px-6 py-16">
           <div className="space-y-4">
             <Badge variant="outline">Legacy Lens</Badge>
-            <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-slate-950">
-              Analyze legacy Go, SQL, and Delphi code without losing the project trail.
-            </h1>
-            <p className="max-w-2xl text-lg leading-8 text-slate-600">
-              Upload a ZIP or Git source, track import progress, and review generated impact analysis when it is ready.
-            </p>
+            <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-slate-950">{t("home.heroTitle")}</h1>
+            <p className="max-w-2xl text-lg leading-8 text-slate-600">{t("home.heroDescription")}</p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            <FeatureCard title="Import source" description="Queue ZIP or Git imports with a real project job and visible progress." />
-            <FeatureCard title="Inspect impact" description="Review symbols, fields, dependencies, risks, and rules after analysis completes." />
-            <FeatureCard title="Demo ready" description="Local demo auth is explicit, and dashboard actions reflect server state." />
+            <FeatureCard title={t("home.featureImportTitle")} description={t("home.featureImportDescription")} />
+            <FeatureCard title={t("home.featureImpactTitle")} description={t("home.featureImpactDescription")} />
+            <FeatureCard title={t("home.featureDemoTitle")} description={t("home.featureDemoDescription")} />
           </div>
 
           <div>
             <Button size="lg" onClick={() => (window.location.href = getLoginUrl())}>
-              Sign in
+              {t("auth.signIn")}
             </Button>
           </div>
         </main>
@@ -239,7 +234,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div>
             <p className="text-sm font-medium text-slate-500">Legacy Lens</p>
-            <h1 className="text-2xl font-semibold text-slate-950">Project dashboard</h1>
+            <h1 className="text-2xl font-semibold text-slate-950">{t("home.dashboardTitle")}</h1>
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden text-sm text-slate-600 sm:inline" title={getAuthModeLabel()}>
@@ -247,7 +242,7 @@ export default function Home() {
             </span>
             <Button variant="outline" onClick={() => setLocation("/import")}>
               <Plus className="mr-2 size-4" />
-              New project
+              {t("home.newProject")}
             </Button>
             <Button
               variant="ghost"
@@ -256,7 +251,7 @@ export default function Home() {
                 window.location.href = getLogoutRedirectUrl();
               }}
             >
-              Sign out
+              {t("auth.signOut")}
             </Button>
           </div>
         </div>
@@ -265,19 +260,19 @@ export default function Home() {
       <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-5 px-6 py-6 max-md:min-h-[calc(100vh-73px)]">
         {projectsQuery.error ? (
           <Alert variant="destructive">
-            <AlertTitle>Project list failed to load</AlertTitle>
+            <AlertTitle>{t("home.listFailedTitle")}</AlertTitle>
             <AlertDescription>{projectsQuery.error.message}</AlertDescription>
           </Alert>
         ) : null}
 
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-xl font-semibold text-slate-950">Projects</h2>
-            <p className="text-sm text-slate-600">Refresh reads the latest project, job, and analysis-result state from the server.</p>
+            <h2 className="text-xl font-semibold text-slate-950">{t("home.projects")}</h2>
+            <p className="text-sm text-slate-600">{t("home.refreshDescription")}</p>
           </div>
           <Button variant="outline" onClick={() => void refreshProjectList(utils, projectsQuery)} disabled={projectsQuery.isFetching}>
             {projectsQuery.isFetching ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCcw className="mr-2 size-4" />}
-            Refresh
+            {t("common.refresh")}
           </Button>
         </div>
 
@@ -293,11 +288,11 @@ export default function Home() {
                   <EmptyMedia variant="icon">
                     <FileSearch />
                   </EmptyMedia>
-                  <EmptyTitle>No projects yet</EmptyTitle>
-                  <EmptyDescription>Create a project from a ZIP upload or Git URL to start analysis.</EmptyDescription>
+                  <EmptyTitle>{t("home.noProjectsTitle")}</EmptyTitle>
+                  <EmptyDescription>{t("home.noProjectsDescription")}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
-                  <Button onClick={() => setLocation("/import")}>Create project</Button>
+                  <Button onClick={() => setLocation("/import")}>{t("home.createProject")}</Button>
                 </EmptyContent>
               </Empty>
             </CardContent>
@@ -312,13 +307,13 @@ export default function Home() {
                   deleting={deleteProjectMutation.isPending && deleteProjectMutation.variables === project.id}
                   onOpen={() => setLocation(`/projects/${project.id}/analysis`)}
                   onDelete={async () => {
-                    const confirmed = window.confirm(`Delete project "${project.name}" and its jobs, files, and analysis artifacts?`);
+                    const confirmed = window.confirm(t("home.deleteConfirm", { name: project.name }));
                     if (!confirmed) return;
                     try {
                       await deleteProjectMutation.mutateAsync(project.id);
-                      toast.success("Project deleted.");
+                      toast.success(t("home.deleted"));
                     } catch (error) {
-                      toast.error(error instanceof Error ? error.message : "Project deletion failed.");
+                      toast.error(error instanceof Error ? error.message : t("home.deleteFailed"));
                     }
                   }}
                 />
@@ -365,9 +360,9 @@ function ProjectCard({
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <CardTitle>{project.name}</CardTitle>
-            <CardDescription>{project.description || "No project description"}</CardDescription>
+            <CardDescription>{project.description || t("home.noDescription")}</CardDescription>
           </div>
-          <Badge variant={displayStatus.endsWith("failed") ? "destructive" : getBadgeVariant(project.status)}>{displayStatus}</Badge>
+          <Badge variant={hasProjectFailure(project) ? "destructive" : getBadgeVariant(project.status)}>{displayStatus}</Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-2.5">
@@ -378,25 +373,25 @@ function ProjectCard({
           </div>
           <div className="flex items-center gap-2">
             <GitBranch className="size-4" />
-            <span>{project.sourceType === "git" ? "Git import" : "ZIP upload"}</span>
+            <span>{project.sourceType === "git" ? t("home.gitImport") : t("home.zipUpload")}</span>
           </div>
         </div>
 
         {latestJob ? (
           <div className="space-y-2 rounded-md border p-2.5">
             <div className="flex items-center justify-between gap-3 text-sm">
-              <span>{projectJobTypeLabels[latestJob.type]}</span>
-              <Badge variant={getBadgeVariant(latestJob.status)}>{latestJob.status}</Badge>
+              <span>{projectJobTypeLabel(latestJob.type)}</span>
+              <Badge variant={getBadgeVariant(latestJob.status)}>{projectJobStatusLabel(latestJob.status)}</Badge>
             </div>
             <Progress value={latestJob.progress} />
-            <p className="text-xs text-slate-500">Progress {latestJob.progress}%</p>
+            <p className="text-xs text-slate-500">{t("home.progressLabel", { progress: latestJob.progress })}</p>
             {latestJob.errorMessage ? <p className="text-xs text-red-600">{latestJob.errorMessage}</p> : null}
           </div>
         ) : null}
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>Project error</AlertTitle>
+            <AlertTitle>{t("home.projectErrorTitle")}</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
@@ -412,7 +407,7 @@ function ProjectCard({
             onClick={() => void onDelete()}
           >
             {deleting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Trash2 className="mr-2 size-4" />}
-            Delete
+            {t("common.delete")}
           </Button>
         </div>
       </CardContent>

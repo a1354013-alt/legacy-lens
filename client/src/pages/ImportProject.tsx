@@ -4,9 +4,6 @@ import { useLocation } from "wouter";
 import { ArrowLeft, GitBranch, Loader2, Upload } from "lucide-react";
 import {
   focusLanguages,
-  projectJobStatusLabels,
-  projectJobTypeLabels,
-  projectStatusLabels,
   type FocusLanguage,
   type ProjectJobType,
   type ProjectSourceType,
@@ -22,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { getImportUploadErrorMessage, readHttpApiError } from "@/lib/httpApiErrors";
 import { trpc } from "@/lib/trpc";
 import { t } from "@/locales";
+import { projectJobStatusLabel, projectJobTypeLabel, projectStatusLabel } from "@/locales/uiLabels";
 import { toast } from "sonner";
 import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
 import {
@@ -33,6 +31,25 @@ import {
 } from "./importSubmit";
 
 type WorkflowPhase = "idle" | "creating" | "waiting-import" | "waiting-analysis" | "redirecting";
+
+export async function runImportProjectSubmitFlow<TJob>({
+  validate,
+  submit,
+  afterSuccess,
+  setPhase,
+}: {
+  validate: () => void;
+  submit: () => Promise<TJob>;
+  afterSuccess: (job: TJob) => Promise<void> | void;
+  setPhase: (phase: WorkflowPhase) => void;
+}) {
+  validate();
+  setPhase("creating");
+  const job = await submit();
+  await afterSuccess(job);
+  setPhase("waiting-import");
+  return job;
+}
 
 function getPhaseLabel(phase: WorkflowPhase) {
   return t(`importProject.phaseLabel.${phase}`);
@@ -182,25 +199,28 @@ export default function ImportProject() {
     analysisQueuedRef.current = false;
 
     try {
-      validateForm();
-      setPhase("creating");
-
-      setPhase("waiting-import");
-      const job: ImportUploadResponse = await submitImportProject(
-        {
-          projectName,
-          description,
-          focusLanguage,
-          sourceType,
-          uploadedFile,
-          gitUrl,
+      await runImportProjectSubmitFlow<ImportUploadResponse>({
+        validate: validateForm,
+        setPhase,
+        submit: () =>
+          submitImportProject(
+            {
+              projectName,
+              description,
+              focusLanguage,
+              sourceType,
+              uploadedFile,
+              gitUrl,
+            },
+            readApiErrorMessage
+          ),
+        afterSuccess: async (job) => {
+          await invalidateProjectsListAfterImportSuccess(utils);
+          setProjectId(job.projectId);
+          setActiveJobId(job.jobId);
+          setActiveJobType(job.jobType);
         },
-        readApiErrorMessage
-      );
-      await invalidateProjectsListAfterImportSuccess(utils);
-      setProjectId(job.projectId);
-      setActiveJobId(job.jobId);
-      setActiveJobType(job.jobType);
+      });
       toast.success(t("importProject.alerts.importQueued"));
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : t("importProject.alerts.createFailed");
@@ -250,17 +270,17 @@ export default function ImportProject() {
                 <p>
                   {t("importProject.status.project")}:
                   {" "}
-                  {projectQuery.data ? projectStatusLabels[projectQuery.data.status] : t("importProject.status.loading")}
+                  {projectQuery.data ? projectStatusLabel(projectQuery.data.status) : t("importProject.status.loading")}
                 </p>
                 <p>
                   {t("importProject.status.jobType")}:
                   {" "}
-                  {latestJob ? projectJobTypeLabels[latestJob.type] : t("importProject.status.none")}
+                  {latestJob ? projectJobTypeLabel(latestJob.type) : t("importProject.status.none")}
                 </p>
                 <p>
                   {t("importProject.status.jobStatus")}:
                   {" "}
-                  {latestJob ? projectJobStatusLabels[latestJob.status] : t("importProject.status.none")}
+                  {latestJob ? projectJobStatusLabel(latestJob.status) : t("importProject.status.none")}
                 </p>
                 <p>
                   {t("importProject.status.progress")}:

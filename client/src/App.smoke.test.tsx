@@ -6,6 +6,6 @@ import App from "./App";
 describe("App", () => {
   it("renders the router shell without crashing", () => {
     const html = renderToString(<App />);
-    expect(html).toContain("Loading");
+    expect(html).toContain("載入中");
   });
 });

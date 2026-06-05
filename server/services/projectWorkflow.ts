@@ -40,7 +40,7 @@ import {
 } from "../../drizzle/schema";
 import { AppError, toAppError } from "../appError";
 import { Analyzer } from "../analyzer/analyzer";
-import { buildFieldIdentityKey, parseFieldIdentityKey } from "../analyzer/fieldIdentity";
+import { buildFieldIdentityKey, normalizeFieldIdentity } from "../analyzer/fieldIdentity";
 import { ImpactAnalyzer } from "../analyzer/impactAnalyzer";
 import { resolveMostSpecificSymbol } from "../analyzer/symbolOwner";
 import type { AnalyzedSymbol, ProjectAnalysisResult } from "../analyzer/types";
@@ -1862,6 +1862,19 @@ async function writeSuccessfulAnalysis(
       field,
     ])
   );
+  const fieldDisplayByKey = new Map<string, { tableName: string; fieldName: string }>();
+  for (const field of schemaFields) {
+    const key = buildFieldIdentityKey({ table: field.table, field: field.field });
+    const normalized = normalizeFieldIdentity({ table: field.table, field: field.field });
+    fieldDisplayByKey.set(key, { tableName: normalized.originalTable, fieldName: normalized.originalField });
+  }
+  for (const reference of result.fieldReferences) {
+    const key = buildFieldIdentityKey(reference);
+    if (!fieldDisplayByKey.has(key)) {
+      const normalized = normalizeFieldIdentity(reference);
+      fieldDisplayByKey.set(key, { tableName: normalized.originalTable, fieldName: normalized.originalField });
+    }
+  }
   const uniqueFieldKeys = Array.from(
     new Set([
       ...schemaFields.map((field) => buildFieldIdentityKey({ table: field.table, field: field.field })),
@@ -1870,8 +1883,9 @@ async function writeSuccessfulAnalysis(
   );
   const fieldRows: Array<typeof fields.$inferInsert> = [];
   for (const fieldKey of uniqueFieldKeys) {
-    const { table: tableName, field: fieldName } = parseFieldIdentityKey(fieldKey);
     const schemaField = schemaFieldByKey.get(fieldKey);
+    const display = fieldDisplayByKey.get(fieldKey);
+    if (!display) continue;
     const description = schemaField
       ? [
           schemaField.nullable === false ? "NOT NULL" : schemaField.nullable === true ? "NULL" : null,
@@ -1884,8 +1898,8 @@ async function writeSuccessfulAnalysis(
       : null;
     fieldRows.push({
       projectId,
-      tableName,
-      fieldName,
+      tableName: display.tableName,
+      fieldName: display.fieldName,
       fieldType: schemaField?.fieldType ?? null,
       description,
     });
@@ -2007,6 +2021,29 @@ async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: Ap
   });
 }
 
+async function updateAnalysisExecutionProgress(projectId: number, progress: number, executionState?: ProjectJobExecutionState) {
+  const safeProgress = Math.min(100, Math.max(0, Math.floor(progress)));
+  const db = await requireDb();
+  await db.update(projects).set({ analysisProgress: safeProgress, updatedAt: new Date() }).where(eq(projects.id, projectId));
+
+  const ownership = executionState?.ownership;
+  if (!ownership) {
+    return;
+  }
+
+  await db
+    .update(projectJobs)
+    .set({ progress: safeProgress })
+    .where(
+      and(
+        eq(projectJobs.id, ownership.jobId),
+        eq(projectJobs.status, "running"),
+        eq(projectJobs.lockedBy, ownership.lockedBy),
+        eq(projectJobs.attemptCount, ownership.attemptCount)
+      )
+    );
+}
+
 export async function analyzeProject(projectId: number, userId: number, executionState?: ProjectJobExecutionState) {
   const project = await getOwnedProject(projectId, userId);
   if (!["ready", "completed", "failed", "analyzing"].includes(project.status)) {
@@ -2039,7 +2076,9 @@ export async function analyzeProject(projectId: number, userId: number, executio
     }
 
     await assertProjectJobExecutionActive(executionState, "analysis.files_loaded", { refreshLease: true });
+    await updateAnalysisExecutionProgress(projectId, 20, executionState);
     const analyzer = new Analyzer();
+    await updateAnalysisExecutionProgress(projectId, 45, executionState);
     const result = await analyzer.analyzeProject(
       projectFiles.map((file) => ({
         path: file.filePath,
@@ -2057,6 +2096,8 @@ export async function analyzeProject(projectId: number, userId: number, executio
     }
 
     await assertProjectJobExecutionActive(executionState, "analysis.result_ready", { refreshLease: true });
+    await updateAnalysisExecutionProgress(projectId, 70, executionState);
+    await updateAnalysisExecutionProgress(projectId, 85, executionState);
     await db.transaction(async (tx) => {
       await writeSuccessfulAnalysis(tx, projectId, projectFiles, result, executionState);
     });

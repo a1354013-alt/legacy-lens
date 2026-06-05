@@ -503,6 +503,16 @@ Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `p
 | `start-demo.cmd` | Windows one-click launcher for the local Docker demo stack |
 | `pnpm db:migrate` | Apply Drizzle migrations |
 
+Raw production start requires an already-built app and an already-migrated database:
+
+```bash
+pnpm build
+pnpm db:migrate
+pnpm start
+```
+
+`pnpm start` only runs the production server from `dist/`; it does not apply migrations. The production-like Docker Compose flow is different: `docker-compose.prod.yml` includes a dedicated `migrate` service, so migrations run as a separate container before the app becomes ready.
+
 Docker equivalents:
 - `pnpm demo` or `docker compose -f docker-compose.demo.yml up --build` -> local demo stack with MySQL and dev auth bypass
 - `pnpm demo:down` or `docker compose -f docker-compose.demo.yml down` -> stop the local demo stack
@@ -513,7 +523,8 @@ Docker equivalents:
 
 ## Dependency Security Notes
 
-- `package.json` keeps a small `pnpm.overrides` block for transitive packages that were still flagged by `pnpm audit --audit-level high` after the direct dependency upgrades.
+- `pnpm audit --audit-level high` passes as of 2026-06-05. The current audit output still reports 7 moderate findings.
+- `package.json` keeps a small `pnpm.overrides` block for transitive packages that needed direct security pinning after dependency upgrades.
 - Current overrides are intentionally limited to security patches for `path-to-regexp`, `rollup`, `picomatch`, `tar`, `lodash`, and `lodash-es`.
 - When upstream packages adopt the patched transitive versions directly, prefer removing the override instead of letting the list grow.
 - Moderate findings are tracked in [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md).

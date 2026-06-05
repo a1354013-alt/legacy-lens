@@ -44,7 +44,7 @@ export function buildImpactSections(result: ImpactAnalysisResult, limit = DEFAUL
   const sections = [
     buildSection(
       "symbols",
-      "Affected Symbols",
+      "受影響符號",
       result.affectedSymbols.map((symbol) => ({
         key: `${symbol.file}:${symbol.name}:${symbol.type}`,
         label: symbol.name,
@@ -55,7 +55,7 @@ export function buildImpactSections(result: ImpactAnalysisResult, limit = DEFAUL
     ),
     buildSection(
       "files",
-      "Affected Files",
+      "受影響檔案",
       result.affectedFiles.map((file) => ({
         key: file,
         label: file,
@@ -64,7 +64,7 @@ export function buildImpactSections(result: ImpactAnalysisResult, limit = DEFAUL
     ),
     buildSection(
       "tables",
-      "Affected Tables",
+      "受影響資料表",
       result.affectedTables.map((table) => ({
         key: table,
         label: table,
@@ -74,7 +74,7 @@ export function buildImpactSections(result: ImpactAnalysisResult, limit = DEFAUL
     ),
     buildSection(
       "fields",
-      "Affected Fields",
+      "受影響欄位",
       result.affectedFields.map((field) => ({
         key: `${field.table}.${field.field}`,
         label: `${field.table}.${field.field}`,
@@ -84,7 +84,7 @@ export function buildImpactSections(result: ImpactAnalysisResult, limit = DEFAUL
     ),
     buildSection(
       "rules",
-      "Affected Rules",
+      "受影響規則",
       result.affectedRules.map((rule) => ({
         key: rule,
         label: rule,
@@ -94,7 +94,7 @@ export function buildImpactSections(result: ImpactAnalysisResult, limit = DEFAUL
     ),
     buildSection(
       "risks",
-      "Affected Risks",
+      "受影響風險",
       result.affectedRisks.map((risk) => ({
         key: risk,
         label: risk,

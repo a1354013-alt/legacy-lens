@@ -61,3 +61,13 @@ For reproducible installs in a clean environment:
 corepack prepare pnpm@10.4.1 --activate
 pnpm install --frozen-lockfile
 ```
+
+For a raw production process outside Docker, build and migrate before starting:
+
+```bash
+pnpm build
+pnpm db:migrate
+pnpm start
+```
+
+`pnpm start` does not run migrations. The production-like Docker Compose setup uses a separate `migrate` service, so app startup and schema migration remain distinct operational steps.

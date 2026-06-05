@@ -9,7 +9,7 @@ import {
   symbols,
 } from "../../drizzle/schema";
 import type { ImpactAnalysisResult, ImpactTargetType } from "../../shared/contracts";
-import { buildFieldIdentityKey } from "./fieldIdentity";
+import { buildFieldIdentityKey, normalizeFieldIdentity } from "./fieldIdentity";
 import { getDb } from "../db";
 
 type ProjectSymbol = typeof symbols.$inferSelect;
@@ -94,6 +94,10 @@ function addFieldImpact(fieldSet: Map<string, { table: string; field: string }>,
   });
 }
 
+function getFieldCanonicalKey(field: ProjectField) {
+  return buildFieldIdentityKey({ table: field.tableName, field: field.fieldName });
+}
+
 function addDependencyChain(result: ImpactAnalysisResult, chain: string[]) {
   result.dependencyChains.push(chain);
 }
@@ -143,23 +147,17 @@ function findMatchingRisks(projectRisks: ProjectRisk[], target: string) {
 }
 
 function findMatchingSqlFields(projectFields: ProjectField[], target: string) {
-  const normalizedTarget = normalize(target);
-  const lastDotIndex = normalizedTarget.lastIndexOf(".");
-  if (lastDotIndex <= 0 || lastDotIndex >= normalizedTarget.length - 1) {
+  const normalizedTarget = normalizeFieldIdentity({ table: "", field: target });
+  if (!normalizedTarget.table || !normalizedTarget.field) {
     return [];
   }
 
-  const tableName = normalizedTarget.slice(0, lastDotIndex);
-  const fieldName = normalizedTarget.slice(lastDotIndex + 1);
-
-  return projectFields.filter(
-    (field) => normalize(field.tableName) === tableName && normalize(field.fieldName) === fieldName
-  );
+  return projectFields.filter((field) => getFieldCanonicalKey(field) === buildFieldIdentityKey(normalizedTarget));
 }
 
 function findMatchingSqlTable(projectFields: ProjectField[], target: string) {
-  const normalizedTarget = normalize(target);
-  return projectFields.filter((field) => normalize(field.tableName) === normalizedTarget);
+  const normalizedTarget = normalizeFieldIdentity({ table: target, field: "__legacy_lens_placeholder__" });
+  return projectFields.filter((field) => normalizeFieldIdentity({ table: field.tableName, field: field.fieldName }).table === normalizedTarget.table);
 }
 
 function findSymbolsForFile(fileId: number, projectSymbols: ProjectSymbol[]) {
@@ -430,7 +428,12 @@ export class ImpactAnalyzer {
       }
     });
 
-    const matchedFieldKeys = new Set(matchedFields.map((field) => `${normalize(field.tableName)}.${normalize(field.fieldName)}`));
+    const matchedFieldKeys = new Set(
+      matchedFields.flatMap((field) => {
+        const normalized = normalizeFieldIdentity({ table: field.tableName, field: field.fieldName });
+        return [`${normalized.table}.${normalized.field}`, normalized.originalName.toLowerCase()];
+      })
+    );
     index.rules.forEach((rule) => {
       const haystack = [rule.name, rule.description ?? "", rule.condition ?? "", rule.sourceFile ?? ""]
         .map((value) => normalize(value))

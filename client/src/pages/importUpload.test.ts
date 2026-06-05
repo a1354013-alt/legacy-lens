@@ -9,7 +9,7 @@ describe("validateUploadedZip", () => {
   });
 
   it("rejects files that do not use the .zip extension", () => {
-    expect(validateUploadedZip({ name: "notes.txt", size: 1 } as File)).toBe("Please upload a .zip file.");
+    expect(validateUploadedZip({ name: "notes.txt", size: 1 } as File)).toBe("請上傳 .zip 檔案。");
   });
 
   it("accepts ZIP files within the limit", () => {

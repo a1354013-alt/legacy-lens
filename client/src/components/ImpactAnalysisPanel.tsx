@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getAffectedComponentCount } from "./impactAnalysisSummary";
 import { buildImpactSections, DEFAULT_IMPACT_SECTION_LIMIT } from "./impactAnalysisSections";
 import type { ImpactTargetType } from "@shared/contracts";
+import { t } from "@/locales";
 
 interface ImpactAnalysisPanelProps {
   projectId: number;
@@ -49,17 +50,20 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Impact Analysis</CardTitle>
-          <CardDescription>
-            Understand what may break before changing legacy code. Enter a symbol, table, or field name to trace its dependencies.
-          </CardDescription>
+          <CardTitle>{t("impact.title")}</CardTitle>
+          <CardDescription>{t("impact.description")}</CardDescription>
         </CardHeader>
         <CardContent>
+          <Alert className="mb-4">
+            <Info className="h-4 w-4" />
+            <AlertTitle>{t("impact.disclaimerTitle")}</AlertTitle>
+            <AlertDescription>{t("impact.disclaimerDescription")}</AlertDescription>
+          </Alert>
           <div className="flex flex-col gap-4 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
               <Input
-                placeholder="e.g. EB_SPECI, UpdateContract, sample.sql"
+                placeholder={t("impact.placeholder")}
                 className="pl-9"
                 value={target}
                 onChange={(event) => setTarget(event.target.value)}
@@ -68,21 +72,21 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
             </div>
             <Select value={type} onValueChange={(value) => setType(value as ImpactTargetType)}>
               <SelectTrigger className="w-full sm:w-[180px]">
-                <SelectValue placeholder="Select type" />
+                <SelectValue placeholder={t("impact.selectType")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="auto">Auto Detect</SelectItem>
-                <SelectItem value="symbol">Symbol</SelectItem>
-                <SelectItem value="file">File</SelectItem>
-                <SelectItem value="sql_table">SQL Table</SelectItem>
-                <SelectItem value="sql_field">SQL Field</SelectItem>
-                <SelectItem value="risk">Risk</SelectItem>
-                <SelectItem value="rule">Business Rule</SelectItem>
+                <SelectItem value="auto">{t("impact.auto")}</SelectItem>
+                <SelectItem value="symbol">{t("impact.symbol")}</SelectItem>
+                <SelectItem value="file">{t("impact.file")}</SelectItem>
+                <SelectItem value="sql_table">{t("impact.sqlTable")}</SelectItem>
+                <SelectItem value="sql_field">{t("impact.sqlField")}</SelectItem>
+                <SelectItem value="risk">{t("impact.risk")}</SelectItem>
+                <SelectItem value="rule">{t("impact.rule")}</SelectItem>
               </SelectContent>
             </Select>
             <Button onClick={handleAnalyze} disabled={impactQuery.isFetching}>
               {impactQuery.isFetching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Analyze
+              {t("impact.analyze")}
             </Button>
           </div>
         </CardContent>
@@ -101,7 +105,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
       {impactQuery.error ? (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Error</AlertTitle>
+          <AlertTitle>{t("impact.errorTitle")}</AlertTitle>
           <AlertDescription>{impactQuery.error.message}</AlertDescription>
         </Alert>
       ) : null}
@@ -111,7 +115,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
           <div className="grid gap-4 md:grid-cols-3">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-slate-500">Target</CardTitle>
+                <CardTitle className="text-sm font-medium text-slate-500">{t("impact.target")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{impactQuery.data.target}</div>
@@ -122,34 +126,34 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
             </Card>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-slate-500">Affected Components</CardTitle>
+                <CardTitle className="text-sm font-medium text-slate-500">{t("impact.affectedComponents")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{getAffectedComponentCount(impactQuery.data)}</div>
                 <p className="mt-1 text-xs text-slate-500">
-                  Across {impactQuery.data.affectedFiles.length} files
+                  {t("impact.acrossFiles", { count: impactQuery.data.affectedFiles.length })}
                 </p>
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-slate-500">Confidence</CardTitle>
+                <CardTitle className="text-sm font-medium text-slate-500">{t("impact.confidence")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{(impactQuery.data.confidence * 100).toFixed(0)}%</div>
-                <p className="mt-1 text-xs text-slate-500">Deterministic match</p>
+                <p className="mt-1 text-xs text-slate-500">{t("impact.deterministicMatch")}</p>
               </CardContent>
             </Card>
           </div>
 
           <Alert>
             <Info className="h-4 w-4" />
-            <AlertTitle>Summary</AlertTitle>
+            <AlertTitle>{t("impact.summary")}</AlertTitle>
             <AlertDescription className="space-y-2">
               <p>{impactQuery.data.summary}</p>
               {impactSections.some((section) => section.hiddenCount > 0) ? (
                 <p className="text-xs text-slate-500">
-                  Large-project view is capped at {DEFAULT_IMPACT_SECTION_LIMIT} items per section to keep the UI readable.
+                  {t("impact.capped", { limit: DEFAULT_IMPACT_SECTION_LIMIT })}
                 </p>
               ) : null}
             </AlertDescription>
@@ -158,7 +162,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
           {impactQuery.data.warnings.length > 0 ? (
             <Alert variant="warning">
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Warnings</AlertTitle>
+              <AlertTitle>{t("impact.warnings")}</AlertTitle>
               <AlertDescription>
                 <ul className="mt-1 list-disc pl-4">
                   {impactQuery.data.warnings.map((warning, index) => (
@@ -174,7 +178,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <TreePine className="h-5 w-5 text-slate-500" />
-                  Affected Components
+                  {t("impact.affectedTree")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -188,7 +192,9 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
                             <span>{section.title}</span>
                             <Badge variant="outline">{section.count}</Badge>
                             {section.hiddenCount > 0 ? (
-                              <span className="text-[11px] normal-case text-slate-400">showing {section.items.length}, +{section.hiddenCount} more</span>
+                              <span className="text-[11px] normal-case text-slate-400">
+                                {t("impact.showingMore", { shown: section.items.length, hidden: section.hiddenCount })}
+                              </span>
                             ) : null}
                           </div>
                           <div className="space-y-1">
@@ -205,7 +211,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
                         </div>
                       ))
                     ) : (
-                      <div className="text-sm italic text-slate-400">No direct impacts found.</div>
+                      <div className="text-sm italic text-slate-400">{t("impact.noDirectImpacts")}</div>
                     )}
                   </div>
                 </div>
@@ -216,7 +222,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <GitBranch className="h-5 w-5 text-slate-500" />
-                  Dependency Chains
+                  {t("impact.dependencyChains")}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -234,7 +240,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
                     ))}
                   </div>
                 ) : (
-                  <div className="text-sm italic text-slate-400">No dependency chains traced.</div>
+                  <div className="text-sm italic text-slate-400">{t("impact.noDependencyChains")}</div>
                 )}
               </CardContent>
             </Card>
@@ -247,10 +253,8 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
           <div className="mb-4 rounded-full bg-slate-100 p-3">
             <Search className="h-6 w-6 text-slate-400" />
           </div>
-          <h3 className="text-lg font-medium text-slate-900">Start Analysis</h3>
-          <p className="mt-1 max-w-sm text-sm text-slate-500">
-            Enter a target name above and click "Analyze" to see the impact of changes.
-          </p>
+          <h3 className="text-lg font-medium text-slate-900">{t("impact.startTitle")}</h3>
+          <p className="mt-1 max-w-sm text-sm text-slate-500">{t("impact.startDescription")}</p>
         </div>
       ) : null}
     </div>

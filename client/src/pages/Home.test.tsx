@@ -72,7 +72,7 @@ describe("Home polling", () => {
           latestJob: { id: 1, type: "import_zip", status: "queued", progress: 0, errorMessage: null },
         })
       )
-    ).toBe("Import pending");
+    ).toBe("匯入等待中");
 
     expect(
       getProjectDisplayStatus(
@@ -81,9 +81,9 @@ describe("Home polling", () => {
           latestJob: { id: 2, type: "analyze", status: "running", progress: 30, errorMessage: null },
         })
       )
-    ).toBe("Analyzing");
+    ).toBe("分析中");
 
-    expect(getProjectDisplayStatus(project({ status: "completed", analysisStatus: "partial" }))).toBe("Analysis ready");
+    expect(getProjectDisplayStatus(project({ status: "completed", analysisStatus: "partial" }))).toBe("分析結果已就緒");
     expect(
       getProjectDisplayStatus(
         project({
@@ -91,16 +91,19 @@ describe("Home polling", () => {
           latestJob: { id: 3, type: "import_git", status: "failed", progress: 10, errorMessage: "clone failed" },
         })
       )
-    ).toBe("Import failed");
+    ).toBe("匯入失敗");
+
+    expect(getProjectDisplayStatus(project({ status: "ready", analysisStatus: "pending" }))).toBe("可開始分析");
+    expect(getProjectDisplayStatus(project({ status: "draft", analysisStatus: "pending" }))).toBe("尚未匯入");
   });
 
   it("does not fall back unknown languages to Go", () => {
     expect(getDisplayLanguage("delphi")).toBe("Delphi");
     expect(getDisplayLanguage("go")).toBe("Go");
     expect(getDisplayLanguage("sql")).toBe("SQL");
-    expect(getDisplayLanguage(null)).toBe("Unknown");
-    expect(getDisplayLanguage(undefined)).toBe("Unknown");
-    expect(getDisplayLanguage("cobol")).toBe("Unknown");
+    expect(getDisplayLanguage(null)).toBe("未知");
+    expect(getDisplayLanguage(undefined)).toBe("未知");
+    expect(getDisplayLanguage("cobol")).toBe("未知");
   });
 
   it("maps the primary card action from project, latest job, and analysis status", () => {
@@ -111,7 +114,7 @@ describe("Home polling", () => {
           latestJob: { id: 1, type: "import_zip", status: "queued", progress: 0, errorMessage: null },
         })
       )
-    ).toBe("View progress");
+    ).toBe("查看進度");
 
     expect(
       getProjectPrimaryAction(
@@ -120,11 +123,11 @@ describe("Home polling", () => {
           latestJob: { id: 2, type: "import_git", status: "running", progress: 50, errorMessage: null },
         })
       )
-    ).toBe("View progress");
+    ).toBe("查看進度");
 
-    expect(getProjectPrimaryAction(project({ status: "ready", analysisStatus: "pending" }))).toBe("Start analysis");
-    expect(getProjectPrimaryAction(project({ status: "completed", analysisStatus: "completed" }))).toBe("View analysis result");
-    expect(getProjectPrimaryAction(project({ status: "failed", analysisStatus: "pending" }))).toBe("View error");
+    expect(getProjectPrimaryAction(project({ status: "ready", analysisStatus: "pending" }))).toBe("開始分析");
+    expect(getProjectPrimaryAction(project({ status: "completed", analysisStatus: "completed" }))).toBe("查看分析");
+    expect(getProjectPrimaryAction(project({ status: "failed", analysisStatus: "pending" }))).toBe("查看錯誤");
     expect(
       getProjectPrimaryAction(
         project({
@@ -133,7 +136,7 @@ describe("Home polling", () => {
           latestJob: { id: 3, type: "analyze", status: "failed", progress: 10, errorMessage: "analysis failed" },
         })
       )
-    ).toBe("View previous analysis result");
+    ).toBe("查看前次分析");
   });
 
   it("disables project deletion while import or analysis work is active", () => {
@@ -165,7 +168,7 @@ describe("Home polling", () => {
 
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(refetch).toHaveBeenCalledTimes(1);
-    expect(notify.success).toHaveBeenCalledWith("Project list refreshed.");
+    expect(notify.success).toHaveBeenCalledWith("專案清單已更新。");
     expect(notify.error).not.toHaveBeenCalled();
   });
 

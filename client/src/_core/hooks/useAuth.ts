@@ -29,6 +29,11 @@ export async function clearSignedOutCache(utils: AuthCacheUtils) {
   await Promise.all([utils.projects.list.invalidate(), utils.auth.me.invalidate()]);
 }
 
+export function isAlreadyOnRedirectPath(currentLocation: Location, redirectPath: string) {
+  const redirectUrl = new URL(redirectPath, currentLocation.origin);
+  return currentLocation.pathname === redirectUrl.pathname;
+}
+
 export function useAuth(options?: UseAuthOptions) {
   const { redirectOnUnauthenticated = false, redirectPath = getLoginUrl() } = options ?? {};
   const utils = trpc.useUtils();
@@ -72,7 +77,7 @@ export function useAuth(options?: UseAuthOptions) {
     if (meQuery.isLoading || logoutMutation.isPending) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
-    if (window.location.pathname === redirectPath) return;
+    if (isAlreadyOnRedirectPath(window.location, redirectPath)) return;
 
     window.location.href = redirectPath;
   }, [redirectOnUnauthenticated, redirectPath, logoutMutation.isPending, meQuery.isLoading, state.user]);

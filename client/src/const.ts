@@ -7,7 +7,8 @@ const isDevAuthBypassEnabled = () => {
 
 const buildAuthUrl = (path: string) => {
   const url = new URL(path, window.location.origin);
-  url.searchParams.set("next", window.location.pathname || "/");
+  const nextPath = `${window.location.pathname || "/"}${window.location.search || ""}${window.location.hash || ""}`;
+  url.searchParams.set("next", nextPath);
   return url.toString();
 };
 
@@ -20,5 +21,5 @@ export const getLogoutRedirectUrl = () => {
 };
 
 export const getAuthModeLabel = () => {
-  return isDevAuthBypassEnabled() ? "Local Dev: demo auth bypass" : "Signed in";
+  return isDevAuthBypassEnabled() ? "本機開發：示範登入" : "已登入";
 };

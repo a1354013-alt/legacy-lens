@@ -18,6 +18,8 @@ let fakeDb: ReturnType<typeof createFakeDb>;
 let failRootProjectReadsDuringTransaction = false;
 let failNextProjectJobInsert = false;
 let transactionDepth = 0;
+let projectProgressUpdates: number[] = [];
+let jobProgressUpdates: number[] = [];
 const cloneAndExtractFilesMock = vi.fn(async () => ({ files: gitFiles, warnings: importWarnings }));
 const { readFileMock, rmMock } = vi.hoisted(() => ({
   readFileMock: vi.fn(async () => Buffer.from("zip-bytes")),
@@ -209,6 +211,12 @@ function createFakeDb(initialStore?: Partial<Store>) {
         set: (updates: Row) => ({
           where: async (condition: Condition) => {
             const tableName = getTableName(table);
+            if (tableName === "projects" && typeof updates.analysisProgress === "number") {
+              projectProgressUpdates.push(updates.analysisProgress);
+            }
+            if (tableName === "projectJobs" && typeof updates.progress === "number") {
+              jobProgressUpdates.push(updates.progress);
+            }
             let affectedRows = 0;
             store[tableName] = store[tableName].map((row) => {
               if (!matches(condition, row)) {
@@ -297,6 +305,8 @@ beforeEach(() => {
   failRootProjectReadsDuringTransaction = false;
   failNextProjectJobInsert = false;
   transactionDepth = 0;
+  projectProgressUpdates = [];
+  jobProgressUpdates = [];
   cloneAndExtractFilesMock.mockClear();
   readFileMock.mockClear();
   readFileMock.mockImplementation(async () => Buffer.from("zip-bytes"));
@@ -477,6 +487,8 @@ describe("project workflow", () => {
     expect(fakeDb.store.fields).toHaveLength(1);
     expect(fakeDb.store.fieldDependencies).toHaveLength(1);
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed", analysisProgress: 100 });
+    expect(projectProgressUpdates).toEqual([5, 20, 45, 70, 85, 100]);
+    expect(projectProgressUpdates.every((progress, index, values) => progress <= 100 && (index === 0 || progress >= values[index - 1]))).toBe(true);
   });
 
   it("leaves ambiguous same-name dependency targets unresolved", async () => {
@@ -531,6 +543,51 @@ describe("project workflow", () => {
       targetExternalName: "Run",
       targetKind: "unresolved",
     });
+  });
+
+  it("deduplicates normalized SQL field identities while preserving display names", async () => {
+    const { analyzeProject } = await import("./projectWorkflow");
+    seedProject();
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "schema.sql", fileName: "schema.sql", fileType: ".sql", content: "schema", lineCount: 3, status: "stored" });
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "sql",
+      symbols: [],
+      dependencies: [],
+      fieldReferences: [
+        { table: "customer", field: "id", type: "read", file: "schema.sql", line: 2 },
+        { table: "dbo.Customer", field: "Id", type: "write", file: "schema.sql", line: 3 },
+      ],
+      schemaFields: [{ table: "[Customer]", field: "[Id]", file: "schema.sql", line: 1 }],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA_DEPENDENCY",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 1,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 0,
+        dependencyCount: 0,
+        fieldCount: 1,
+        fieldDependencyCount: 0,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    await analyzeProject(1, 7);
+
+    expect(fakeDb.store.fields).toEqual([expect.objectContaining({ tableName: "Customer", fieldName: "Id" })]);
   });
 
   it("queues re-analysis without replacing the previous usable analysis result", async () => {

@@ -120,6 +120,9 @@ describe("AnalysisResult", () => {
     const html = renderToString(<AnalysisResult />);
 
     expect(html).toContain("Legacy Demo");
+    expect(html).toContain("分析工作已排入佇列");
+    expect(html).toContain("靜態啟發式推論");
+    expect(html).toContain("Dynamic SQL");
   });
 
   it("returns stable fallback text when no document content exists", () => {

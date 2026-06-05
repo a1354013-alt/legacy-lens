@@ -1,10 +1,10 @@
 # Security Audit Accepted Risks
 
-Last reviewed: 2026-05-26
+Last reviewed: 2026-06-05
 
 `pnpm audit --audit-level high` currently passes.
 
-`pnpm audit --audit-level moderate` currently reports moderate vulnerabilities. They are tracked here instead of being hidden with blanket overrides because the current findings are either:
+`pnpm audit --audit-level moderate` currently reports 7 moderate vulnerabilities. They are tracked here instead of being hidden with blanket overrides because the current findings are either:
 
 - dev-server-only issues in transitive tooling used by current `vitest@4`, `vite@8`, or `drizzle-kit`
 - indirect dependency issues that need an upstream package release path

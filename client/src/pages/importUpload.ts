@@ -5,7 +5,7 @@ export const MAX_UPLOAD_ZIP_SIZE = MAX_UPLOAD_BYTES;
 
 export function validateUploadedZip(file: File) {
   if (!file.name.toLowerCase().endsWith(".zip")) {
-    return "Please upload a .zip file.";
+    return t("uploadValidation.zipExtension");
   }
 
   if (file.size > MAX_UPLOAD_ZIP_SIZE) {

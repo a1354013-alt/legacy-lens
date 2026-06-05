@@ -2,13 +2,9 @@ import type { ReactNode } from "react";
 import { useLocation, useRoute } from "wouter";
 import { ArrowLeft, FileText, Loader2, ShieldAlert } from "lucide-react";
 import {
-  analysisStatusLabels,
   dependencyKinds,
   dependencyTargetKinds,
   fieldDependencyOperationTypes,
-  projectJobStatusLabels,
-  projectJobTypeLabels,
-  projectStatusLabels,
   riskSeverities,
   ruleTypes,
   symbolKinds,
@@ -21,12 +17,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { t } from "@/locales";
+import { analysisStatusLabel, projectJobStatusLabel, projectJobTypeLabel, projectStatusLabel } from "@/locales/uiLabels";
 import { FileTable, PaginationControls, ProjectSummaryCard, ReportActions, RiskPanel } from "./analysisResult/components";
 import { useAnalysisResultModel } from "./analysisResult/useAnalysisResultModel";
 
 export function renderDocumentPreview(content: string | null | undefined) {
   if (!content) {
-    return "目前沒有可預覽的文件內容。";
+    return t("analysis.empty.noDocument");
   }
 
   return content.split("\n").slice(0, 12).join("\n");
@@ -108,8 +106,8 @@ export default function AnalysisResult() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
-          <AlertTitle>專案編號無效</AlertTitle>
-          <AlertDescription>請確認網址中的專案編號是否正確。</AlertDescription>
+          <AlertTitle>{t("analysis.invalidProjectTitle")}</AlertTitle>
+          <AlertDescription>{t("analysis.invalidProjectDescription")}</AlertDescription>
         </Alert>
       </div>
     );
@@ -127,8 +125,8 @@ export default function AnalysisResult() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
-          <AlertTitle>無法載入專案</AlertTitle>
-          <AlertDescription>{projectQuery.error?.message ?? "目前無法讀取這個專案，請稍後再試。"}</AlertDescription>
+          <AlertTitle>{t("analysis.loadFailedTitle")}</AlertTitle>
+          <AlertDescription>{projectQuery.error?.message ?? t("analysis.loadFailedDescription")}</AlertDescription>
         </Alert>
       </div>
     );
@@ -141,11 +139,11 @@ export default function AnalysisResult() {
           <div className="flex items-center gap-4">
             <Button variant="ghost" onClick={() => setLocation("/")}>
               <ArrowLeft className="mr-2 size-4" />
-              返回專案列表
+              {t("analysis.backHome")}
             </Button>
             <div>
               <h1 className="text-2xl font-semibold text-slate-950">{project.name}</h1>
-              <p className="text-sm text-slate-600">檢視已持久化的分析快照、相依關係、風險與可下載報告。</p>
+              <p className="text-sm text-slate-600">{t("analysis.pageDescription")}</p>
             </div>
           </div>
           <ReportActions
@@ -161,45 +159,44 @@ export default function AnalysisResult() {
 
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
         <div className="flex flex-wrap items-center gap-3">
-          <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>專案狀態：{projectStatusLabels[project.status]}</Badge>
-          <Badge variant={viewState === "failed" ? "destructive" : report?.status === "completed" || report?.status === "partial" ? "default" : "secondary"}>
-            分析狀態：{analysisStatusLabels[analysisStatus]}
+          <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>
+            {t("analysis.projectStatus")}：{projectStatusLabel(project.status)}
           </Badge>
-          <Badge variant="outline">焦點語言：{project.language.toUpperCase()}</Badge>
-          <Badge variant="outline">匯入來源：{project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
+          <Badge variant={viewState === "failed" ? "destructive" : report?.status === "completed" || report?.status === "partial" ? "default" : "secondary"}>
+            {t("analysis.analysisStatus")}：{analysisStatusLabel(analysisStatus)}
+          </Badge>
+          <Badge variant="outline">{t("analysis.language")}：{project.language.toUpperCase()}</Badge>
+          <Badge variant="outline">{t("analysis.source")}：{project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
           {project.latestJob ? (
             <Badge variant="outline">
-              目前工作：{projectJobTypeLabels[project.latestJob.type]} / {projectJobStatusLabels[project.latestJob.status]} / {project.latestJob.progress}%
+              {t("analysis.currentJob")}：{projectJobTypeLabel(project.latestJob.type)} / {projectJobStatusLabel(project.latestJob.status)} / {project.latestJob.progress}%
             </Badge>
           ) : null}
         </div>
 
         <Alert>
-          <AlertTitle>分析說明</AlertTitle>
-          <AlertDescription>
-            Legacy Lens 是 legacy impact review 工具，會對 Go、SQL、Delphi 與 DFM 做 heuristic analysis。
-            結果適合用來支援人工審查與現代化規劃，不代表 compiler-grade 的絕對語意真相。
-          </AlertDescription>
+          <AlertTitle>{t("analysis.heuristicTitle")}</AlertTitle>
+          <AlertDescription>{t("analysis.heuristicDescription")}</AlertDescription>
         </Alert>
 
         {showPreviousAnalysisFailureBanner ? (
           <Alert>
             <ShieldAlert className="size-4" />
-            <AlertTitle>重新分析未完成</AlertTitle>
-            <AlertDescription>最新一次重新分析失敗，目前仍顯示上一份成功分析結果。</AlertDescription>
+            <AlertTitle>{t("analysis.previousFailureTitle")}</AlertTitle>
+            <AlertDescription>{t("analysis.previousFailureDescription")}</AlertDescription>
           </Alert>
         ) : null}
 
         {project.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>專案目前有錯誤</AlertTitle>
+            <AlertTitle>{t("analysis.projectErrorTitle")}</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
 
         {project.latestJob?.status === "failed" && project.latestJob.errorMessage ? (
           <Alert variant="destructive">
-            <AlertTitle>最近一次工作失敗</AlertTitle>
+            <AlertTitle>{t("analysis.latestJobErrorTitle")}</AlertTitle>
             <AlertDescription>{project.latestJob.errorMessage}</AlertDescription>
           </Alert>
         ) : null}
@@ -207,13 +204,13 @@ export default function AnalysisResult() {
         {(viewState === "queued" || viewState === "running") && project.latestJob ? (
           <Card data-testid="analysis-running">
             <CardHeader>
-              <CardTitle>{viewState === "queued" ? "分析工作已排入佇列" : "分析工作進行中"}</CardTitle>
-              <CardDescription>系統會持續更新工作進度。完成後此頁會自動顯示最新的持久化結果。</CardDescription>
+              <CardTitle>{viewState === "queued" ? t("analysis.queuedTitle") : t("analysis.runningTitle")}</CardTitle>
+              <CardDescription>{t("analysis.runningDescription")}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-slate-700">
-              <p>工作類型：{projectJobTypeLabels[project.latestJob.type]}</p>
-              <p>工作狀態：{projectJobStatusLabels[project.latestJob.status]}</p>
-              <p>進度：{project.latestJob.progress}%</p>
+              <p>{t("analysis.jobType")}：{projectJobTypeLabel(project.latestJob.type)}</p>
+              <p>{t("analysis.jobStatus")}：{projectJobStatusLabel(project.latestJob.status)}</p>
+              <p>{t("analysis.progress")}：{project.latestJob.progress}%</p>
             </CardContent>
           </Card>
         ) : null}
@@ -221,59 +218,59 @@ export default function AnalysisResult() {
         {!report && viewState === "idle" ? (
           <Card>
             <CardHeader>
-              <CardTitle>尚未產生分析報告</CardTitle>
-              <CardDescription>這個專案已完成匯入，但還沒有可瀏覽的分析結果。請先啟動分析工作。</CardDescription>
+              <CardTitle>{t("analysis.noReportTitle")}</CardTitle>
+              <CardDescription>{t("analysis.noReportDescription")}</CardDescription>
             </CardHeader>
             <CardContent>
               {canRunAnalysis ? (
                 <Button onClick={() => void handleRunAnalysis()} disabled={triggerAnalysisMutation.isPending}>
                   {triggerAnalysisMutation.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <ShieldAlert className="mr-2 size-4" />}
-                  開始分析
+                  {t("analysis.startAnalysis")}
                 </Button>
               ) : (
-                <p className="text-sm text-slate-600">目前專案狀態不允許重新啟動分析。</p>
+                <p className="text-sm text-slate-600">{t("analysis.waitImport")}</p>
               )}
             </CardContent>
           </Card>
         ) : null}
 
         <div className="grid gap-4 md:grid-cols-4">
-          <MetricCard title="Files" value={metrics?.fileCount ?? snapshot?.totals.files ?? 0} />
-          <MetricCard title="Symbols" value={metrics?.symbolCount ?? snapshot?.totals.symbols ?? 0} />
-          <MetricCard title="Risks" value={metrics?.riskCount ?? snapshot?.totals.risks ?? 0} emphasis={(metrics?.riskCount ?? snapshot?.totals.risks ?? 0) > 0 ? "danger" : "default"} />
-          <MetricCard title="Rules" value={metrics?.ruleCount ?? snapshot?.totals.rules ?? 0} />
+          <MetricCard title={t("analysis.metrics.files")} value={metrics?.fileCount ?? snapshot?.totals.files ?? 0} />
+          <MetricCard title={t("analysis.metrics.symbols")} value={metrics?.symbolCount ?? snapshot?.totals.symbols ?? 0} />
+          <MetricCard title={t("analysis.metrics.risks")} value={metrics?.riskCount ?? snapshot?.totals.risks ?? 0} emphasis={(metrics?.riskCount ?? snapshot?.totals.risks ?? 0) > 0 ? "danger" : "default"} />
+          <MetricCard title={t("analysis.metrics.rules")} value={metrics?.ruleCount ?? snapshot?.totals.rules ?? 0} />
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList>
-            <TabsTrigger value="overview">總覽</TabsTrigger>
-            <TabsTrigger value="impact">影響分析</TabsTrigger>
-            <TabsTrigger value="symbols">符號</TabsTrigger>
-            <TabsTrigger value="fields">欄位</TabsTrigger>
-            <TabsTrigger value="dependencies">相依關係</TabsTrigger>
-            <TabsTrigger value="fieldDependencies">欄位相依</TabsTrigger>
-            <TabsTrigger value="risks">風險</TabsTrigger>
-            <TabsTrigger value="rules">規則</TabsTrigger>
-            <TabsTrigger value="documents">文件</TabsTrigger>
+            <TabsTrigger value="overview">{t("analysis.tabs.overview")}</TabsTrigger>
+            <TabsTrigger value="impact">{t("analysis.tabs.impact")}</TabsTrigger>
+            <TabsTrigger value="symbols">{t("analysis.tabs.symbols")}</TabsTrigger>
+            <TabsTrigger value="fields">{t("analysis.tabs.fields")}</TabsTrigger>
+            <TabsTrigger value="dependencies">{t("analysis.tabs.dependencies")}</TabsTrigger>
+            <TabsTrigger value="fieldDependencies">{t("analysis.tabs.fieldDependencies")}</TabsTrigger>
+            <TabsTrigger value="risks">{t("analysis.tabs.risks")}</TabsTrigger>
+            <TabsTrigger value="rules">{t("analysis.tabs.rules")}</TabsTrigger>
+            <TabsTrigger value="documents">{t("analysis.tabs.documents")}</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4">
             <ProjectSummaryCard
               rows={[
-                { label: "專案狀態", value: projectStatusLabels[project.status] },
-                { label: "分析狀態", value: analysisStatusLabels[analysisStatus] },
-                { label: "可分析檔案", value: String(metrics?.eligibleFileCount ?? 0) },
-                { label: "已分析檔案", value: String(metrics?.analyzedFileCount ?? 0) },
-                { label: "已略過檔案", value: String(metrics?.skippedFileCount ?? 0) },
-                { label: "欄位相依數", value: String(metrics?.fieldDependencyCount ?? snapshot?.totals.fieldDependencies ?? 0) },
+                { label: t("analysis.projectStatus"), value: projectStatusLabel(project.status) },
+                { label: t("analysis.analysisStatus"), value: analysisStatusLabel(analysisStatus) },
+                { label: t("analysis.summary.eligibleFiles"), value: String(metrics?.eligibleFileCount ?? 0) },
+                { label: t("analysis.summary.analyzedFiles"), value: String(metrics?.analyzedFileCount ?? 0) },
+                { label: t("analysis.summary.skippedFiles"), value: String(metrics?.skippedFileCount ?? 0) },
+                { label: t("analysis.summary.fieldDependencies"), value: String(metrics?.fieldDependencyCount ?? snapshot?.totals.fieldDependencies ?? 0) },
               ]}
             />
 
             {importWarnings.length > 0 ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>匯入警告</CardTitle>
-                  <CardDescription>這些警告是在匯入期間記錄，並已一併存入持久化快照。</CardDescription>
+                  <CardTitle>{t("analysis.summary.importWarningsTitle")}</CardTitle>
+                  <CardDescription>{t("analysis.summary.importWarningsDescription")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm text-slate-700">
                   {importWarnings.map((warning, index) => (
@@ -289,19 +286,19 @@ export default function AnalysisResult() {
 
             <div className="grid gap-4 lg:grid-cols-3">
               <SimpleListCard
-                title="重點符號"
+                title={t("analysis.summary.topSymbols")}
                 items={(snapshot?.topSymbols ?? []).map((item) => `${item.name} (${item.type})${item.filePath ? ` - ${item.filePath}` : ""}`)}
-                emptyText="目前沒有特別突出的符號。"
+                emptyText={t("analysis.summary.noSymbols")}
               />
               <SimpleListCard
-                title="重點風險"
+                title={t("analysis.summary.topRisks")}
                 items={(snapshot?.topRisks ?? []).map((item) => `[${item.severity}] ${item.title}`)}
-                emptyText="目前沒有特別突出的風險。"
+                emptyText={t("analysis.summary.noRisks")}
               />
               <SimpleListCard
-                title="重點規則"
+                title={t("analysis.summary.topRules")}
                 items={(snapshot?.topRules ?? []).map((item) => `${item.name} (${item.ruleType})`)}
-                emptyText="目前沒有特別突出的規則。"
+                emptyText={t("analysis.summary.noRules")}
               />
             </div>
 
