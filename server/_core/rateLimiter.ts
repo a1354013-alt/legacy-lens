@@ -10,8 +10,12 @@ async function getRateLimitModule() {
   if (!rateLimitModule) {
     try {
       rateLimitModule = await import("express-rate-limit");
-    } catch {
-      logger.warn("Rate limiting disabled (module missing)", { action: "rateLimiter.init", status: "error" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(`Rate limiting failed to initialize in production: ${message}`);
+      }
+      logger.warn("Rate limiting disabled (module missing)", { action: "rateLimiter.init", status: "error", message });
       return null;
     }
   }

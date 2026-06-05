@@ -7,7 +7,13 @@ import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_ZIP_RAW_BYTES } from "../../shared/const";
 import { AppError } from "../appError";
-import { cleanupExpiredUploadTempFiles, registerProjectUploadRoute, uploadTempDir } from "./projectUploadRoute";
+import {
+  cleanupExpiredUploadTempFiles,
+  registerProjectUploadRoute,
+  startUploadTempFileCleanupInterval,
+  stopUploadTempFileCleanupIntervalForTests,
+  uploadTempDir,
+} from "./projectUploadRoute";
 
 let lastTempFilePath: string | null = null;
 const outsideTempDir = join(tmpdir(), "legacy-lens-upload-outside");
@@ -67,11 +73,13 @@ async function expectFileMissing(path: string) {
 }
 
 afterEach(async () => {
+  stopUploadTempFileCleanupIntervalForTests();
   if (lastTempFilePath) {
     await rm(lastTempFilePath, { force: true }).catch(() => undefined);
     lastTempFilePath = null;
   }
   await rm(outsideTempDir, { recursive: true, force: true }).catch(() => undefined);
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   uploadLimiterMock.mockImplementation(async (_req: unknown, _res: unknown, next: () => void) => next());
 });
@@ -449,6 +457,17 @@ describe("projectUploadRoute", () => {
     await cleanupExpiredUploadTempFiles(new Date("2026-01-03T00:00:00.000Z"), 24 * 60 * 60 * 1000);
 
     await expectFileMissing(orphanZipPath);
+  });
+
+  it("schedules periodic temp zip cleanup with an unref timer", () => {
+    const fakeTimer = { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    const setIntervalSpy = vi.spyOn(global, "setInterval").mockReturnValueOnce(fakeTimer);
+
+    const timer = startUploadTempFileCleanupInterval(12345);
+
+    expect(timer).toBe(fakeTimer);
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 12345);
+    expect(fakeTimer.unref).toHaveBeenCalledTimes(1);
   });
 
   it("never deletes files outside the managed upload temp directory", async () => {

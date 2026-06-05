@@ -22,6 +22,8 @@ import {
 
 export const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
 export const UPLOAD_TEMP_ZIP_TTL_MS = parsePositiveIntEnv("UPLOAD_TEMP_ZIP_TTL_MS", 86400000);
+export const UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS = parsePositiveIntEnv("UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS", 60 * 60 * 1000);
+let uploadTempCleanupTimer: NodeJS.Timeout | null = null;
 
 function buildSafeUploadTempFileName() {
   return `${Date.now()}-${randomUUID()}.zip`;
@@ -101,6 +103,33 @@ async function requireAuthenticatedUser(req: Request, res: Response) {
   }
 }
 
+export function startUploadTempFileCleanupInterval(intervalMs = UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS) {
+  if (uploadTempCleanupTimer) {
+    return uploadTempCleanupTimer;
+  }
+
+  uploadTempCleanupTimer = setInterval(() => {
+    void cleanupExpiredUploadTempFiles().catch((error) => {
+      logger.warn("Upload temp file cleanup failed during scheduled run", {
+        action: "project.upload.temp.cleanup.interval",
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, intervalMs);
+  uploadTempCleanupTimer.unref?.();
+  return uploadTempCleanupTimer;
+}
+
+export function stopUploadTempFileCleanupIntervalForTests() {
+  if (!uploadTempCleanupTimer) {
+    return;
+  }
+
+  clearInterval(uploadTempCleanupTimer);
+  uploadTempCleanupTimer = null;
+}
+
 async function cleanupUploadedFile(file?: Express.Multer.File | null) {
   if (!file?.path) {
     return;
@@ -140,6 +169,7 @@ export function registerProjectUploadRoute(app: Express) {
       message: error instanceof Error ? error.message : String(error),
     });
   });
+  startUploadTempFileCleanupInterval();
 
   app.post("/api/projects/import", authenticateProjectUploadRequest, uploadRateLimiter, async (req, res) => {
     try {

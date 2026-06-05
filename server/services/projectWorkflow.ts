@@ -260,6 +260,11 @@ async function insertInChunks<T extends Record<string, unknown>>(db: DbHandle, t
   }
 }
 
+function getSymbolStableKey(row: Pick<typeof symbols.$inferSelect, "metadata">) {
+  const metadata = row.metadata as { stableKey?: unknown } | null;
+  return typeof metadata?.stableKey === "string" ? metadata.stableKey : null;
+}
+
 function getProjectJobMaxAttempts(job: Pick<ProjectJobRow, "maxAttempts">) {
   return Math.max(1, Number(job.maxAttempts ?? DEFAULT_PROJECT_JOB_MAX_ATTEMPTS));
 }
@@ -1817,13 +1822,12 @@ async function writeSuccessfulAnalysis(
   });
 
   const fileByPath = new Map(projectFiles.map((file) => [file.filePath.replace(/\\/g, "/"), file]));
-  const insertedSymbolIds = new Map<string, number>();
-
+  const symbolRows: Array<typeof symbols.$inferInsert> = [];
   for (const symbol of result.symbols) {
     const fileRecord = fileByPath.get(symbol.file.replace(/\\/g, "/"));
     if (!fileRecord?.id) continue;
 
-    const insertResult = await tx.insert(symbols).values({
+    symbolRows.push({
       projectId,
       fileId: fileRecord.id,
       name: symbol.qualifiedName ?? symbol.name,
@@ -1838,9 +1842,15 @@ async function writeSuccessfulAnalysis(
         parser: "heuristic",
       },
     });
-    const symbolId = extractInsertId(insertResult);
-    if (symbolId > 0) {
-      insertedSymbolIds.set(buildSymbolInsertKey(symbol), symbolId);
+  }
+  await insertInChunks(tx, symbols, symbolRows);
+
+  const insertedSymbolRows = await tx.select().from(symbols).where(eq(symbols.projectId, projectId));
+  const insertedSymbolIds = new Map<string, number>();
+  for (const row of insertedSymbolRows) {
+    const stableKey = getSymbolStableKey(row);
+    if (stableKey && typeof row.id === "number") {
+      insertedSymbolIds.set(stableKey, row.id);
     }
   }
 
@@ -1858,6 +1868,7 @@ async function writeSuccessfulAnalysis(
       ...result.fieldReferences.map((reference) => buildFieldIdentityKey(reference)),
     ])
   );
+  const fieldRows: Array<typeof fields.$inferInsert> = [];
   for (const fieldKey of uniqueFieldKeys) {
     const { table: tableName, field: fieldName } = parseFieldIdentityKey(fieldKey);
     const schemaField = schemaFieldByKey.get(fieldKey);
@@ -1871,17 +1882,22 @@ async function writeSuccessfulAnalysis(
           .filter(Boolean)
           .join("; ") || null
       : null;
-    const insertResult = await tx.insert(fields).values({
+    fieldRows.push({
       projectId,
       tableName,
       fieldName,
       fieldType: schemaField?.fieldType ?? null,
       description,
     });
-    const fieldId = extractInsertId(insertResult);
-    if (fieldId > 0) {
-      fieldIds.set(fieldKey, fieldId);
+  }
+  await insertInChunks(tx, fields, fieldRows);
+
+  const insertedFieldRows = await tx.select().from(fields).where(eq(fields.projectId, projectId));
+  for (const row of insertedFieldRows) {
+    if (typeof row.id !== "number") {
+      continue;
     }
+    fieldIds.set(buildFieldIdentityKey({ table: row.tableName, field: row.fieldName }), row.id);
   }
 
   const fieldDependencyRows: Array<typeof fieldDependencies.$inferInsert> = [];

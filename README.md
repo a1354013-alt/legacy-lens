@@ -349,6 +349,9 @@ The Docker smoke script and compose stack use a small set of env vars to keep CI
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1`: only for local/demo containers that keep `NODE_ENV=production`; never use in real production
 - `LEGACY_LENS_GIT_HOST_ALLOWLIST`: production Git host allowlist override
 - `LEGACY_LENS_TRUST_PROXY`: only set this when the app is actually behind a trusted reverse proxy or load balancer
+- `PROJECT_JOB_EXECUTION_TIMEOUT_MS`: maximum wall-clock time a worker thread may spend on one claimed job before the thread is terminated and DB lease recovery retries the job
+- `UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS`: scheduled cleanup interval for expired upload temp ZIP files; active queued/running import temp paths remain protected
+- `UPLOAD_TEMP_ZIP_TTL_MS`: age threshold for orphan upload temp ZIP cleanup
 
 The CI smoke flow randomizes `COMPOSE_PROJECT_NAME`, `LEGACY_LENS_PORT`, and `LEGACY_LENS_DB_PORT` so parallel jobs do not collide on the same runner.
 
@@ -358,6 +361,8 @@ Operational notes:
 - `app` does not run migrations.
 - `migrate` is the only container that runs `pnpm db:migrate`.
 - The production app image keeps production dependencies only; it is not expected to contain `drizzle-kit`.
+- Production responses include security headers for content sniffing, referrer policy, frame blocking, CSP, and HSTS.
+- Rate limiting currently uses process-local stores. Production deployments should run a single app replica unless an external shared rate-limit store is added.
 
 ## Usage Flow (Import -> Analyze -> Export)
 

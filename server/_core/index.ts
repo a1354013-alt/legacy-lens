@@ -14,6 +14,7 @@ import { serveStatic } from "./static";
 import { logger } from "./logger";
 import { registerHealthEndpoint } from "./health";
 import { configureTrustProxy, registerRateLimiters } from "./rateLimiter";
+import { registerSecurityHeaders } from "./securityHeaders";
 import { registerReportDownloadRoute } from "./reportRoute";
 import { recoverStaleProjectJobsOnStartup } from "../services/projectWorkflow";
 import { registerProjectUploadRoute } from "../services/projectUploadRoute";
@@ -57,6 +58,7 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
   configureTrustProxy(app);
+  registerSecurityHeaders(app);
 
   // Middleware order matters!
   // Health endpoints first (no rate limiting)
