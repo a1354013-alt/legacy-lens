@@ -13,6 +13,7 @@ vi.mock("./env", () => ({
     devAuthBypass: "",
     devAuthOpenId: "",
   },
+  parsePositiveIntEnv: (_name: string, fallback: number) => fallback,
 }));
 
 vi.mock("../db", () => ({

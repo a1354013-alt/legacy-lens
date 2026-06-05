@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { and, asc, count, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
+import { z } from "zod";
 import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
   AnalysisSnapshot,
@@ -50,6 +51,7 @@ import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../uti
 import { extractInsertId } from "../utils/insertResult";
 import { extractFilesFromZip, extractFilesFromZipBuffer } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
+import { parsePositiveIntEnv } from "../_core/env";
 import { buildContainsLikePattern, likeContainsEscaped } from "../_core/sqlLike";
 import { getAppVersion } from "../_core/version";
 import { runProjectJob } from "./jobWorker";
@@ -96,13 +98,38 @@ type ProjectJobPayload =
 
 const queuedJobPromises = new Map<number, Promise<void>>();
 const ACTIVE_PROJECT_JOB_KEY = "active";
-const STALE_PROJECT_JOB_MS = Number.parseInt(process.env.PROJECT_JOB_STALE_MS ?? "900000", 10);
-const PROJECT_JOB_LEASE_MS = Number.parseInt(process.env.PROJECT_JOB_LEASE_MS ?? "30000", 10);
-const PROJECT_JOB_HEARTBEAT_MS = Number.parseInt(process.env.PROJECT_JOB_HEARTBEAT_MS ?? "10000", 10);
-const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = Number.parseInt(process.env.PROJECT_JOB_MAX_ATTEMPTS ?? "3", 10);
+const STALE_PROJECT_JOB_MS = parsePositiveIntEnv("PROJECT_JOB_STALE_MS", 900000);
+const PROJECT_JOB_LEASE_MS = parsePositiveIntEnv("PROJECT_JOB_LEASE_MS", 30000);
+const PROJECT_JOB_HEARTBEAT_MS = parsePositiveIntEnv("PROJECT_JOB_HEARTBEAT_MS", 10000);
+const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = parsePositiveIntEnv("PROJECT_JOB_MAX_ATTEMPTS", 3);
 const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
 const ANALYSIS_INSERT_CHUNK_SIZE = 250;
 let projectJobWorkerLoop: Promise<void> | null = null;
+
+const importZipInlinePayloadSchema = z
+  .object({
+    type: z.literal("import_zip"),
+    zipContent: z.string().min(1),
+    tempFilePath: z.undefined().optional(),
+    originalFileName: z.undefined().optional(),
+  })
+  .strict();
+
+const importZipTempFilePayloadSchema = z
+  .object({
+    type: z.literal("import_zip"),
+    tempFilePath: z.string().min(1),
+    originalFileName: z.string().nullable().optional(),
+    zipContent: z.undefined().optional(),
+  })
+  .strict();
+
+const projectJobPayloadSchema = z.union([
+  importZipInlinePayloadSchema,
+  importZipTempFilePayloadSchema,
+  z.object({ type: z.literal("import_git"), gitUrl: z.string().trim().min(1) }).strict(),
+  z.object({ type: z.literal("analyze") }).strict(),
+]);
 
 class ProjectJobExecutionAbortedError extends Error {
   constructor(
@@ -296,13 +323,19 @@ function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloa
     throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is missing.`);
   }
 
-  let parsed: ProjectJobPayload;
+  let rawPayload: unknown;
   try {
-    parsed = JSON.parse(job.payloadJson) as ProjectJobPayload;
+    rawPayload = JSON.parse(job.payloadJson);
   } catch {
     throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
   }
 
+  const parsedPayload = projectJobPayloadSchema.safeParse(rawPayload);
+  if (!parsedPayload.success) {
+    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
+  }
+
+  const parsed = parsedPayload.data;
   if (!parsed || parsed.type !== job.type) {
     throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
   }
@@ -1747,12 +1780,19 @@ function resolveInsertedTargetSymbolId(
     }
   }
 
-  const targetSymbol = symbolsForProject.find((symbol) => {
-    const shortName = symbol.qualifiedName?.split(".").at(-1) ?? symbol.name;
-    return symbol.name === dependency.toName || symbol.qualifiedName === dependency.toName || shortName === dependency.toName;
+  const sourceSymbol = symbolsForProject.find((symbol) => symbol.stableKey === dependency.from);
+  const sourceFile = sourceSymbol?.file.replace(/\\/g, "/");
+  const candidates = symbolsForProject.filter((symbol) => {
+    const symbolFile = symbol.file.replace(/\\/g, "/");
+    return (
+      symbol.qualifiedName === dependency.toName ||
+      `${symbolFile}::${symbol.qualifiedName ?? symbol.name}` === dependency.toName ||
+      (sourceFile === symbolFile && (symbol.name === dependency.toName || (symbol.qualifiedName?.split(".").at(-1) ?? symbol.name) === dependency.toName))
+    );
   });
+  const uniqueCandidate = candidates.length === 1 ? candidates[0] : null;
 
-  return targetSymbol ? insertedSymbolIds.get(buildSymbolInsertKey(targetSymbol)) : undefined;
+  return uniqueCandidate ? insertedSymbolIds.get(buildSymbolInsertKey(uniqueCandidate)) : undefined;
 }
 
 async function writeSuccessfulAnalysis(

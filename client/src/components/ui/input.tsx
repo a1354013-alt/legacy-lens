@@ -2,6 +2,7 @@ import { useDialogComposition } from "@/components/ui/dialog";
 import { useComposition } from "@/hooks/useComposition";
 import { cn } from "@/lib/utils";
 import * as React from "react";
+import type { ComponentProps } from "react";
 
 type ComposingNativeEvent = Event & {
   isComposing?: boolean;
@@ -14,7 +15,7 @@ function Input({
   onCompositionStart,
   onCompositionEnd,
   ...props
-}: React.ComponentProps<"input">) {
+}: ComponentProps<"input">) {
   // Get dialog composition context if available (will be no-op if not inside Dialog)
   const dialogComposition = useDialogComposition();
 

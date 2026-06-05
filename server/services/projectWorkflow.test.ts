@@ -479,6 +479,60 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed", analysisProgress: 100 });
   });
 
+  it("leaves ambiguous same-name dependency targets unresolved", async () => {
+    const { analyzeProject } = await import("./projectWorkflow");
+    seedProject();
+    fakeDb.store.files.push(
+      { id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 12, status: "stored" },
+      { id: 2, projectId: 1, filePath: "pkg/a.go", fileName: "a.go", fileType: ".go", content: "package pkg", lineCount: 8, status: "stored" },
+      { id: 3, projectId: 1, filePath: "pkg/b.go", fileName: "b.go", fileType: ".go", content: "package pkg", lineCount: 8, status: "stored" }
+    );
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "go",
+      symbols: [
+        { stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 5 },
+        { stableKey: "pkg/a.go::Run::1", name: "Run", qualifiedName: "a.Run", type: "function", file: "pkg/a.go", startLine: 1, endLine: 5 },
+        { stableKey: "pkg/b.go::Run::1", name: "Run", qualifiedName: "b.Run", type: "function", file: "pkg/b.go", startLine: 1, endLine: 5 },
+      ],
+      dependencies: [{ from: "main.go::main::1", fromName: "main", toName: "Run", type: "calls", line: 3 }],
+      fieldReferences: [],
+      schemaFields: [],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA_DEPENDENCY",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 3,
+        eligibleFileCount: 3,
+        analyzedFileCount: 3,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 3,
+        dependencyCount: 1,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    await analyzeProject(1, 7);
+
+    expect(fakeDb.store.dependencies[0]).toMatchObject({
+      targetSymbolId: null,
+      targetExternalName: "Run",
+      targetKind: "unresolved",
+    });
+  });
+
   it("queues re-analysis without replacing the previous usable analysis result", async () => {
     const originalValue = process.env.PROJECT_WORKER_ENABLED;
     process.env.PROJECT_WORKER_ENABLED = "false";
@@ -1070,6 +1124,41 @@ describe("project workflow", () => {
       lastErrorCode: "PROJECT_JOB_STALE",
     });
     expect(rmMock).not.toHaveBeenCalled();
+  });
+
+  it("fails a claimed import job when its JSON payload shape is invalid", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", zipContent: "abc", tempFilePath: "C:/tmp/demo.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership(),
+    });
+
+    await expect(runClaimedProjectJob(1)).rejects.toMatchObject({
+      code: "PROJECT_JOB_STALE",
+      message: expect.stringContaining("payload is invalid"),
+    });
+
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "failed",
+      errorCode: "PROJECT_JOB_STALE",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "failed",
+      lastErrorCode: "PROJECT_JOB_STALE",
+    });
   });
 
   it("fails a claimed import job, preserves an import failure code, and cleans its temp file", async () => {

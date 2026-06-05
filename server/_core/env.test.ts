@@ -8,6 +8,17 @@ afterEach(() => {
 });
 
 describe("dev auth bypass gating", () => {
+  it("parses positive integer env values with fallback protection", async () => {
+    const { parsePositiveIntEnv } = await import("./env");
+
+    expect(parsePositiveIntEnv("MISSING_TIMEOUT", 123, {})).toBe(123);
+    expect(parsePositiveIntEnv("BLANK_TIMEOUT", 123, { BLANK_TIMEOUT: "" })).toBe(123);
+    expect(parsePositiveIntEnv("BAD_TIMEOUT", 123, { BAD_TIMEOUT: "abc" })).toBe(123);
+    expect(parsePositiveIntEnv("NEGATIVE_TIMEOUT", 123, { NEGATIVE_TIMEOUT: "-1" })).toBe(123);
+    expect(parsePositiveIntEnv("ZERO_TIMEOUT", 123, { ZERO_TIMEOUT: "0" })).toBe(123);
+    expect(parsePositiveIntEnv("GOOD_TIMEOUT", 123, { GOOD_TIMEOUT: "456" })).toBe(456);
+  });
+
   it("disables dev auth bypass in production by default", async () => {
     process.env.NODE_ENV = "production";
     process.env.DEV_AUTH_BYPASS = "1";

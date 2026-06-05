@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { getDisplayLanguage, getProjectDisplayStatus, getProjectPrimaryAction, getProjectsPollingInterval, refreshProjectList } from "./Home";
+import {
+  getDisplayLanguage,
+  getProjectDisplayStatus,
+  getProjectPrimaryAction,
+  getProjectsPollingInterval,
+  isProjectDeleteDisabled,
+  refreshProjectList,
+} from "./Home";
 
 function project(overrides: Partial<Parameters<typeof getProjectDisplayStatus>[0]> = {}): Parameters<typeof getProjectDisplayStatus>[0] {
   return {
@@ -127,6 +134,26 @@ describe("Home polling", () => {
         })
       )
     ).toBe("View previous analysis result");
+  });
+
+  it("disables project deletion while import or analysis work is active", () => {
+    expect(isProjectDeleteDisabled(project({ status: "importing" }))).toBe(true);
+    expect(isProjectDeleteDisabled(project({ status: "analyzing" }))).toBe(true);
+    expect(
+      isProjectDeleteDisabled(
+        project({
+          latestJob: { id: 1, type: "import_zip", status: "queued", progress: 0, errorMessage: null },
+        })
+      )
+    ).toBe(true);
+    expect(
+      isProjectDeleteDisabled(
+        project({
+          latestJob: { id: 2, type: "analyze", status: "running", progress: 50, errorMessage: null },
+        })
+      )
+    ).toBe(true);
+    expect(isProjectDeleteDisabled(project({ status: "ready", latestJob: null }))).toBe(false);
   });
 
   it("refreshes the project list through invalidate and refetch", async () => {

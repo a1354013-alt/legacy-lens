@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, GitBranch, Loader2, Upload } from "lucide-react";
 import {
@@ -171,7 +172,7 @@ export default function ImportProject() {
     }
   };
 
-  const handleSubmit = async (event: React.FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (!acquireSubmitLock(submittingRef)) {
       return;

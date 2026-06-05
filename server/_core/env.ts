@@ -16,6 +16,11 @@ const runtimeEnvSchema = z.object({
   LEGACY_LENS_GIT_HOST_ALLOWLIST: z.string().trim().optional(),
   LEGACY_LENS_TRUST_PROXY: z.string().trim().optional(),
   PROJECT_JOB_STALE_MS: z.string().trim().optional(),
+  PROJECT_JOB_LEASE_MS: z.string().trim().optional(),
+  PROJECT_JOB_HEARTBEAT_MS: z.string().trim().optional(),
+  PROJECT_JOB_MAX_ATTEMPTS: z.string().trim().optional(),
+  UPLOAD_TEMP_ZIP_TTL_MS: z.string().trim().optional(),
+  LAST_SIGNED_IN_WRITE_THROTTLE_MS: z.string().trim().optional(),
   APP_VERSION: z.string().trim().optional(),
   GIT_COMMIT: z.string().trim().optional(),
   NODE_ENV: z.string().trim().optional(),
@@ -35,6 +40,18 @@ function readRuntimeEnv(source: NodeJS.ProcessEnv): RuntimeEnv {
 
 export function validateRuntimeConfig(source: NodeJS.ProcessEnv = process.env) {
   return readRuntimeEnv(source);
+}
+
+export function parsePositiveIntEnv(name: string, fallback: number, source: NodeJS.ProcessEnv = process.env): number {
+  const raw = source[name];
+  if (!raw) return fallback;
+
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+
+  return value;
 }
 
 const parsedEnv = runtimeEnvSchema.safeParse(process.env);

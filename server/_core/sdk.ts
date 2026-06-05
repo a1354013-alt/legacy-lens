@@ -7,7 +7,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import * as db from "../db";
 import type { UserRecord } from "../dbTypes";
-import { ENV } from "./env";
+import { ENV, parsePositiveIntEnv } from "./env";
 import { logger } from "./logger";
 import type {
   ExchangeTokenRequest,
@@ -34,7 +34,7 @@ export const sessionPayloadSchema = z.object({
 
 export type SessionPayload = z.infer<typeof sessionPayloadSchema>;
 
-const LAST_SIGNED_IN_WRITE_THROTTLE_MS = Number.parseInt(process.env.LAST_SIGNED_IN_WRITE_THROTTLE_MS ?? "900000", 10);
+const LAST_SIGNED_IN_WRITE_THROTTLE_MS = parsePositiveIntEnv("LAST_SIGNED_IN_WRITE_THROTTLE_MS", 900000);
 
 const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
 const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;

@@ -4,6 +4,10 @@ import { t } from "@/locales";
 export const MAX_UPLOAD_ZIP_SIZE = MAX_UPLOAD_BYTES;
 
 export function validateUploadedZip(file: File) {
+  if (!file.name.toLowerCase().endsWith(".zip")) {
+    return "Please upload a .zip file.";
+  }
+
   if (file.size > MAX_UPLOAD_ZIP_SIZE) {
     return t("uploadValidation.zipTooLarge", {
       size: formatBytes(MAX_UPLOAD_ZIP_SIZE),

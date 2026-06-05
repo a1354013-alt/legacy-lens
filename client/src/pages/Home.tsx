@@ -48,6 +48,12 @@ function hasActiveProjectWork(project: ProjectRow) {
   );
 }
 
+export const activeProjectDeleteMessage = "Project has an import or analysis job queued or running. Wait for it to finish before deleting.";
+
+export function isProjectDeleteDisabled(project: ProjectRow) {
+  return hasActiveProjectWork(project);
+}
+
 export function getProjectsPollingInterval(projects: ProjectRow[]) {
   return projects.some(hasActiveProjectWork) ? 2000 : 15000;
 }
@@ -351,6 +357,7 @@ function ProjectCard({
 }) {
   const latestJob = project.latestJob;
   const displayStatus = getProjectDisplayStatus(project);
+  const deleteDisabled = deleting || isProjectDeleteDisabled(project);
 
   return (
     <Card className="transition-shadow hover:shadow-md">
@@ -398,7 +405,12 @@ function ProjectCard({
           <Button variant="outline" onClick={onOpen}>
             {getProjectOpenActionLabel(project)}
           </Button>
-          <Button variant="ghost" disabled={deleting} onClick={() => void onDelete()}>
+          <Button
+            variant="ghost"
+            disabled={deleteDisabled}
+            title={isProjectDeleteDisabled(project) ? activeProjectDeleteMessage : undefined}
+            onClick={() => void onDelete()}
+          >
             {deleting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Trash2 className="mr-2 size-4" />}
             Delete
           </Button>

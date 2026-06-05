@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useLocation, useRoute } from "wouter";
 import { ArrowLeft, FileText, Loader2, ShieldAlert } from "lucide-react";
 import {
@@ -524,7 +525,7 @@ function MetricCard({
   );
 }
 
-function FilterCard({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+function FilterCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return (
     <Card>
       <CardHeader>
@@ -536,7 +537,7 @@ function FilterCard({ title, description, children }: { title: string; descripti
   );
 }
 
-function ListCard({ loading, items, emptyText }: { loading: boolean; items: React.ReactNode[]; emptyText: string }) {
+function ListCard({ loading, items, emptyText }: { loading: boolean; items: ReactNode[]; emptyText: string }) {
   if (loading) {
     return (
       <div className="flex justify-center py-10">

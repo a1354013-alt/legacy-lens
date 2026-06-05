@@ -16,7 +16,7 @@ export const getLoginUrl = () => {
 };
 
 export const getLogoutRedirectUrl = () => {
-  return buildAuthUrl(isDevAuthBypassEnabled() ? "/api/dev/logout" : "/login");
+  return buildAuthUrl(isDevAuthBypassEnabled() ? "/api/dev/logout" : "/");
 };
 
 export const getAuthModeLabel = () => {

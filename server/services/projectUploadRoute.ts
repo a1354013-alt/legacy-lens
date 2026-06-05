@@ -8,6 +8,7 @@ import type { Express, NextFunction, Request, Response } from "express";
 import multer from "multer";
 import { AppError } from "../appError";
 import { sendAppErrorResponse, sendHttpErrorResponse } from "../httpApiErrors";
+import { parsePositiveIntEnv } from "../_core/env";
 import { sdk } from "../_core/sdk";
 import { logger } from "../_core/logger";
 import { createRateLimiter } from "../_core/rateLimiter";
@@ -20,7 +21,7 @@ import {
 } from "./projectWorkflow";
 
 export const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
-export const UPLOAD_TEMP_ZIP_TTL_MS = Number.parseInt(process.env.UPLOAD_TEMP_ZIP_TTL_MS ?? "86400000", 10);
+export const UPLOAD_TEMP_ZIP_TTL_MS = parsePositiveIntEnv("UPLOAD_TEMP_ZIP_TTL_MS", 86400000);
 
 function buildSafeUploadTempFileName() {
   return `${Date.now()}-${randomUUID()}.zip`;
