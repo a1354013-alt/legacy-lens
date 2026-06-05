@@ -21,6 +21,12 @@ let transactionDepth = 0;
 let projectProgressUpdates: number[] = [];
 let jobProgressUpdates: number[] = [];
 const cloneAndExtractFilesMock = vi.fn(async () => ({ files: gitFiles, warnings: importWarnings }));
+const loggerMock = {
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+};
 const { readFileMock, rmMock } = vi.hoisted(() => ({
   readFileMock: vi.fn(async () => Buffer.from("zip-bytes")),
   rmMock: vi.fn(async () => undefined),
@@ -39,6 +45,10 @@ vi.mock("drizzle-orm", async () => {
 
 vi.mock("../db", () => ({
   getDb: vi.fn(async () => fakeDb),
+}));
+
+vi.mock("../_core/logger", () => ({
+  logger: loggerMock,
 }));
 
 vi.mock("node:fs/promises", async () => {
@@ -211,8 +221,13 @@ function createFakeDb(initialStore?: Partial<Store>) {
         set: (updates: Row) => ({
           where: async (condition: Condition) => {
             const tableName = getTableName(table);
-            if (tableName === "projects" && typeof updates.analysisProgress === "number") {
-              projectProgressUpdates.push(updates.analysisProgress);
+            if (tableName === "projects") {
+              if (typeof updates.analysisProgress === "number") {
+                projectProgressUpdates.push(updates.analysisProgress);
+              }
+              if (typeof updates.importProgress === "number") {
+                projectProgressUpdates.push(updates.importProgress);
+              }
             }
             if (tableName === "projectJobs" && typeof updates.progress === "number") {
               jobProgressUpdates.push(updates.progress);
@@ -312,6 +327,10 @@ beforeEach(() => {
   readFileMock.mockImplementation(async () => Buffer.from("zip-bytes"));
   rmMock.mockClear();
   rmMock.mockImplementation(async () => undefined);
+  loggerMock.debug.mockClear();
+  loggerMock.info.mockClear();
+  loggerMock.warn.mockClear();
+  loggerMock.error.mockClear();
 });
 
 describe("project workflow", () => {
@@ -1092,8 +1111,53 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[1]).toMatchObject({
       status: "failed",
       lastErrorCode: "PROJECT_JOB_STALE",
-      importProgress: 0,
+      importProgress: 50,
     });
+  });
+
+  it("fails stale running jobs that exhausted their retry budget without faking completion progress", async () => {
+    const { recoverStaleProjectJobsOnStartup } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 60 });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 60,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/stale-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership({
+        attemptCount: 3,
+        maxAttempts: 3,
+        leaseUntil: new Date("2026-01-01T00:01:30.000Z"),
+        heartbeatAt: new Date("2026-01-01T00:01:00.000Z"),
+      }),
+    });
+
+    const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-01T00:10:00.000Z"), 15 * 60 * 1000);
+
+    expect(recovered).toBe(0);
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "failed",
+      progress: 60,
+      errorCode: "JOB_STALE_MAX_ATTEMPTS",
+      activeKey: null,
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "failed",
+      importProgress: 60,
+      lastErrorCode: "JOB_STALE_MAX_ATTEMPTS",
+    });
+    expect(loggerMock.error).toHaveBeenCalledWith(
+      "Project job exhausted stale recovery retries",
+      expect.objectContaining({ action: "project.job.stale.failed", errorCode: "JOB_STALE_MAX_ATTEMPTS" })
+    );
   });
 
   it("keeps the previous usable report and graph when startup recovery fails a stuck analyzing project", async () => {
@@ -1301,6 +1365,7 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({
       status: "failed",
       lastErrorCode: "PROJECT_JOB_STALE",
+      importProgress: 10,
     });
     expect(rmMock).not.toHaveBeenCalled();
   });
@@ -1337,7 +1402,55 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({
       status: "failed",
       lastErrorCode: "PROJECT_JOB_STALE",
+      importProgress: 10,
     });
+  });
+
+  it("syncs import progress and emits structured lifecycle logs for a successful claimed ZIP job", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 0 });
+    zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/queued-upload.zip", originalFileName: "queued-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership(),
+    });
+
+    await expect(runClaimedProjectJob(1)).resolves.toBeUndefined();
+
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "completed",
+      progress: 100,
+      activeKey: null,
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "ready",
+      importProgress: 100,
+    });
+    expect(projectProgressUpdates).toEqual(expect.arrayContaining([10, 60, 80, 100]));
+    expect(jobProgressUpdates).toEqual(expect.arrayContaining([10, 60, 90, 100]));
+
+    const infoActions = loggerMock.info.mock.calls.map(([, context]) => (context as { action?: string } | undefined)?.action);
+    expect(infoActions).toEqual(
+      expect.arrayContaining([
+        "project.job.started",
+        "import.zip.started",
+        "import.zip.extracted",
+        "import.zip.persisted",
+        "project.job.completed",
+      ])
+    );
   });
 
   it("fails a claimed import job, preserves an import failure code, and cleans its temp file", async () => {
@@ -1370,6 +1483,7 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({
       status: "failed",
       lastErrorCode: "IMPORT_FAILED",
+      importProgress: 10,
     });
     expect(rmMock).toHaveBeenCalledWith("C:/tmp/queued-upload.zip", { force: true });
   });
@@ -1401,6 +1515,10 @@ describe("project workflow", () => {
     expect(fakeDb.store.projectJobs[0]).toMatchObject({
       status: "failed",
       errorCode: "IMPORT_FAILED",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "failed",
+      importProgress: 10,
     });
     expect(rmMock).toHaveBeenCalledWith("C:/tmp/queued-upload.zip", { force: true });
   });

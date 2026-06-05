@@ -301,6 +301,32 @@ function createProjectJobExecutionState(ownership: ProjectJobOwnership | null): 
   };
 }
 
+function getProjectJobLogContext(
+  job: Pick<ProjectJobRow, "id" | "projectId" | "type" | "status" | "progress">,
+  extra: Record<string, unknown> = {}
+) {
+  return {
+    jobId: job.id,
+    projectId: job.projectId,
+    type: job.type,
+    status: job.status,
+    progress: Number(job.progress ?? 0),
+    ...extra,
+  };
+}
+
+function logProjectJobLifecycle(
+  level: "info" | "warn" | "error",
+  action: string,
+  job: Pick<ProjectJobRow, "id" | "projectId" | "type" | "status" | "progress">,
+  extra: Record<string, unknown> = {}
+) {
+  logger[level](`Project job ${action}`, {
+    action: `project.${action}`,
+    ...getProjectJobLogContext(job, extra),
+  });
+}
+
 function toPublicProjectJobRecord(job: ProjectJobRow): ProjectJobRecord {
   return {
     id: job.id,
@@ -866,15 +892,15 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
     const queuedAt = toDate(claimedJob.createdAt);
     logger.info("Project job claimed", {
       action: "project.job.claimed",
-      status: "ok",
-      jobId: claimedJob.id,
-      projectId: claimedJob.projectId,
-      type: claimedJob.type,
+      ...getProjectJobLogContext(claimedJob, {
+        status: "running",
+        progress: Number(claimedJob.progress ?? 0),
       queueWaitMs: queuedAt ? Math.max(0, now.getTime() - queuedAt.getTime()) : null,
       attemptCount: claimedJob.attemptCount,
       maxAttempts: claimedJob.maxAttempts,
       leaseUntil: claimedJob.leaseUntil,
       lockedBy: claimedJob.lockedBy,
+      }),
     });
 
     return claimedJob;
@@ -964,7 +990,7 @@ async function failImportProjectIfStillImporting(job: ProjectJobRow, now: Date, 
     .update(projects)
     .set({
       status: "failed",
-      importProgress: 0,
+      importProgress: Math.max(Number(project.importProgress ?? 0), Number(job.progress ?? 0)),
       errorMessage: error?.message ?? "Import failed.",
       lastErrorCode: error?.code ?? null,
       updatedAt: now,
@@ -1008,6 +1034,29 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
       errorMessage: error?.message ?? "Analysis failed.",
     });
   });
+}
+
+async function updateImportExecutionProgress(projectId: number, progress: number, executionState?: ProjectJobExecutionState) {
+  const safeProgress = Math.min(100, Math.max(0, Math.floor(progress)));
+  const db = await requireDb();
+  await db.update(projects).set({ importProgress: safeProgress, updatedAt: new Date() }).where(eq(projects.id, projectId));
+
+  const ownership = executionState?.ownership;
+  if (!ownership) {
+    return;
+  }
+
+  await db
+    .update(projectJobs)
+    .set({ progress: safeProgress })
+    .where(
+      and(
+        eq(projectJobs.id, ownership.jobId),
+        eq(projectJobs.status, "running"),
+        eq(projectJobs.lockedBy, ownership.lockedBy),
+        eq(projectJobs.attemptCount, ownership.attemptCount)
+      )
+    );
 }
 
 async function executeProjectJob(job: ProjectJobRow, executionState: ProjectJobExecutionState) {
@@ -1091,7 +1140,7 @@ async function finalizeProjectJob(
     .update(projectJobs)
     .set({
       status,
-      progress: 100,
+      ...(status === "completed" ? { progress: 100 } : {}),
       activeKey: null,
       payloadJson: null,
       lockedBy: null,
@@ -1130,16 +1179,80 @@ async function finalizeProjectJob(
     }
   }
 
-  logger.info("Project job finalized", {
-    action: "project.job.finalized",
-    status,
-    jobId: job.id,
-    projectId: job.projectId,
-    type: job.type,
-    queueDurationMs,
-    runDurationMs,
-    errorCode: error?.code ?? null,
+  logger.info(`Project job ${status}`, {
+    action: `project.job.${status}`,
+    ...getProjectJobLogContext(job, {
+      status,
+      progress: status === "completed" ? 100 : Number(job.progress ?? 0),
+      queueDurationMs,
+      runDurationMs,
+      errorCode: error?.code ?? null,
+      errorMessage: error?.message ?? null,
+    }),
   });
+}
+
+export async function failProjectJobWithoutOwnership(jobId: number, error: AppError) {
+  const job = await getProjectJobById(jobId);
+  if (!job || job.status !== "running") {
+    return false;
+  }
+
+  const now = new Date();
+  const payload = (() => {
+    try {
+      return parseProjectJobPayload(job);
+    } catch {
+      return null;
+    }
+  })();
+  const tempFilePath = payload ? getImportZipPayloadTempPath(payload) : null;
+  const db = await requireDb();
+  await db
+    .update(projectJobs)
+    .set({
+      status: "failed",
+      activeKey: null,
+      payloadJson: null,
+      lockedBy: null,
+      leaseUntil: null,
+      heartbeatAt: null,
+      errorCode: error.code,
+      errorMessage: error.message,
+      finishedAt: now,
+    })
+    .where(eq(projectJobs.id, jobId));
+
+  if (job.type === "analyze") {
+    await failAnalysisProjectIfStillAnalyzing(job, now, error);
+  } else {
+    await failImportProjectIfStillImporting(job, now, error);
+  }
+
+  if (tempFilePath) {
+    await rm(tempFilePath, { force: true }).catch((cleanupError) => {
+      logger.warn("Project job temp file cleanup failed", {
+        action: "project.job.cleanup_failed",
+        ...getProjectJobLogContext(job, {
+          status: "failed",
+          tempFilePath,
+          errorMessage: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        }),
+      });
+    });
+  }
+
+  logger.error("Project job failed outside worker ownership", {
+    action: "project.job.failed",
+    ...getProjectJobLogContext(job, {
+      status: "failed",
+      errorCode: error.code,
+      errorMessage: error.message,
+      finishedAt: now,
+    }),
+  });
+
+  return true;
 }
 
 export async function runClaimedProjectJob(jobId: number) {
@@ -1156,11 +1269,28 @@ export async function runClaimedProjectJob(jobId: number) {
     tempFilePath = getImportZipPayloadTempPath(payload);
     await assertProjectJobProjectExists(claimedJob.projectId);
     await assertProjectJobExecutionActive(executionState, "job.start", { refreshLease: true });
+    logger.info("Project job started", {
+      action: "project.job.started",
+      ...getProjectJobLogContext(claimedJob, {
+        status: "running",
+        lockedBy: executionState.ownership?.lockedBy ?? null,
+        attemptCount: executionState.ownership?.attemptCount ?? null,
+        tempFilePath,
+      }),
+    });
     const heartbeatOwnership = executionState.ownership;
     if (heartbeatOwnership) {
       heartbeatTimer = setInterval(() => {
         void heartbeatProjectJobLease(heartbeatOwnership)
           .then((stillOwned) => {
+            logger.info("Project job heartbeat renewed", {
+              action: "project.job.heartbeat",
+              ...getProjectJobLogContext(claimedJob, {
+                status: stillOwned ? "running" : "failed",
+                lockedBy: heartbeatOwnership.lockedBy,
+                attemptCount: heartbeatOwnership.attemptCount,
+              }),
+            });
             if (!stillOwned) {
               markProjectJobExecutionAborted(
                 executionState,
@@ -1280,6 +1410,7 @@ export async function waitForAllProjectJobsForTests() {
 
 async function markProjectAsRecoveryFailed(projectId: number, status: ProjectStatus, message: string, now: Date) {
   const db = await requireDb();
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   const updates: Partial<InsertProjectRecord> & { status: ProjectStatus } = {
     status: "failed",
     errorMessage: message,
@@ -1287,7 +1418,7 @@ async function markProjectAsRecoveryFailed(projectId: number, status: ProjectSta
     updatedAt: now,
   };
   if (status === "importing") {
-    updates.importProgress = 0;
+    updates.importProgress = Number(project?.importProgress ?? 0);
   }
   if (status === "analyzing") {
     updates.analysisProgress = 0;
@@ -1382,6 +1513,16 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
         });
         continue;
       }
+      logger.warn("Recovered stale project job back to queue", {
+        action: "project.job.stale.recovered",
+        ...getProjectJobLogContext(job, {
+          status: "queued",
+          leaseUntil,
+          heartbeatAt,
+          attemptCount: getProjectJobAttemptCount(job),
+          maxAttempts: getProjectJobMaxAttempts(job),
+        }),
+      });
       recoveredJobCount += 1;
       continue;
     }
@@ -1391,13 +1532,12 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
       .update(projectJobs)
       .set({
         status: "failed",
-        progress: 100,
         activeKey: null,
         payloadJson: null,
         lockedBy: null,
         leaseUntil: null,
         heartbeatAt: null,
-        errorCode: "PROJECT_JOB_STALE",
+        errorCode: "JOB_STALE_MAX_ATTEMPTS",
         errorMessage: retryMessage,
         finishedAt: now,
       })
@@ -1424,10 +1564,22 @@ export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAf
     }
 
     if (job.type === "analyze") {
-      await failAnalysisProjectIfStillAnalyzing(job, now, new AppError("PROJECT_JOB_STALE", retryMessage));
+      await failAnalysisProjectIfStillAnalyzing(job, now, new AppError("JOB_STALE_MAX_ATTEMPTS", retryMessage));
     } else {
-      await failImportProjectIfStillImporting(job, now, new AppError("PROJECT_JOB_STALE", retryMessage));
+      await failImportProjectIfStillImporting(job, now, new AppError("JOB_STALE_MAX_ATTEMPTS", retryMessage));
     }
+    logger.error("Project job exhausted stale recovery retries", {
+      action: "project.job.stale.failed",
+      ...getProjectJobLogContext(job, {
+        status: "failed",
+        errorCode: "JOB_STALE_MAX_ATTEMPTS",
+        errorMessage: retryMessage,
+        leaseUntil,
+        heartbeatAt,
+        attemptCount: getProjectJobAttemptCount(job),
+        maxAttempts: getProjectJobMaxAttempts(job),
+      }),
+    });
   }
 
   const activeJobsAfterRecovery = await db.select().from(projectJobs).where(inArray(projectJobs.status, ["queued", "running"]));
@@ -1496,11 +1648,12 @@ async function replaceProjectFiles(
 ) {
   const db = await requireDb();
   await assertProjectJobExecutionActive(executionState, "import.replace_files.prepare", { refreshLease: true });
+  await updateImportExecutionProgress(projectId, 80, executionState);
   return db.transaction(async (tx) => {
     await assertProjectJobExecutionActive(executionState, "import.replace_files.transaction");
     await transitionProjectState(tx, projectId, {
       status: "importing",
-      importProgress: 10,
+      importProgress: 80,
       analysisProgress: 0,
       sourceUrl: sourceUrl ?? null,
       errorMessage: null,
@@ -1511,6 +1664,19 @@ async function replaceProjectFiles(
     await clearProjectAnalysisGraph(tx, projectId, true);
     const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);
     await assertProjectJobExecutionActive(executionState, "import.replace_files.persist");
+    if (executionState?.ownership) {
+      await tx
+        .update(projectJobs)
+        .set({ progress: 90 })
+        .where(
+          and(
+            eq(projectJobs.id, executionState.ownership.jobId),
+            eq(projectJobs.status, "running"),
+            eq(projectJobs.lockedBy, executionState.ownership.lockedBy),
+            eq(projectJobs.attemptCount, executionState.ownership.attemptCount)
+          )
+        );
+    }
 
     await transitionProjectState(tx, projectId, {
       status: "ready",
@@ -1528,17 +1694,36 @@ async function replaceProjectFiles(
 export async function importProjectZip(projectId: number, userId: number, zipContent: string, executionState?: ProjectJobExecutionState) {
   await getOwnedProject(projectId, userId);
   await assertProjectJobExecutionActive(executionState, "import.zip.start", { refreshLease: true });
-  logger.info("Import started", { projectId, action: "import.zip.start", status: "ok" });
+  await updateImportExecutionProgress(projectId, 10, executionState);
+  logger.info("ZIP import started", { projectId, action: "import.zip.started", status: "running", source: "inline_payload" });
 
   try {
     const extractedFiles = await extractFilesFromZip(zipContent);
     await assertProjectJobExecutionActive(executionState, "import.zip.extracted", { refreshLease: true });
+    await updateImportExecutionProgress(projectId, 60, executionState);
+    logger.info("ZIP import extracted files", {
+      projectId,
+      action: "import.zip.extracted",
+      status: "running",
+      source: "inline_payload",
+      fileCount: extractedFiles.files.length,
+      warningCount: extractedFiles.warnings.length,
+    });
     const fileIds = await replaceProjectFiles(projectId, extractedFiles, undefined, executionState);
 
-    logger.info("Import completed", {
+    logger.info("ZIP import persisted files", {
       projectId,
-      action: "import.zip.complete",
-      status: "ok",
+      action: "import.zip.persisted",
+      status: "running",
+      source: "inline_payload",
+      fileCount: extractedFiles.files.length,
+      warningCount: extractedFiles.warnings.length,
+    });
+    logger.info("ZIP import completed", {
+      projectId,
+      action: "import.zip.completed",
+      status: "completed",
+      source: "inline_payload",
       fileCount: extractedFiles.files.length,
       warningCount: extractedFiles.warnings.length,
     });
@@ -1557,10 +1742,11 @@ export async function importProjectZip(projectId: number, userId: number, zipCon
       throw error;
     }
     const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
-    logger.error("Import failed", {
+    logger.error("ZIP import failed", {
       projectId,
-      action: "import.zip.complete",
-      status: "error",
+      action: "import.zip.failed",
+      status: "failed",
+      source: "inline_payload",
       code: appError.code,
       message: appError.message,
     });
@@ -1588,19 +1774,53 @@ export async function importProjectZipFromTempFile(
 ) {
   await getOwnedProject(projectId, userId);
   await assertProjectJobExecutionActive(executionState, "import.zip_temp.start", { refreshLease: true });
-  logger.info("Import started", { projectId, action: "import.zip.start", status: "ok", source: "temp_file" });
+  await updateImportExecutionProgress(projectId, 10, executionState);
+  logger.info("ZIP import started", {
+    projectId,
+    action: "import.zip.started",
+    status: "running",
+    source: "temp_file",
+    tempFilePath,
+  });
 
   try {
+    logger.info("ZIP import reading temp file", {
+      projectId,
+      action: "import.zip.temp_file",
+      status: "running",
+      source: "temp_file",
+      tempFilePath,
+    });
     const zipBuffer = await readFile(tempFilePath);
     const extractedFiles = await extractFilesFromZipBuffer(zipBuffer);
     await assertProjectJobExecutionActive(executionState, "import.zip_temp.extracted", { refreshLease: true });
+    await updateImportExecutionProgress(projectId, 60, executionState);
+    logger.info("ZIP import extracted files", {
+      projectId,
+      action: "import.zip.extracted",
+      status: "running",
+      source: "temp_file",
+      tempFilePath,
+      fileCount: extractedFiles.files.length,
+      warningCount: extractedFiles.warnings.length,
+    });
     const fileIds = await replaceProjectFiles(projectId, extractedFiles, undefined, executionState);
 
-    logger.info("Import completed", {
+    logger.info("ZIP import persisted files", {
       projectId,
-      action: "import.zip.complete",
-      status: "ok",
+      action: "import.zip.persisted",
+      status: "running",
       source: "temp_file",
+      tempFilePath,
+      fileCount: extractedFiles.files.length,
+      warningCount: extractedFiles.warnings.length,
+    });
+    logger.info("ZIP import completed", {
+      projectId,
+      action: "import.zip.completed",
+      status: "completed",
+      source: "temp_file",
+      tempFilePath,
       fileCount: extractedFiles.files.length,
       warningCount: extractedFiles.warnings.length,
     });
@@ -1619,11 +1839,12 @@ export async function importProjectZipFromTempFile(
       throw error;
     }
     const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
-    logger.error("Import failed", {
+    logger.error("ZIP import failed", {
       projectId,
-      action: "import.zip.complete",
-      status: "error",
+      action: "import.zip.failed",
+      status: "failed",
       source: "temp_file",
+      tempFilePath,
       code: appError.code,
       message: appError.message,
     });

@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { AppError } from "../appError";
 
 type WorkerRequest = {
   id: number;
@@ -24,6 +25,7 @@ export const PROJECT_JOB_EXECUTION_TIMEOUT_MS = parsePositiveIntEnv("PROJECT_JOB
 const pendingRequests = new Map<
   number,
   {
+    jobId: number;
     resolve: () => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
@@ -73,6 +75,10 @@ function createWorker() {
     for (const [requestId, pending] of pendingRequests.entries()) {
       pendingRequests.delete(requestId);
       clearTimeout(pending.timeout);
+      void failPendingJob(
+        pending.jobId,
+        new AppError("PROJECT_JOB_WORKER_EXITED", `Project job worker crashed while processing job ${pending.jobId}.`)
+      );
       pending.reject(error);
     }
     workerInstance = null;
@@ -84,6 +90,10 @@ function createWorker() {
       for (const [requestId, pending] of pendingRequests.entries()) {
         pendingRequests.delete(requestId);
         clearTimeout(pending.timeout);
+        void failPendingJob(
+          pending.jobId,
+          new AppError("PROJECT_JOB_WORKER_EXITED", `Project job worker exited with code ${code} while processing job ${pending.jobId}.`)
+        );
         pending.reject(error);
       }
     }
@@ -96,6 +106,11 @@ function createWorker() {
 function getWorker() {
   workerInstance ??= createWorker();
   return workerInstance;
+}
+
+async function failPendingJob(jobId: number, error: AppError) {
+  const { failProjectJobWithoutOwnership } = await import("./projectWorkflow");
+  await failProjectJobWithoutOwnership(jobId, error);
 }
 
 export async function runProjectJob(jobId: number) {
@@ -119,11 +134,18 @@ export async function runProjectJob(jobId: number) {
       const timedOutWorker = workerInstance;
       workerInstance = null;
       void timedOutWorker?.terminate();
+      void failPendingJob(
+        request.jobId,
+        new AppError(
+          "PROJECT_JOB_TIMEOUT",
+          `Project job ${request.jobId} exceeded execution timeout (${PROJECT_JOB_EXECUTION_TIMEOUT_MS} ms).`
+        )
+      );
       reject(new Error(`Project job ${jobId} exceeded execution timeout (${PROJECT_JOB_EXECUTION_TIMEOUT_MS} ms).`));
     }, PROJECT_JOB_EXECUTION_TIMEOUT_MS);
     timeout.unref?.();
 
-    pendingRequests.set(requestId, { resolve, reject, timeout });
+    pendingRequests.set(requestId, { jobId, resolve, reject, timeout });
     worker.postMessage({
       id: requestId,
       jobId,
