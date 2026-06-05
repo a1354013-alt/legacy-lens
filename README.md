@@ -248,6 +248,7 @@ This repo ships a Dockerfile plus separate compose files for demo and production
 - `DEV_AUTH_BYPASS=1` (server enables `/api/dev/login`)
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1` (explicitly allows bypass even when the container runs with `NODE_ENV=production` for static serving)
 - `VITE_DEV_AUTH_BYPASS=1` (client builds the "Sign in" button to hit `/api/dev/login`)
+- `CSP_ALLOW_UNSAFE_EVAL=true` (demo-only CSP relaxation so production-built frontend bundles that use `eval` / `new Function` are not blocked)
 - OAuth URLs are still required as placeholders (`VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL`) because the server config schema is consistent across modes.
 - `JWT_SECRET` demo default is long enough for runtime validation, but you must replace it in any real deployment.
 
@@ -320,6 +321,7 @@ docker compose up --build
 ```
 
 Do not set `DEV_AUTH_BYPASS`, `VITE_DEV_AUTH_BYPASS`, or `DEV_AUTH_BYPASS_UNSAFE_ALLOW` for production-like runs.
+Do not set `CSP_ALLOW_UNSAFE_EVAL` for real production unless you have explicitly reviewed and accepted the CSP weakening.
 
 If you want to verify the full demo container flow end-to-end (build -> migrate -> app health -> dev login redirect):
 ```bash
@@ -347,6 +349,7 @@ The Docker smoke script and compose stack use a small set of env vars to keep CI
 - `LEGACY_LENS_SMOKE_TIMEOUT_MS`: total polling timeout for DB health, app health, and dev-login redirect checks
 - `DEV_AUTH_BYPASS=1`: enables `/api/dev/login` for local/demo flows only
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1`: only for local/demo containers that keep `NODE_ENV=production`; never use in real production
+- `CSP_ALLOW_UNSAFE_EVAL=true`: demo-only CSP relaxation for frontend bundles that still require `eval` / `new Function`; keep this unset in real production unless the risk is accepted
 - `LEGACY_LENS_GIT_HOST_ALLOWLIST`: production Git host allowlist override
 - `LEGACY_LENS_TRUST_PROXY`: only set this when the app is actually behind a trusted reverse proxy or load balancer
 - `PROJECT_JOB_EXECUTION_TIMEOUT_MS`: maximum wall-clock time a worker thread may spend on one claimed job before the thread is terminated and DB lease recovery retries the job

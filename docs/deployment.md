@@ -24,6 +24,9 @@ This document summarizes the production-facing boundaries that matter for Legacy
 
 - Production responses include `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, Content Security Policy with `frame-ancestors 'none'`, and HSTS.
 - CSP is intentionally registered in the Express production path so same-origin static assets from the production build continue to load.
+- `CSP_ALLOW_UNSAFE_EVAL` is evaluated at request runtime, not module-load time. Only explicit truthy values (`true`, `1`, `yes`) add `'unsafe-eval'` to `script-src`.
+- `docker-compose.demo.yml` sets `CSP_ALLOW_UNSAFE_EVAL=true` because some frontend production bundles may still rely on `eval` / `new Function`.
+- Real production deployments should leave `CSP_ALLOW_UNSAFE_EVAL` unset unless that risk has been explicitly reviewed and accepted.
 - Development keeps CSP relaxed enough for the Vite dev server.
 
 ## Git Import Security
