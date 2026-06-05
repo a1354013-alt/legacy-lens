@@ -18,7 +18,19 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { t } from "@/locales";
-import { analysisStatusLabel, projectJobStatusLabel, projectJobTypeLabel, projectStatusLabel } from "@/locales/uiLabels";
+import {
+  analysisStatusLabel,
+  dependencyKindLabel,
+  dependencyTargetKindLabel,
+  fieldOperationLabel,
+  projectJobStatusLabel,
+  projectJobTypeLabel,
+  projectStatusLabel,
+  riskSeverityLabel,
+  ruleTypeLabel,
+  sourceTypeLabel,
+  symbolKindLabel,
+} from "@/locales/uiLabels";
 import { FileTable, PaginationControls, ProjectSummaryCard, ReportActions, RiskPanel } from "./analysisResult/components";
 import { useAnalysisResultModel } from "./analysisResult/useAnalysisResultModel";
 
@@ -104,7 +116,7 @@ export default function AnalysisResult() {
 
   if (!Number.isFinite(projectId)) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
+      <div className="flex min-h-dvh items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
           <AlertTitle>{t("analysis.invalidProjectTitle")}</AlertTitle>
           <AlertDescription>{t("analysis.invalidProjectDescription")}</AlertDescription>
@@ -115,7 +127,7 @@ export default function AnalysisResult() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+      <div className="flex min-h-dvh items-center justify-center bg-slate-50">
         <Loader2 className="size-10 animate-spin text-slate-600" aria-label="analysis-loading" />
       </div>
     );
@@ -123,7 +135,7 @@ export default function AnalysisResult() {
 
   if (projectQuery.error || !project) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
+      <div className="flex min-h-dvh items-center justify-center bg-slate-50 px-6">
         <Alert variant="destructive">
           <AlertTitle>{t("analysis.loadFailedTitle")}</AlertTitle>
           <AlertDescription>{projectQuery.error?.message ?? t("analysis.loadFailedDescription")}</AlertDescription>
@@ -133,7 +145,7 @@ export default function AnalysisResult() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-dvh bg-slate-50">
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-4">
@@ -166,7 +178,7 @@ export default function AnalysisResult() {
             {t("analysis.analysisStatus")}：{analysisStatusLabel(analysisStatus)}
           </Badge>
           <Badge variant="outline">{t("analysis.language")}：{project.language.toUpperCase()}</Badge>
-          <Badge variant="outline">{t("analysis.source")}：{project.sourceType === "git" ? "Git" : "ZIP"}</Badge>
+          <Badge variant="outline">{t("analysis.source")}：{sourceTypeLabel(project.sourceType)}</Badge>
           {project.latestJob ? (
             <Badge variant="outline">
               {t("analysis.currentJob")}：{projectJobTypeLabel(project.latestJob.type)} / {projectJobStatusLabel(project.latestJob.status)} / {project.latestJob.progress}%
@@ -287,17 +299,17 @@ export default function AnalysisResult() {
             <div className="grid gap-4 lg:grid-cols-3">
               <SimpleListCard
                 title={t("analysis.summary.topSymbols")}
-                items={(snapshot?.topSymbols ?? []).map((item) => `${item.name} (${item.type})${item.filePath ? ` - ${item.filePath}` : ""}`)}
+                items={(snapshot?.topSymbols ?? []).map((item) => `${item.name} (${symbolKindLabel(item.type)})${item.filePath ? ` - ${item.filePath}` : ""}`)}
                 emptyText={t("analysis.summary.noSymbols")}
               />
               <SimpleListCard
                 title={t("analysis.summary.topRisks")}
-                items={(snapshot?.topRisks ?? []).map((item) => `[${item.severity}] ${item.title}`)}
+                items={(snapshot?.topRisks ?? []).map((item) => `[${riskSeverityLabel(item.severity)}] ${item.title}`)}
                 emptyText={t("analysis.summary.noRisks")}
               />
               <SimpleListCard
                 title={t("analysis.summary.topRules")}
-                items={(snapshot?.topRules ?? []).map((item) => `${item.name} (${item.ruleType})`)}
+                items={(snapshot?.topRules ?? []).map((item) => `${item.name} (${ruleTypeLabel(item.ruleType)})`)}
                 emptyText={t("analysis.summary.noRules")}
               />
             </div>
@@ -310,14 +322,14 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="symbols" className="space-y-4">
-            <FilterCard title="符號" description="依名稱或類型篩選已持久化的符號結果。">
+            <FilterCard title={t("analysis.filters.symbolsTitle")} description={t("analysis.filters.symbolsDescription")}>
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={symbolSearch} onChange={(event) => { setSymbolSearch(event.target.value); setSymbolPage(1); }} placeholder="搜尋符號名稱" />
+                <Input value={symbolSearch} onChange={(event) => { setSymbolSearch(event.target.value); setSymbolPage(1); }} placeholder={t("analysis.filters.symbolSearch")} />
                 <Select value={symbolKind} onValueChange={(value) => { setSymbolKind(value); setSymbolPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="類型" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.kindPlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部類型</SelectItem>
-                    {symbolKinds.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                    <SelectItem value="all">{t("analysis.filters.allKinds")}</SelectItem>
+                    {symbolKinds.map((value) => <SelectItem key={value} value={value}>{symbolKindLabel(value)}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -329,24 +341,24 @@ export default function AnalysisResult() {
                 <div key={symbol.id} className="rounded-lg border px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-950">{symbol.name}</span>
-                    <Badge variant="outline">{symbol.type}</Badge>
+                    <Badge variant="outline">{symbolKindLabel(symbol.type)}</Badge>
                   </div>
-                  <p className="text-slate-600">{symbol.filePath ?? "未知檔案"}</p>
-                  <p className="text-slate-500">line {symbol.startLine} - {symbol.endLine}</p>
+                  <p className="text-slate-600">{symbol.filePath ?? t("analysis.empty.unknownFile")}</p>
+                  <p className="text-slate-500">{t("analysis.list.lineRange", { start: symbol.startLine, end: symbol.endLine })}</p>
                 </div>
               ))}
-              emptyText="目前篩選條件下沒有符號結果。"
+              emptyText={t("analysis.empty.noSymbols")}
             />
           </TabsContent>
 
           <TabsContent value="fields" className="space-y-4">
-            <FilterCard title="欄位" description="依資料表或欄位名稱篩選欄位證據。">
+            <FilterCard title={t("analysis.filters.fieldsTitle")} description={t("analysis.filters.fieldsDescription")}>
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={fieldSearch} onChange={(event) => { setFieldSearch(event.target.value); setFieldPage(1); }} placeholder="搜尋資料表或欄位" />
+                <Input value={fieldSearch} onChange={(event) => { setFieldSearch(event.target.value); setFieldPage(1); }} placeholder={t("analysis.filters.fieldSearch")} />
                 <Select value={fieldTable} onValueChange={(value) => { setFieldTable(value); setFieldPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="資料表" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.tablePlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部資料表</SelectItem>
+                    <SelectItem value="all">{t("analysis.filters.allTables")}</SelectItem>
                     {(snapshot?.fieldTables ?? []).map((table) => <SelectItem key={table.tableName} value={table.tableName}>{table.tableName}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -359,31 +371,33 @@ export default function AnalysisResult() {
                 <div key={field.id} className="rounded-lg border px-3 py-2">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-950">{field.tableName}.{field.fieldName}</span>
-                    <Badge variant="outline">{field.fieldType ?? "unknown"}</Badge>
+                    <Badge variant="outline">{field.fieldType ?? t("common.unknown")}</Badge>
                   </div>
-                  <p className="text-slate-500">references {field.referenceCount} / reads {field.readCount} / writes {field.writeCount}</p>
+                  <p className="text-slate-500">
+                    {t("analysis.list.fieldStats", { references: field.referenceCount, reads: field.readCount, writes: field.writeCount })}
+                  </p>
                 </div>
               ))}
-              emptyText="目前篩選條件下沒有欄位結果。"
+              emptyText={t("analysis.empty.noFields")}
             />
           </TabsContent>
 
           <TabsContent value="dependencies" className="space-y-4">
-            <FilterCard title="相依關係" description="檢視符號到符號、或符號到外部目標的相依關係。">
+            <FilterCard title={t("analysis.filters.dependenciesTitle")} description={t("analysis.filters.dependenciesDescription")}>
               <div className="grid gap-3 md:grid-cols-3">
-                <Input value={dependencySearch} onChange={(event) => { setDependencySearch(event.target.value); setDependencyPage(1); }} placeholder="搜尋來源、目標或外部名稱" />
+                <Input value={dependencySearch} onChange={(event) => { setDependencySearch(event.target.value); setDependencyPage(1); }} placeholder={t("analysis.filters.dependencySearch")} />
                 <Select value={dependencyType} onValueChange={(value) => { setDependencyType(value); setDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="相依類型" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.dependencyTypePlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部相依類型</SelectItem>
-                    {dependencyKinds.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                    <SelectItem value="all">{t("analysis.filters.allDependencyTypes")}</SelectItem>
+                    {dependencyKinds.map((value) => <SelectItem key={value} value={value}>{dependencyKindLabel(value)}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={dependencyTargetKind} onValueChange={(value) => { setDependencyTargetKind(value); setDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="目標類型" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.targetKindPlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部目標類型</SelectItem>
-                    {dependencyTargetKinds.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                    <SelectItem value="all">{t("analysis.filters.allTargetKinds")}</SelectItem>
+                    {dependencyTargetKinds.map((value) => <SelectItem key={value} value={value}>{dependencyTargetKindLabel(value)}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -395,32 +409,37 @@ export default function AnalysisResult() {
                 <div key={dependency.id} className="rounded-lg border px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-950">{dependency.sourceSymbolName}</span>
-                    <Badge variant="outline">{dependency.dependencyType}</Badge>
+                    <Badge variant="outline">{dependencyKindLabel(dependency.dependencyType)}</Badge>
                   </div>
-                  <p className="text-slate-600">target: {dependency.targetSymbolName ?? dependency.targetExternalName ?? "unknown"}</p>
-                  <p className="text-slate-500">{dependency.targetKind}{dependency.lineNumber ? ` / line ${dependency.lineNumber}` : ""}</p>
+                  <p className="text-slate-600">
+                    {t("analysis.list.target", { target: dependency.targetSymbolName ?? dependency.targetExternalName ?? t("common.unknown") })}
+                  </p>
+                  <p className="text-slate-500">
+                    {dependencyTargetKindLabel(dependency.targetKind)}
+                    {dependency.lineNumber ? ` / ${t("analysis.list.lineNumber", { line: dependency.lineNumber })}` : ""}
+                  </p>
                 </div>
               ))}
-              emptyText="目前篩選條件下沒有相依關係結果。"
+              emptyText={t("analysis.empty.noDependencies")}
             />
           </TabsContent>
 
           <TabsContent value="fieldDependencies" className="space-y-4">
-            <FilterCard title="欄位相依" description="檢視欄位層級的讀取、寫入與計算證據。">
+            <FilterCard title={t("analysis.filters.fieldDependenciesTitle")} description={t("analysis.filters.fieldDependenciesDescription")}>
               <div className="grid gap-3 md:grid-cols-3">
-                <Input value={fieldDependencySearch} onChange={(event) => { setFieldDependencySearch(event.target.value); setFieldDependencyPage(1); }} placeholder="搜尋資料表、欄位、符號或上下文" />
+                <Input value={fieldDependencySearch} onChange={(event) => { setFieldDependencySearch(event.target.value); setFieldDependencyPage(1); }} placeholder={t("analysis.filters.fieldDependencySearch")} />
                 <Select value={fieldDependencyTable} onValueChange={(value) => { setFieldDependencyTable(value); setFieldDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="資料表" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.tablePlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部資料表</SelectItem>
+                    <SelectItem value="all">{t("analysis.filters.allTables")}</SelectItem>
                     {(snapshot?.fieldTables ?? []).map((table) => <SelectItem key={table.tableName} value={table.tableName}>{table.tableName}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 <Select value={fieldDependencyOperationType} onValueChange={(value) => { setFieldDependencyOperationType(value); setFieldDependencyPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="操作類型" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.operationTypePlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部操作類型</SelectItem>
-                    {fieldDependencyOperationTypes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                    <SelectItem value="all">{t("analysis.filters.allOperations")}</SelectItem>
+                    {fieldDependencyOperationTypes.map((value) => <SelectItem key={value} value={value}>{fieldOperationLabel(value)}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -432,25 +451,28 @@ export default function AnalysisResult() {
                 <div key={item.id} className="rounded-lg border px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-950">{item.tableName}.{item.fieldName}</span>
-                    <Badge variant="outline">{item.operationType}</Badge>
+                    <Badge variant="outline">{fieldOperationLabel(item.operationType)}</Badge>
                   </div>
                   <p className="text-slate-600">{item.symbolName}</p>
-                  <p className="text-slate-500">{item.context ?? "無上下文"}{item.lineNumber ? ` / line ${item.lineNumber}` : ""}</p>
+                  <p className="text-slate-500">
+                    {item.context ?? t("analysis.empty.noContext")}
+                    {item.lineNumber ? ` / ${t("analysis.list.lineNumber", { line: item.lineNumber })}` : ""}
+                  </p>
                 </div>
               ))}
-              emptyText="目前篩選條件下沒有欄位相依結果。"
+              emptyText={t("analysis.empty.noFieldDependencies")}
             />
           </TabsContent>
 
           <TabsContent value="risks" className="space-y-4">
-            <FilterCard title="風險" description="檢視 heuristic 風險，並依嚴重度或關鍵字篩選。">
+            <FilterCard title={t("analysis.filters.risksTitle")} description={t("analysis.filters.risksDescription")}>
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={riskSearch} onChange={(event) => { setRiskSearch(event.target.value); setRiskPage(1); }} placeholder="搜尋標題、描述或檔案" />
+                <Input value={riskSearch} onChange={(event) => { setRiskSearch(event.target.value); setRiskPage(1); }} placeholder={t("analysis.filters.riskSearch")} />
                 <Select value={riskSeverity} onValueChange={(value) => { setRiskSeverity(value); setRiskPage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="嚴重度" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.severityPlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部嚴重度</SelectItem>
-                    {riskSeverities.map((severity) => <SelectItem key={severity} value={severity}>{severity}</SelectItem>)}
+                    <SelectItem value="all">{t("analysis.filters.allSeverities")}</SelectItem>
+                    {riskSeverities.map((severity) => <SelectItem key={severity} value={severity}>{riskSeverityLabel(severity)}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -460,14 +482,14 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="rules" className="space-y-4">
-            <FilterCard title="規則" description="檢視推導出的商業規則候選與相關中繼資料。">
+            <FilterCard title={t("analysis.filters.rulesTitle")} description={t("analysis.filters.rulesDescription")}>
               <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder="搜尋規則名稱或描述" />
+                <Input value={ruleSearch} onChange={(event) => { setRuleSearch(event.target.value); setRulePage(1); }} placeholder={t("analysis.filters.ruleSearch")} />
                 <Select value={ruleType} onValueChange={(value) => { setRuleType(value); setRulePage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="規則類型" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysis.filters.ruleTypePlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">全部規則類型</SelectItem>
-                    {ruleTypes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                    <SelectItem value="all">{t("analysis.filters.allRuleTypes")}</SelectItem>
+                    {ruleTypes.map((value) => <SelectItem key={value} value={value}>{ruleTypeLabel(value)}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -479,21 +501,21 @@ export default function AnalysisResult() {
                 <div key={rule.id} className="rounded-lg border px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-slate-950">{rule.name}</span>
-                    <Badge variant="outline">{rule.ruleType}</Badge>
+                    <Badge variant="outline">{ruleTypeLabel(rule.ruleType)}</Badge>
                   </div>
-                  <p className="text-slate-600">{rule.description ?? "這筆規則沒有產生額外描述。"}</p>
-                  <p className="text-slate-500">{rule.sourceFile ?? "未知檔案"}{rule.lineNumber ? `:${rule.lineNumber}` : ""}</p>
+                  <p className="text-slate-600">{rule.description ?? t("analysis.empty.noRuleDescription")}</p>
+                  <p className="text-slate-500">{rule.sourceFile ?? t("analysis.empty.unknownFile")}{rule.lineNumber ? `:${rule.lineNumber}` : ""}</p>
                 </div>
               ))}
-              emptyText="目前篩選條件下沒有規則結果。"
+              emptyText={t("analysis.empty.noRules")}
             />
           </TabsContent>
 
           <TabsContent value="documents" className="grid gap-4 lg:grid-cols-2">
-            <DocumentCard title="FLOW.md" description="流程摘要" content={renderDocumentPreview(report?.flowMarkdown)} />
-            <DocumentCard title="DATA_DEPENDENCY.md" description="欄位相依摘要" content={renderDocumentPreview(report?.dataDependencyMarkdown)} />
-            <DocumentCard title="RISKS.md" description="風險列表" content={renderDocumentPreview(report?.risksMarkdown)} />
-            <DocumentCard title="RULES.yaml" description="推導規則" content={renderDocumentPreview(report?.rulesYaml)} />
+            <DocumentCard title="FLOW.md" description={t("analysis.documents.flow")} content={renderDocumentPreview(report?.flowMarkdown)} />
+            <DocumentCard title="DATA_DEPENDENCY.md" description={t("analysis.documents.dataDependency")} content={renderDocumentPreview(report?.dataDependencyMarkdown)} />
+            <DocumentCard title="RISKS.md" description={t("analysis.documents.risks")} content={renderDocumentPreview(report?.risksMarkdown)} />
+            <DocumentCard title="RULES.yaml" description={t("analysis.documents.rules")} content={renderDocumentPreview(report?.rulesYaml)} />
           </TabsContent>
         </Tabs>
       </main>

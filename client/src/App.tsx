@@ -13,7 +13,7 @@ const NotFound = lazy(() => import("./pages/NotFound"));
 
 function Router() {
   return (
-    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-slate-50">{t("common.loading")}...</div>}>
+    <Suspense fallback={<div className="flex min-h-dvh items-center justify-center bg-slate-50">{t("common.loading")}...</div>}>
       <Switch>
         <Route path={"/"} component={Home} />
         <Route path={"/import"} component={ImportProject} />

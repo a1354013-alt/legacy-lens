@@ -237,7 +237,7 @@ export default function ImportProject() {
   const latestJob = projectQuery.data?.latestJob ?? activeJob ?? null;
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50">
+    <div className="flex min-h-dvh flex-col bg-slate-50">
       <header className="shrink-0 border-b bg-white">
         <div className="mx-auto flex max-w-6xl items-center gap-4 px-6 py-4">
           <Button variant="ghost" onClick={() => setLocation("/")}>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFieldIdentityKey, normalizeFieldIdentity } from "./fieldIdentity";
+import { buildFieldIdentityKey, hasExplicitFieldSchema, hasExplicitTableSchema, normalizeFieldIdentity } from "./fieldIdentity";
 
 describe("field identity normalization", () => {
   it("canonicalizes quoted, cased, and default-schema SQL field names", () => {
@@ -30,5 +30,14 @@ describe("field identity normalization", () => {
       buildFieldIdentityKey({ table: "[erp].[customer]", field: "`id`" })
     );
     expect(buildFieldIdentityKey({ table: "erp.Customer", field: "Id" })).not.toBe(buildFieldIdentityKey({ table: "Customer", field: "Id" }));
+  });
+
+  it("detects explicit schemas without changing default-schema identity keys", () => {
+    expect(hasExplicitTableSchema("erp.Customer")).toBe(true);
+    expect(hasExplicitTableSchema("[dbo].[Customer]")).toBe(true);
+    expect(hasExplicitTableSchema("Customer")).toBe(false);
+    expect(hasExplicitFieldSchema({ table: "", field: "erp.Customer.Id" })).toBe(true);
+    expect(hasExplicitFieldSchema({ table: "Customer", field: "Id" })).toBe(false);
+    expect(buildFieldIdentityKey({ table: "dbo.Customer", field: "Id" })).toBe(buildFieldIdentityKey({ table: "Customer", field: "Id" }));
   });
 });

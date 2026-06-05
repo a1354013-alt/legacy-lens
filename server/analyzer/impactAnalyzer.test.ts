@@ -114,12 +114,16 @@ beforeEach(() => {
       { id: 201, projectId: 1, tableName: "orders", fieldName: "amount" },
       { id: 203, projectId: 1, tableName: "ERP.SIGNB", fieldName: "MARK_2" },
       { id: 204, projectId: 1, tableName: "Customer", fieldName: "Id" },
+      { id: 205, projectId: 1, tableName: "erp.Customer", fieldName: "Id" },
+      { id: 206, projectId: 1, tableName: "[dbo].[Customer]", fieldName: "[Name]" },
       { id: 202, projectId: 2, tableName: "orders", fieldName: "amount" },
     ],
     fieldDependencies: [
       { id: 301, projectId: 1, fieldId: 201, symbolId: 12, operationType: "read", lineNumber: 15, context: "orders.amount" },
       { id: 303, projectId: 1, fieldId: 203, symbolId: 13, operationType: "write", lineNumber: 33, context: "ERP.SIGNB.MARK_2" },
       { id: 304, projectId: 1, fieldId: 204, symbolId: 12, operationType: "read", lineNumber: 16, context: "[Customer].[Id]" },
+      { id: 305, projectId: 1, fieldId: 205, symbolId: 13, operationType: "read", lineNumber: 34, context: "erp.Customer.Id" },
+      { id: 306, projectId: 1, fieldId: 206, symbolId: 12, operationType: "read", lineNumber: 17, context: "[dbo].[Customer].[Name]" },
       { id: 302, projectId: 2, fieldId: 202, symbolId: 21, operationType: "read", lineNumber: 8, context: "orders.amount" },
     ],
     risks: [
@@ -194,13 +198,58 @@ describe("ImpactAnalyzer", () => {
 
   it("matches canonical sql_field variants without losing impact links", async () => {
     const analyzer = new ImpactAnalyzer();
-    const targets = ["Customer.Id", "customer.id", "dbo.Customer.Id", "[Customer].[Id]", "`customer`.`id`"];
+    const looseTargets = ["Customer.Id", "customer.id", "[Customer].[Id]", "`customer`.`id`"];
 
-    for (const target of targets) {
+    for (const target of looseTargets) {
       const result = await analyzer.analyze(1, target, "sql_field");
       expect(result.targetType).toBe("sql_field");
-      expect(result.affectedFields).toEqual([{ table: "Customer", field: "Id" }]);
+      expect(result.affectedFields).toEqual([
+        { table: "Customer", field: "Id" },
+        { table: "erp.Customer", field: "Id" },
+      ]);
       expect(result.affectedSymbols.map((symbol) => symbol.name)).toContain("UpdateContract");
     }
+
+    const dboResult = await analyzer.analyze(1, "dbo.Customer.Id", "sql_field");
+    expect(dboResult.targetType).toBe("sql_field");
+    expect(dboResult.affectedFields).toEqual([{ table: "Customer", field: "Id" }]);
+    expect(dboResult.affectedSymbols.map((symbol) => symbol.name)).toContain("UpdateContract");
+  });
+
+  it("keeps schema-qualified sql_table targets scoped to the requested schema", async () => {
+    const analyzer = new ImpactAnalyzer();
+    const erpResult = await analyzer.analyze(1, "erp.Customer", "sql_table");
+    const dboResult = await analyzer.analyze(1, "dbo.Customer", "sql_table");
+
+    expect(erpResult.targetType).toBe("sql_table");
+    expect(erpResult.affectedFields).toEqual([{ table: "erp.Customer", field: "Id" }]);
+    expect(erpResult.affectedSymbols.map((symbol) => symbol.name)).toEqual(["Caller"]);
+    expect(dboResult.affectedFields).toEqual([
+      { table: "[dbo].[Customer]", field: "[Name]" },
+      { table: "Customer", field: "Id" },
+    ]);
+    expect(dboResult.affectedFields.some((field) => field.table === "erp.Customer")).toBe(false);
+  });
+
+  it("allows loose sql_table matching when the target omits schema", async () => {
+    const analyzer = new ImpactAnalyzer();
+    const result = await analyzer.analyze(1, "`customer`", "sql_table");
+
+    expect(result.targetType).toBe("sql_table");
+    expect(result.affectedFields).toEqual([
+      { table: "[dbo].[Customer]", field: "[Name]" },
+      { table: "Customer", field: "Id" },
+      { table: "erp.Customer", field: "Id" },
+    ]);
+    expect(result.affectedSymbols.map((symbol) => symbol.name).sort()).toEqual(["Caller", "UpdateContract"]);
+  });
+
+  it("matches quoted and cased schema-qualified sql_field targets without broadening schemas", async () => {
+    const analyzer = new ImpactAnalyzer();
+    const result = await analyzer.analyze(1, "[ERP].[Customer].[ID]", "sql_field");
+
+    expect(result.targetType).toBe("sql_field");
+    expect(result.affectedFields).toEqual([{ table: "erp.Customer", field: "Id" }]);
+    expect(result.affectedSymbols.map((symbol) => symbol.name)).toEqual(["Caller"]);
   });
 });

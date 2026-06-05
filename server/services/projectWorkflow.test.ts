@@ -772,6 +772,128 @@ describe("project workflow", () => {
     expect(ruleBatchSizes).toEqual([250, 1]);
   });
 
+  it("batch inserts symbols and fields without breaking downstream mappings", async () => {
+    const { analyzeProject, getDependenciesPage, getFieldDependenciesPage } = await import("./projectWorkflow");
+    seedProject();
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 1,
+      filePath: "main.go",
+      fileName: "main.go",
+      fileType: ".go",
+      content: "package main",
+      lineCount: 300,
+      status: "stored",
+    });
+    const symbolBatchSizes: number[] = [];
+    const fieldBatchSizes: number[] = [];
+    const originalInsert = fakeDb.insert.bind(fakeDb);
+    fakeDb.insert = (table: object) => {
+      const tableName = getTableName(table);
+      const baseInsert = originalInsert(table);
+      return {
+        values: async (payload: Row | Row[]) => {
+          if (tableName === "symbols") {
+            symbolBatchSizes.push(Array.isArray(payload) ? payload.length : 1);
+          }
+          if (tableName === "fields") {
+            fieldBatchSizes.push(Array.isArray(payload) ? payload.length : 1);
+          }
+          return baseInsert.values(payload);
+        },
+      };
+    };
+    const analyzedSymbols = Array.from({ length: 251 }, (_value, index) => ({
+      stableKey: `main.go::Symbol${index}::${index + 1}`,
+      name: `Symbol${index}`,
+      type: "function",
+      file: "main.go",
+      startLine: index + 1,
+      endLine: index + 1,
+    }));
+    const analyzedFields = Array.from({ length: 251 }, (_value, index) => ({
+      table: "orders",
+      field: `field_${index}`,
+      fieldType: "varchar",
+    }));
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "go",
+      symbols: analyzedSymbols,
+      dependencies: [
+        {
+          from: analyzedSymbols[0].stableKey,
+          to: analyzedSymbols[250].stableKey,
+          fromName: "Symbol0",
+          toName: "Symbol250",
+          type: "calls",
+          line: 1,
+        },
+        {
+          from: analyzedSymbols[1].stableKey,
+          fromName: "Symbol1",
+          toName: "ExternalApi",
+          type: "references",
+          line: 2,
+        },
+      ],
+      fieldReferences: analyzedFields.map((field, index) => ({
+        table: field.table,
+        field: field.field,
+        type: "read",
+        file: "main.go",
+        line: index + 1,
+        symbolStableKey: analyzedSymbols[index].stableKey,
+        context: `SELECT ${field.field} FROM orders`,
+      })),
+      schemaFields: analyzedFields,
+      risks: [{ title: "Risk", description: "risk", severity: "medium", category: "magic_value", sourceFile: "main.go", lineNumber: 1 }],
+      rules: [{ ruleType: "magic_value", name: "rule", description: "rule", condition: "condition", sourceFile: "main.go", lineNumber: 1 }],
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 1,
+        eligibleFileCount: 1,
+        analyzedFileCount: 1,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 251,
+        dependencyCount: 2,
+        fieldCount: 251,
+        fieldDependencyCount: 251,
+        riskCount: 1,
+        ruleCount: 1,
+        warningCount: 0,
+      },
+    };
+
+    await analyzeProject(1, 7);
+
+    expect(symbolBatchSizes).toEqual([250, 1]);
+    expect(fieldBatchSizes).toEqual([250, 1]);
+    expect(fakeDb.store.symbols).toHaveLength(251);
+    expect(fakeDb.store.fields).toHaveLength(251);
+    expect(fakeDb.store.fieldDependencies).toHaveLength(251);
+    expect(fakeDb.store.dependencies).toHaveLength(2);
+    expect(fakeDb.store.dependencies[0]).toMatchObject({
+      sourceSymbolId: fakeDb.store.symbols[0].id,
+      targetSymbolId: fakeDb.store.symbols[250].id,
+      targetExternalName: null,
+    });
+
+    const dependenciesPage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25, search: "symbol250" }, 7);
+    const fieldDependenciesPage = await getFieldDependenciesPage({ projectId: 1, page: 1, pageSize: 25, tableName: "orders", search: "field_250" }, 7);
+
+    expect(dependenciesPage.items).toEqual([expect.objectContaining({ sourceSymbolName: "Symbol0", targetSymbolName: "Symbol250" })]);
+    expect(fieldDependenciesPage.items).toEqual([expect.objectContaining({ tableName: "orders", fieldName: "field_250", symbolName: "Symbol250" })]);
+  });
+
   it("returns a light snapshot summary instead of full arrays", async () => {
     const { getAnalysisSnapshot } = await import("./projectWorkflow");
     seedProject(1, { status: "completed", importWarningsJson: [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }] });

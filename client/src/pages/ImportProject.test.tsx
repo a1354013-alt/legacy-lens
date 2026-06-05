@@ -38,7 +38,7 @@ describe("ImportProject", () => {
   it("renders the compact first-screen ZIP import flow", () => {
     const html = renderToString(<ImportProject />);
 
-    expect(html).toContain("min-h-screen");
+    expect(html).toContain("min-h-dvh");
     expect(html).toContain("lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]");
     expect(html).toContain("accept=\".zip\"");
     expect(html).toContain("h-40");

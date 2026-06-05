@@ -14,7 +14,10 @@ This document summarizes the production-facing boundaries that matter for Legacy
 ## Rate Limiting
 
 - HTTP and tRPC procedure rate limits currently use process-local memory stores.
-- Production deployments must run a single app replica for rate-limit correctness unless an external shared store is introduced.
+- The supported production topology is a single app replica for rate-limit correctness unless Redis or another external shared store is introduced.
+- Worker replicas may still be scaled separately when they share MySQL and preserve the DB-lease ownership rules described above.
+- `LEGACY_LENS_TRUST_PROXY` affects trusted proxy/IP parsing only; it does not make the limiter shared across app processes.
+- Current built-in buckets are `auth`, `api`, `read`, `upload`, `clone`, `analysis`, and `heavyRead`.
 - If the Express rate-limit middleware cannot initialize in production, the app fails closed instead of silently allowing unlimited requests.
 
 ## Security Headers
@@ -33,7 +36,9 @@ This document summarizes the production-facing boundaries that matter for Legacy
 
 ## Upload Contract
 
-- `POST /api/projects/:projectId/upload` accepts `multipart/form-data` only.
+- New project imports use `POST /api/projects/import` with `multipart/form-data`; this is the route used by the frontend import page.
+- Existing project re-imports use `POST /api/projects/:projectId/upload` with `multipart/form-data`.
+- Legacy tRPC compatibility routes remain for older callers: `projects.uploadFiles` is capped to small base64 ZIP payloads, and `projects.cloneGit` re-imports Git into an existing project.
 - Expired temp ZIP uploads are cleaned on startup and periodically via `UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS`.
 - Cleanup skips temp ZIP paths still referenced by queued or running import jobs.
 - Send exactly one source per request:
@@ -44,8 +49,11 @@ This document summarizes the production-facing boundaries that matter for Legacy
 Example:
 
 ```bash
-curl -X POST "http://localhost:3000/api/projects/42/upload" \
+curl -X POST "http://localhost:3000/api/projects/import" \
   -H "Cookie: app_session_id=..." \
+  -F "name=legacy-erp" \
+  -F "focusLanguage=go" \
+  -F "sourceType=upload" \
   -F "file=@./project.zip;type=application/zip"
 ```
 

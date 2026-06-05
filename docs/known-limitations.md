@@ -13,8 +13,8 @@ This document records intentionally unfinished or bounded behavior so deployment
 ## Frontend / i18n Boundaries
 
 - The current product primarily targets Traditional Chinese.
-- The locale helper exists, but the app is not yet fully localized end-to-end.
-- Some older screens still contain hard-coded UI copy and should be normalized gradually instead of through a risky bulk rewrite.
+- Primary Home, Import, Analysis Result, and Impact Analysis UI copy now flows through the locale helper.
+- Backend enum values remain stable API data. The frontend maps common enum values to Traditional Chinese display labels instead of changing the contracts.
 
 ## Worker / Deployment Boundaries
 
@@ -23,6 +23,13 @@ This document records intentionally unfinished or bounded behavior so deployment
 - Long-running jobs that exceed the lease window without heartbeats will be retried; size your worker resources so legitimate work does not starve the heartbeat loop.
 - If a deployment cannot rely on shared-database conditional updates, run a single worker replica rather than weakening the claim path.
 - Deleting a project is intentionally blocked while queued/running work exists. If you need cancel semantics, that remains a future enhancement.
+
+## Rate Limit Boundaries
+
+- HTTP route and tRPC procedure rate limits are process-local in the current implementation.
+- The supported production topology is one app replica unless Redis or another shared rate-limit store is added.
+- Multi-replica app/API deployments can dilute per-client limits and are not documented as supported today.
+- `LEGACY_LENS_TRUST_PROXY` only controls trusted proxy/IP parsing. It does not provide shared limiter state.
 
 ## Git Import Security Boundaries
 

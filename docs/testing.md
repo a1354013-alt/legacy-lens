@@ -18,6 +18,7 @@ pnpm docker:smoke
 - Project job claiming, lease expiry, retry, and startup recovery
 - Ownership-fenced heartbeat/finalization so stale workers cannot overwrite reclaimed jobs
 - ZIP upload route contract (`multipart/form-data`) and server-side `.zip` validation
+- New-project import route contract (`POST /api/projects/import`) and existing-project re-import route contract (`POST /api/projects/:projectId/upload`)
 - ZIP/Git import safety boundaries
 - Analysis persistence and report export
 

@@ -12,6 +12,7 @@ import { getAffectedComponentCount } from "./impactAnalysisSummary";
 import { buildImpactSections, DEFAULT_IMPACT_SECTION_LIMIT } from "./impactAnalysisSections";
 import type { ImpactTargetType } from "@shared/contracts";
 import { t } from "@/locales";
+import { impactTargetTypeLabel } from "@/locales/uiLabels";
 
 interface ImpactAnalysisPanelProps {
   projectId: number;
@@ -120,7 +121,7 @@ export function ImpactAnalysisPanel({ projectId }: ImpactAnalysisPanelProps) {
               <CardContent>
                 <div className="text-2xl font-bold">{impactQuery.data.target}</div>
                 <Badge variant="outline" className="mt-1 capitalize">
-                  {impactQuery.data.targetType}
+                  {impactTargetTypeLabel(impactQuery.data.targetType)}
                 </Badge>
               </CardContent>
             </Card>

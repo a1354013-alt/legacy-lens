@@ -81,6 +81,18 @@ function normalizeSchema(value: string | null | undefined) {
   return !schema || schema === "dbo" ? null : schema;
 }
 
+export function hasExplicitFieldSchema(identity: FieldIdentity) {
+  if (identity.schema !== undefined && identity.schema !== null && String(identity.schema).trim() !== "") {
+    return true;
+  }
+
+  return [...splitSqlIdentifier(identity.table), ...splitSqlIdentifier(identity.field)].filter(Boolean).length >= 3;
+}
+
+export function hasExplicitTableSchema(table: string) {
+  return splitSqlIdentifier(table).filter(Boolean).length >= 2;
+}
+
 export function normalizeFieldIdentity(identity: FieldIdentity): NormalizedFieldIdentity {
   const tableParts = splitSqlIdentifier(identity.table);
   const fieldParts = splitSqlIdentifier(identity.field);

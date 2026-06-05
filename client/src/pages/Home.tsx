@@ -194,7 +194,7 @@ export default function Home() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+      <div className="flex min-h-dvh items-center justify-center bg-slate-50">
         <Loader2 className="size-10 animate-spin text-slate-600" />
       </div>
     );
@@ -202,8 +202,8 @@ export default function Home() {
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <main className="mx-auto flex min-h-screen max-w-5xl flex-col justify-center gap-10 px-6 py-16">
+      <div className="min-h-dvh bg-slate-50">
+        <main className="mx-auto flex min-h-dvh max-w-5xl flex-col justify-center gap-10 px-6 py-16">
           <div className="space-y-4">
             <Badge variant="outline">Legacy Lens</Badge>
             <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-slate-950">{t("home.heroTitle")}</h1>
@@ -229,7 +229,7 @@ export default function Home() {
   const projects = (projectsQuery.data ?? []) as ProjectRow[];
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50">
+    <div className="flex min-h-dvh flex-col bg-slate-50">
       <header className="shrink-0 border-b bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div>

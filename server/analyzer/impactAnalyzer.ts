@@ -9,7 +9,7 @@ import {
   symbols,
 } from "../../drizzle/schema";
 import type { ImpactAnalysisResult, ImpactTargetType } from "../../shared/contracts";
-import { buildFieldIdentityKey, normalizeFieldIdentity } from "./fieldIdentity";
+import { buildFieldIdentityKey, hasExplicitFieldSchema, hasExplicitTableSchema, normalizeFieldIdentity } from "./fieldIdentity";
 import { getDb } from "../db";
 
 type ProjectSymbol = typeof symbols.$inferSelect;
@@ -94,8 +94,20 @@ function addFieldImpact(fieldSet: Map<string, { table: string; field: string }>,
   });
 }
 
-function getFieldCanonicalKey(field: ProjectField) {
-  return buildFieldIdentityKey({ table: field.tableName, field: field.fieldName });
+function normalizedFieldMatches(target: ReturnType<typeof normalizeFieldIdentity>, candidate: ReturnType<typeof normalizeFieldIdentity>, requireSchema: boolean) {
+  if (target.table !== candidate.table || target.field !== candidate.field) {
+    return false;
+  }
+
+  return requireSchema ? target.schema === candidate.schema : true;
+}
+
+function normalizedTableMatches(target: ReturnType<typeof normalizeFieldIdentity>, candidate: ReturnType<typeof normalizeFieldIdentity>, requireSchema: boolean) {
+  if (target.table !== candidate.table) {
+    return false;
+  }
+
+  return requireSchema ? target.schema === candidate.schema : true;
 }
 
 function addDependencyChain(result: ImpactAnalysisResult, chain: string[]) {
@@ -147,17 +159,24 @@ function findMatchingRisks(projectRisks: ProjectRisk[], target: string) {
 }
 
 function findMatchingSqlFields(projectFields: ProjectField[], target: string) {
-  const normalizedTarget = normalizeFieldIdentity({ table: "", field: target });
+  const targetIdentity = { table: "", field: target };
+  const normalizedTarget = normalizeFieldIdentity(targetIdentity);
   if (!normalizedTarget.table || !normalizedTarget.field) {
     return [];
   }
 
-  return projectFields.filter((field) => getFieldCanonicalKey(field) === buildFieldIdentityKey(normalizedTarget));
+  const requireSchema = hasExplicitFieldSchema(targetIdentity);
+  return projectFields.filter((field) =>
+    normalizedFieldMatches(normalizedTarget, normalizeFieldIdentity({ table: field.tableName, field: field.fieldName }), requireSchema)
+  );
 }
 
 function findMatchingSqlTable(projectFields: ProjectField[], target: string) {
   const normalizedTarget = normalizeFieldIdentity({ table: target, field: "__legacy_lens_placeholder__" });
-  return projectFields.filter((field) => normalizeFieldIdentity({ table: field.tableName, field: field.fieldName }).table === normalizedTarget.table);
+  const requireSchema = hasExplicitTableSchema(target);
+  return projectFields.filter((field) =>
+    normalizedTableMatches(normalizedTarget, normalizeFieldIdentity({ table: field.tableName, field: field.fieldName }), requireSchema)
+  );
 }
 
 function findSymbolsForFile(fileId: number, projectSymbols: ProjectSymbol[]) {

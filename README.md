@@ -362,31 +362,53 @@ Operational notes:
 - `migrate` is the only container that runs `pnpm db:migrate`.
 - The production app image keeps production dependencies only; it is not expected to contain `drizzle-kit`.
 - Production responses include security headers for content sniffing, referrer policy, frame blocking, CSP, and HSTS.
-- Rate limiting currently uses process-local stores. Production deployments should run a single app replica unless an external shared rate-limit store is added.
+- Rate limiting currently uses process-local stores. The supported production topology is one app replica unless Redis or another shared rate-limit store is added.
 
 ## Usage Flow (Import -> Analyze -> Export)
 
-1. Create a project
-2. Import source (ZIP or Git URL)
-3. Wait for the persisted import job to complete
-4. Run analysis as a separate persisted job
-5. Review the persisted snapshot + paged detail views in the UI
-6. Export report ZIP (generated from persisted analysis only)
+1. Create a project and import source in one request from the UI (`POST /api/projects/import`)
+2. Wait for the persisted import job to complete
+3. Run analysis as a separate persisted job
+4. Review the persisted snapshot + paged detail views in the UI
+5. Export report ZIP (generated from persisted analysis only)
 
 Report downloads should use `GET /api/projects/:projectId/report.zip` so large report archives are returned as an `application/zip` response instead of relying on a base64 tRPC query payload. The legacy tRPC `analysis.downloadReport` query remains available only for compatibility and should be treated as deprecated.
 
-Project imports should use `POST /api/projects/:projectId/upload` with `multipart/form-data`. The legacy tRPC `projects.uploadFiles` mutation remains available only for small compatibility payloads and is intentionally capped at 2MB raw ZIP content to avoid storing large base64 archives in job payloads.
-The multipart upload route is protected by an Express upload rate limiter before `multer` starts parsing the request body, so repeated large-file uploads are rejected with `429` before temp files are written.
+The current frontend import page creates the project and queues the ZIP/Git import with `POST /api/projects/import` using `multipart/form-data`.
+
+Use `POST /api/projects/:projectId/upload` only when you already have a project id and need to re-import source into that existing project. It accepts the same single-source multipart contract as the new-project route.
+
+Legacy/compatibility routes:
+- `projects.uploadFiles` is a small base64 ZIP compatibility mutation. It is capped at 2MB raw ZIP content and should not be used for normal imports.
+- `projects.cloneGit` remains available for compatibility with older tRPC callers that re-import Git into an existing project. The UI import page does not use it.
+
+The multipart routes are protected by an Express upload rate limiter before `multer` starts parsing the request body, so repeated large-file uploads are rejected with `429` before temp files are written.
 
 Multipart request examples:
 
 ```bash
-# ZIP upload
+# Create a new project and queue ZIP import, matching the frontend import page
+curl -X POST "http://localhost:3000/api/projects/import" \
+  -H "Cookie: app_session_id=..." \
+  -F "name=legacy-erp" \
+  -F "focusLanguage=go" \
+  -F "sourceType=upload" \
+  -F "file=@./project.zip;type=application/zip"
+
+# Create a new project and queue Git import
+curl -X POST "http://localhost:3000/api/projects/import" \
+  -H "Cookie: app_session_id=..." \
+  -F "name=legacy-erp" \
+  -F "focusLanguage=go" \
+  -F "sourceType=git" \
+  -F "gitUrl=https://github.com/example/repo.git"
+
+# Re-import ZIP into an existing project
 curl -X POST "http://localhost:3000/api/projects/42/upload" \
   -H "Cookie: app_session_id=..." \
   -F "file=@./project.zip;type=application/zip"
 
-# Git import through the same multipart endpoint
+# Re-import Git into an existing project
 curl -X POST "http://localhost:3000/api/projects/42/upload" \
   -H "Cookie: app_session_id=..." \
   -F "gitUrl=https://github.com/example/repo.git"
@@ -412,7 +434,8 @@ ZIP safety contract:
 - `projectJobs` is the single source of truth for queued/running/completed/failed work; process memory is only a local execution aid.
 - Job status values: `queued`, `running`, `completed`, `failed`.
 - The queue is DB-backed and restart-safe: startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks stuck `importing` / `analyzing` projects as failed when no active job still exists.
-- The system supports multiple web replicas. Worker replicas are supported when they share the same MySQL database and preserve the current conditional-update semantics.
+- Worker replicas are supported when they share the same MySQL database and preserve the current conditional-update semantics.
+- App/API replicas are currently limited to a single production replica because HTTP and tRPC rate-limit stores are process-local.
 - Each running job carries `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts` so multiple workers can coordinate through DB leases.
 - Claiming uses a DB-selected candidate plus an atomic conditional update. Competing workers may examine the same candidate row, but only one claim update is allowed to win for a given lease window.
 - Running jobs extend their lease through periodic heartbeats while work is in flight. Heartbeats, retry decisions, and finalization are ownership-fenced with `lockedBy + attemptCount`, so stale workers cannot overwrite a reclaimed job or its project state.
@@ -439,8 +462,9 @@ Legacy Lens provides heuristic impact analysis intended to guide code review. It
 - `analysis.getSnapshot` is now a light summary payload only.
 - Symbols, Fields, Risks, Rules, Dependencies, and FieldDependencies are fetched through dedicated paged APIs.
 - Page input is bounded to `pageSize <= 100`.
-- Heavy read endpoints have their own rate limiter and a consistent `429` message.
-- Procedure-level tRPC middleware applies rate-limit buckets per procedure path, so `httpBatchLink` batching cannot bypass upload/import, clone, analysis-trigger, or heavy-read limits.
+- Heavy read endpoints have their own process-local rate limiter and a consistent `429` message.
+- Procedure-level tRPC middleware applies process-local rate-limit buckets per procedure path, so `httpBatchLink` batching cannot bypass upload/import, clone, analysis-trigger, or heavy-read limits inside a single app process.
+- Production multi-replica app deployments require Redis or another shared rate-limit store before they are supported. `LEGACY_LENS_TRUST_PROXY` only controls trusted proxy/IP parsing; it is not a shared rate-limit store.
 
 ## Samples
 
@@ -523,7 +547,7 @@ Docker equivalents:
 
 ## Dependency Security Notes
 
-- `pnpm audit --audit-level high` passes as of 2026-06-05. The current audit output still reports 7 moderate findings.
+- `pnpm audit --audit-level high` passes as of 2026-06-05 in the latest verification. This is a point-in-time audit result, not a permanent security guarantee.
 - `package.json` keeps a small `pnpm.overrides` block for transitive packages that needed direct security pinning after dependency upgrades.
 - Current overrides are intentionally limited to security patches for `path-to-regexp`, `rollup`, `picomatch`, `tar`, `lodash`, and `lodash-es`.
 - When upstream packages adopt the patched transitive versions directly, prefer removing the override instead of letting the list grow.
@@ -591,6 +615,7 @@ Import pipeline is intentionally bounded:
 - Deployment notes: [docs/deployment.md](docs/deployment.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
 - Testing notes: [docs/testing.md](docs/testing.md)
+- Security audit summary: [docs/security-audit.md](docs/security-audit.md)
 - Accepted audit risks: [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md)
 
 ## Demo vs Production
