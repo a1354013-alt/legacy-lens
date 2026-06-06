@@ -19,7 +19,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { getImportUploadErrorMessage, readHttpApiError } from "@/lib/httpApiErrors";
 import { trpc } from "@/lib/trpc";
 import { t } from "@/locales";
-import { projectJobStatusLabel, projectJobTypeLabel, projectStatusLabel } from "@/locales/uiLabels";
+import {
+  localizeProjectJobErrorMessage,
+  projectJobFailureTitle,
+  projectJobStatusLabel,
+  projectJobTypeLabel,
+  projectStatusLabel,
+} from "@/locales/uiLabels";
 import { toast } from "sonner";
 import { MAX_UPLOAD_ZIP_SIZE, validateUploadedZip } from "./importUpload";
 import {
@@ -81,6 +87,7 @@ export default function ImportProject() {
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [activeJobType, setActiveJobType] = useState<ProjectJobType | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorJobType, setErrorJobType] = useState<ProjectJobType | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const analysisQueuedRef = useRef(false);
   const submittingRef = useRef(false);
@@ -128,8 +135,10 @@ export default function ImportProject() {
     }
 
     if (job.status === "failed") {
-      const message = job.errorMessage ?? t("importProject.alerts.importFailed");
+      const failedJobType = activeJobType ?? job.type;
+      const message = localizeProjectJobErrorMessage(failedJobType, job.errorMessage);
       setError(message);
+      setErrorJobType(failedJobType);
       setPhase("idle");
       setActiveJobId(null);
       setActiveJobType(null);
@@ -156,8 +165,12 @@ export default function ImportProject() {
           setActiveJobType("analyze");
         })
         .catch((caughtError) => {
-          const message = caughtError instanceof Error ? caughtError.message : t("importProject.alerts.analysisQueueFailed");
+          const message =
+            caughtError instanceof Error
+              ? localizeProjectJobErrorMessage("analyze", caughtError.message)
+              : t("importProject.alerts.analysisQueueFailed");
           setError(message);
+          setErrorJobType("analyze");
           setPhase("idle");
           setActiveJobId(null);
           setActiveJobType(null);
@@ -196,6 +209,7 @@ export default function ImportProject() {
     }
 
     setError(null);
+    setErrorJobType(null);
     analysisQueuedRef.current = false;
 
     try {
@@ -223,8 +237,12 @@ export default function ImportProject() {
       });
       toast.success(t("importProject.alerts.importQueued"));
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : t("importProject.alerts.createFailed");
+      const message =
+        caughtError instanceof Error
+          ? localizeProjectJobErrorMessage(sourceType === "git" ? "import_git" : "import_zip", caughtError.message)
+          : t("importProject.alerts.createFailed");
       setError(message);
+      setErrorJobType(sourceType === "git" ? "import_git" : "import_zip");
       setPhase("idle");
       setActiveJobId(null);
       setActiveJobType(null);
@@ -254,7 +272,7 @@ export default function ImportProject() {
       <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-4 px-6 py-4">
         {error ? (
           <Alert variant="destructive">
-            <AlertTitle>{t("importProject.alerts.errorTitle")}</AlertTitle>
+            <AlertTitle>{projectJobFailureTitle(errorJobType ?? activeJobType)}</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
@@ -289,7 +307,9 @@ export default function ImportProject() {
                 </p>
               </div>
               <Progress value={latestJob?.progress ?? 0} />
-              {latestJob?.errorMessage ? <p className="text-red-600">{latestJob.errorMessage}</p> : null}
+              {latestJob?.errorMessage ? (
+                <p className="text-red-600">{localizeProjectJobErrorMessage(latestJob.type, latestJob.errorMessage)}</p>
+              ) : null}
             </CardContent>
           </Card>
         )}

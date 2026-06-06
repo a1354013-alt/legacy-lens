@@ -25,6 +25,10 @@ export function getHttpStatusForAppError(error: AppError) {
     case "PROJECT_JOB_STALE":
     case "IMPORT_FAILED":
     case "ANALYSIS_FAILED":
+    case "ANALYSIS_PARSE_FAILED":
+    case "ANALYSIS_PERSIST_FAILED":
+    case "ANALYSIS_SUMMARY_FAILED":
+    case "ANALYSIS_UNKNOWN_FAILED":
       return 500;
     default:
       return 400;

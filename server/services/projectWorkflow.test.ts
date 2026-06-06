@@ -14,6 +14,7 @@ let zipFiles: Array<{ path: string; fileName: string; content: string; language:
 let gitFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
 let importWarnings: Array<{ code: string; message: string; filePath?: string }> = [];
 let analyzerResult: Record<string, unknown> | null = null;
+let analyzerError: Error | null = null;
 let fakeDb: ReturnType<typeof createFakeDb>;
 let failRootProjectReadsDuringTransaction = false;
 let failNextProjectJobInsert = false;
@@ -81,6 +82,9 @@ vi.mock("../utils/gitHandler", () => ({
 vi.mock("../analyzer/analyzer", () => ({
   Analyzer: class Analyzer {
     async analyzeProject() {
+      if (analyzerError) {
+        throw analyzerError;
+      }
       return analyzerResult;
     }
   },
@@ -317,6 +321,7 @@ beforeEach(() => {
   gitFiles = [];
   importWarnings = [];
   analyzerResult = null;
+  analyzerError = null;
   failRootProjectReadsDuringTransaction = false;
   failNextProjectJobInsert = false;
   transactionDepth = 0;
@@ -510,6 +515,134 @@ describe("project workflow", () => {
     expect(projectProgressUpdates.every((progress, index, values) => progress <= 100 && (index === 0 || progress >= values[index - 1]))).toBe(true);
   });
 
+  it("persists stage-specific analysis errors instead of a generic failure message", async () => {
+    const { queueAnalyzeProject, waitForProjectJobForTests, getProjectJob } = await import("./projectWorkflow");
+    seedProject(1, { language: "delphi" });
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 1,
+      filePath: "src/Form1.pas",
+      fileName: "Form1.pas",
+      fileType: ".pas",
+      content: "unit Form1;",
+      lineCount: 1,
+      status: "stored",
+    });
+    analyzerError = new Error("Unexpected token while parsing unit at src/Form1.pas");
+
+    const job = await queueAnalyzeProject(1, 7);
+    await waitForProjectJobForTests(job.jobId);
+    const jobRecord = await getProjectJob(job.jobId, 7);
+    const report = fakeDb.store.analysisResults[0];
+
+    expect(jobRecord.status).toBe("failed");
+    expect(jobRecord.errorCode).toBe("ANALYSIS_PARSE_FAILED");
+    expect(jobRecord.errorMessage).toContain("ANALYSIS_PARSE_FAILED");
+    expect(jobRecord.errorMessage).toContain("Unexpected token while parsing unit at src/Form1.pas");
+    expect(fakeDb.store.projects[0]?.errorMessage).toContain("ANALYSIS_PARSE_FAILED");
+    expect(fakeDb.store.projects[0]?.errorMessage).toContain("Unexpected token while parsing unit at src/Form1.pas");
+    expect(report?.errorMessage).toContain("ANALYSIS_PARSE_FAILED");
+    expect(report?.errorMessage).toContain("Unexpected token while parsing unit at src/Form1.pas");
+    expect(report?.warningsJson).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "ANALYSIS_PARSE_FAILED", level: "error" })])
+    );
+    expect(String(jobRecord.errorMessage)).not.toBe("Analysis failed.");
+    expect(String(fakeDb.store.projects[0]?.errorMessage)).not.toBe("Analysis failed.");
+    expect(String(report?.errorMessage)).not.toBe("Analysis failed.");
+    expect(loggerMock.error).toHaveBeenCalledWith(
+      "Analysis failed",
+      expect.objectContaining({
+        action: "analysis.failed",
+        errorCode: "ANALYSIS_PARSE_FAILED",
+      })
+    );
+  });
+
+  it("keeps analyze successful and records import warnings as partial results", async () => {
+    const { analyzeProject } = await import("./projectWorkflow");
+    seedProject(1, {
+      language: "delphi",
+      importWarningsJson: [
+        { code: "IMPORT_LIMITED_ANALYSIS", message: "Imported with limited analysis.", filePath: "forms/MainForm.dfm" },
+        { code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy/OrderRepo.pas" },
+      ],
+    });
+    fakeDb.store.files.push(
+      {
+        id: 1,
+        projectId: 1,
+        filePath: "legacy/OrderRepo.pas",
+        fileName: "OrderRepo.pas",
+        fileType: ".pas",
+        content: "unit OrderRepo;",
+        lineCount: 1,
+        status: "stored",
+      },
+      {
+        id: 2,
+        projectId: 1,
+        filePath: "forms/MainForm.dfm",
+        fileName: "MainForm.dfm",
+        fileType: ".dfm",
+        content: "object MainForm: TMainForm\nend",
+        lineCount: 2,
+        status: "stored",
+      }
+    );
+    analyzerResult = {
+      projectId: 1,
+      status: "completed",
+      language: "delphi",
+      symbols: [{ stableKey: "legacy/OrderRepo.pas::OrderRepo::1", name: "OrderRepo", type: "class", file: "legacy/OrderRepo.pas", startLine: 1, endLine: 1 }],
+      dependencies: [],
+      fieldReferences: [],
+      schemaFields: [],
+      risks: [],
+      rules: [],
+      warnings: [],
+      flowDocument: "# FLOW",
+      dataDependencyDocument: "# DATA_DEPENDENCY",
+      risksDocument: "# RISKS",
+      rulesYaml: "rules: []",
+      riskScore: 0,
+      metrics: {
+        fileCount: 2,
+        eligibleFileCount: 2,
+        analyzedFileCount: 2,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 1,
+        dependencyCount: 0,
+        fieldCount: 0,
+        fieldDependencyCount: 0,
+        riskCount: 0,
+        ruleCount: 0,
+        warningCount: 0,
+      },
+    };
+
+    const result = await analyzeProject(1, 7);
+
+    expect(result.status).toBe("partial");
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed", lastErrorCode: null });
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "partial", errorMessage: "Analysis completed with warnings." });
+    expect(fakeDb.store.analysisResults[0]?.warningsJson).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "IMPORT_LIMITED_ANALYSIS", filePath: "forms/MainForm.dfm" }),
+        expect.objectContaining({ code: "IMPORT_ENCODING_DETECTED", filePath: "legacy/OrderRepo.pas" }),
+        expect.objectContaining({ code: "ANALYSIS_INPUT_SUMMARY", level: "note" }),
+      ])
+    );
+    expect(loggerMock.info).toHaveBeenCalledWith(
+      "Analysis parser.completed",
+      expect.objectContaining({
+        action: "analysis.parser.completed",
+        resultStatus: "partial",
+      })
+    );
+  });
+
   it("leaves ambiguous same-name dependency targets unresolved", async () => {
     const { analyzeProject } = await import("./projectWorkflow");
     seedProject();
@@ -700,9 +833,9 @@ describe("project workflow", () => {
       },
     };
 
-    await expect(analyzeProject(1, 7)).rejects.toMatchObject({ code: "ANALYSIS_FAILED" });
+    await expect(analyzeProject(1, 7)).rejects.toMatchObject({ code: "ANALYSIS_SUMMARY_FAILED" });
 
-    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_FAILED" });
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_SUMMARY_FAILED" });
     expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "completed", flowMarkdown: "# OLD FLOW" });
     expect(fakeDb.store.symbols).toHaveLength(1);
     expect(fakeDb.store.dependencies).toHaveLength(1);
@@ -1331,8 +1464,8 @@ describe("project workflow", () => {
     await waitForProjectJobForTests(failed.jobId);
     const failedJob = await getProjectJob(failed.jobId, 7);
     expect(failedJob.status).toBe("failed");
-    expect(failedJob.errorCode).toBe("ANALYSIS_FAILED");
-    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_FAILED" });
+    expect(failedJob.errorCode).toBe("ANALYSIS_SUMMARY_FAILED");
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_SUMMARY_FAILED" });
   });
 
   it("fails a claimed job when payloadJson is invalid instead of leaving it running", async () => {

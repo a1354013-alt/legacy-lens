@@ -30,6 +30,32 @@ export function projectJobTypeLabel(type: ProjectJobType) {
   return t(`status.jobType.${type}`);
 }
 
+export function projectJobFailureTitle(type: ProjectJobType | null | undefined) {
+  return type === "analyze" ? t("importProject.alerts.analysisErrorTitle") : t("importProject.alerts.importErrorTitle");
+}
+
+export function localizeProjectJobErrorMessage(type: ProjectJobType | null | undefined, message: string | null | undefined) {
+  const normalized = String(message ?? "").trim();
+
+  if (!normalized) {
+    return type === "analyze" ? t("importProject.alerts.analysisFailed") : t("importProject.alerts.importFailed");
+  }
+
+  if (normalized === "Analysis failed.") {
+    return t("importProject.alerts.analysisFailed");
+  }
+
+  if (normalized === "Import failed.") {
+    return t("importProject.alerts.importFailed");
+  }
+
+  if (normalized === "Project job failed.") {
+    return type === "analyze" ? t("importProject.alerts.analysisFailed") : t("importProject.alerts.importFailed");
+  }
+
+  return normalized;
+}
+
 export function sourceTypeLabel(type: ProjectSourceType) {
   return t(`labels.sourceType.${type}`);
 }

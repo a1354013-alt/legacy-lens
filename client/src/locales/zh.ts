@@ -149,10 +149,13 @@ const zh = {
     },
     alerts: {
       errorTitle: "匯入失敗",
+      importErrorTitle: "匯入失敗",
+      analysisErrorTitle: "分析失敗",
       importQueued: "匯入工作已排入佇列。",
       analysisComplete: "分析完成，正在開啟結果頁。",
       uploadFailed: "上傳失敗，請確認檔案或來源設定。",
       importFailed: "匯入工作失敗。",
+      analysisFailed: "分析失敗，請查看分析紀錄或伺服器日誌。",
       analysisQueueFailed: "無法建立分析工作。",
       createFailed: "無法建立專案。",
     },

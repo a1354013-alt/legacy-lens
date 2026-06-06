@@ -6,6 +6,7 @@ import type { SQL } from "drizzle-orm";
 import { z } from "zod";
 import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
+  AnalysisWarning,
   AnalysisSnapshot,
   DependenciesPageInput,
   DependencyListItem,
@@ -16,6 +17,7 @@ import type {
   PagedResult,
   ProjectJobCreateResult,
   ProjectJobRecord,
+  ImportWarning,
   ReportArchivePayload,
   RiskListItem,
   RisksPageInput,
@@ -104,6 +106,7 @@ const PROJECT_JOB_HEARTBEAT_MS = parsePositiveIntEnv("PROJECT_JOB_HEARTBEAT_MS",
 const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = parsePositiveIntEnv("PROJECT_JOB_MAX_ATTEMPTS", 3);
 const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
 const ANALYSIS_INSERT_CHUNK_SIZE = 250;
+const MYSQL_MEDIUMTEXT_MAX_BYTES = 16_777_215;
 let projectJobWorkerLoop: Promise<void> | null = null;
 
 const importZipInlinePayloadSchema = z
@@ -140,6 +143,43 @@ class ProjectJobExecutionAbortedError extends Error {
   ) {
     super(message);
     this.name = "ProjectJobExecutionAbortedError";
+  }
+}
+
+type AnalysisFailureCode =
+  | "ANALYSIS_PARSE_FAILED"
+  | "ANALYSIS_PERSIST_FAILED"
+  | "ANALYSIS_SUMMARY_FAILED"
+  | "ANALYSIS_UNKNOWN_FAILED";
+
+type AnalysisFailureContext = {
+  stage: AnalysisFailureCode;
+  projectId: number;
+  jobId: number | null;
+  focusLanguage?: string | null;
+  fileCount?: number;
+  filePath?: string;
+  operation?: string;
+  table?: string;
+  rawMessage: string;
+  stackPreview?: string[];
+};
+
+type AnalysisPersistCheckpoint = {
+  operation: string;
+  table: string;
+  filePath?: string;
+};
+
+class AnalysisStageError extends AppError {
+  constructor(
+    code: AnalysisFailureCode,
+    message: string,
+    readonly context: AnalysisFailureContext,
+    details?: string
+  ) {
+    super(code, message, details);
+    this.name = "AnalysisStageError";
   }
 }
 
@@ -314,6 +354,115 @@ function logProjectJobLifecycle(
   logger[level](`Project job ${action}`, {
     action: `project.${action}`,
     ...getProjectJobLogContext(job, extra),
+  });
+}
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return String(error || "Unknown error");
+}
+
+function getStackPreview(error: unknown, maxLines = 4) {
+  if (!(error instanceof Error) || !error.stack) {
+    return undefined;
+  }
+
+  return error.stack
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, maxLines);
+}
+
+function buildAnalysisErrorMessage(context: Pick<AnalysisFailureContext, "stage" | "rawMessage" | "filePath" | "operation" | "table">) {
+  const parts = [context.stage, context.rawMessage];
+
+  if (context.filePath) {
+    parts.push(`filePath=${context.filePath}`);
+  }
+
+  if (context.table || context.operation) {
+    const operationSummary = [context.operation, context.table].filter(Boolean).join(" @ ");
+    parts.push(`db=${operationSummary}`);
+  }
+
+  return parts.join(" | ");
+}
+
+function toAnalysisStageError(
+  error: unknown,
+  context: Omit<AnalysisFailureContext, "rawMessage" | "stackPreview">
+): AnalysisStageError {
+  if (error instanceof AnalysisStageError) {
+    return error;
+  }
+
+  const rawMessage = getErrorMessage(error);
+  const stackPreview = getStackPreview(error);
+  const details = error instanceof AppError ? error.details : rawMessage;
+
+  return new AnalysisStageError(
+    context.stage,
+    buildAnalysisErrorMessage({
+      stage: context.stage,
+      rawMessage,
+      filePath: context.filePath,
+      operation: context.operation,
+      table: context.table,
+    }),
+    {
+      ...context,
+      rawMessage,
+      stackPreview,
+    },
+    details
+  );
+}
+
+function buildAnalysisFailureWarning(error: AppError): AnalysisWarning {
+  const context = error instanceof AnalysisStageError ? error.context : null;
+
+  return {
+    code: error.code,
+    message: error.message,
+    level: "error",
+    filePath: context?.filePath,
+    heuristic: true,
+  };
+}
+
+function logAnalysisEvent(
+  level: "info" | "warn" | "error",
+  event: "started" | "files.loaded" | "parser.started" | "parser.completed" | "persist.started" | "persist.completed" | "failed",
+  context: {
+    projectId: number;
+    jobId: number | null;
+    focusLanguage?: string | null;
+    fileCount?: number;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    filePath?: string;
+    stackPreview?: string[];
+    warningCount?: number;
+    resultStatus?: string;
+  }
+) {
+  logger[level](`Analysis ${event}`, {
+    action: `analysis.${event}`,
+    status: level === "error" ? "error" : "ok",
+    projectId: context.projectId,
+    jobId: context.jobId,
+    focusLanguage: context.focusLanguage ?? null,
+    fileCount: context.fileCount ?? null,
+    errorCode: context.errorCode ?? null,
+    errorMessage: context.errorMessage ?? null,
+    filePath: context.filePath ?? null,
+    stackPreview: context.stackPreview ?? null,
+    warningCount: context.warningCount ?? null,
+    resultStatus: context.resultStatus ?? null,
   });
 }
 
@@ -999,13 +1148,19 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
     return;
   }
 
+  const fallbackMessage = buildAnalysisErrorMessage({
+    stage: "ANALYSIS_UNKNOWN_FAILED",
+    rawMessage: "Analysis job ended without a captured error.",
+  });
+  const failureWarning = error ? [buildAnalysisFailureWarning(error)] : [];
+
   await db.transaction(async (tx) => {
     await tx
       .update(projects)
       .set({
         status: "failed",
         analysisProgress: 0,
-        errorMessage: error?.message ?? "Analysis failed.",
+        errorMessage: error?.message ?? fallbackMessage,
         lastErrorCode: error?.code ?? null,
         updatedAt: now,
       })
@@ -1024,8 +1179,8 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
       risksMarkdown: null,
       rulesYaml: null,
       summaryJson: null,
-      warningsJson: [],
-      errorMessage: error?.message ?? "Analysis failed.",
+      warningsJson: failureWarning,
+      errorMessage: error?.message ?? fallbackMessage,
     });
   });
 }
@@ -1076,7 +1231,13 @@ async function executeProjectJob(job: ProjectJobRow, executionState: ProjectJobE
 
 function buildProjectJobFailureFallback(job: Pick<ProjectJobRow, "type">) {
   if (job.type === "analyze") {
-    return new AppError("ANALYSIS_FAILED", "Project job failed.");
+    return new AppError(
+      "ANALYSIS_UNKNOWN_FAILED",
+      buildAnalysisErrorMessage({
+        stage: "ANALYSIS_UNKNOWN_FAILED",
+        rawMessage: "Project job failed without a captured analysis error.",
+      })
+    );
   }
 
   return new AppError("IMPORT_FAILED", "Project job failed.");
@@ -1184,6 +1345,189 @@ async function finalizeProjectJob(
       errorMessage: error?.message ?? null,
     }),
   });
+}
+
+function buildImportWarningSummaryWarnings(
+  projectFiles: Awaited<ReturnType<typeof getProjectFiles>>,
+  importWarnings: ImportWarning[]
+): AnalysisWarning[] {
+  if (importWarnings.length === 0) {
+    return [];
+  }
+
+  const pasFileCount = projectFiles.filter((file) => (file.fileType ?? "").toLowerCase() === ".pas").length;
+  const limitedAnalysisWarnings = importWarnings.filter((warning) => warning.code === "IMPORT_LIMITED_ANALYSIS");
+  const dfmLimitedAnalysisCount = limitedAnalysisWarnings.filter((warning) => (warning.filePath ?? "").toLowerCase().endsWith(".dfm")).length;
+  const encodingWarningCount = importWarnings.filter((warning) => warning.code === "IMPORT_ENCODING_DETECTED").length;
+
+  return [
+    {
+      code: "ANALYSIS_INPUT_SUMMARY",
+      message: `Imported ${projectFiles.length} files; found ${pasFileCount} .pas files, ${dfmLimitedAnalysisCount} .dfm limited-analysis warnings, and ${encodingWarningCount} legacy-encoding warnings.`,
+      level: "note",
+      heuristic: true,
+    },
+    ...importWarnings.map((warning) => ({
+      code: warning.code,
+      message: warning.message,
+      level: "warning" as const,
+      filePath: warning.filePath,
+      heuristic: true,
+    })),
+  ];
+}
+
+function mergeAnalysisWarnings(base: AnalysisWarning[], additions: AnalysisWarning[]) {
+  const merged: AnalysisWarning[] = [];
+  const seen = new Set<string>();
+
+  for (const warning of [...base, ...additions]) {
+    const key = `${warning.code}:${warning.filePath ?? ""}:${warning.message}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    merged.push(warning);
+  }
+
+  return merged;
+}
+
+function applyAdditionalAnalysisWarnings(
+  result: ProjectAnalysisResult,
+  additionalWarnings: AnalysisWarning[]
+): ProjectAnalysisResult {
+  if (additionalWarnings.length === 0) {
+    return result;
+  }
+
+  const warnings = mergeAnalysisWarnings(result.warnings, additionalWarnings);
+  const warningCount = warnings.length;
+  const nextStatus =
+    result.status === "failed" ? "failed" : result.status === "completed" ? "partial" : result.status;
+
+  return {
+    ...result,
+    status: nextStatus,
+    warnings,
+    metrics: {
+      ...result.metrics,
+      warningCount,
+    },
+  };
+}
+
+function getAnalysisResultErrorMessage(result: Pick<ProjectAnalysisResult, "status">) {
+  return result.status === "partial" ? "Analysis completed with warnings." : null;
+}
+
+function truncateUtf8(text: string, maxBytes: number, footer: string) {
+  const originalBytes = Buffer.byteLength(text, "utf8");
+  if (originalBytes <= maxBytes) {
+    return { text, truncated: false, originalBytes };
+  }
+
+  const footerBytes = Buffer.byteLength(footer, "utf8");
+  let low = 0;
+  let high = text.length;
+  let best = "";
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = text.slice(0, mid);
+    const candidateBytes = Buffer.byteLength(candidate, "utf8") + footerBytes;
+    if (candidateBytes <= maxBytes) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  const safeText = best.replace(/\s+$/u, "");
+  return {
+    text: `${safeText}${footer}`,
+    truncated: true,
+    originalBytes,
+  };
+}
+
+function buildDocumentTruncationFooter(kind: "markdown" | "yaml") {
+  return kind === "yaml"
+    ? "\n# Truncated to fit Legacy Lens database storage limits.\n"
+    : "\n\n> Truncated to fit Legacy Lens database storage limits.\n";
+}
+
+function makeAnalysisPartialResultPersistable(result: ProjectAnalysisResult): ProjectAnalysisResult {
+  const truncationWarnings: AnalysisWarning[] = [];
+  const truncateDocument = (value: string, documentName: string, kind: "markdown" | "yaml") => {
+    const truncated = truncateUtf8(value, MYSQL_MEDIUMTEXT_MAX_BYTES, buildDocumentTruncationFooter(kind));
+    if (truncated.truncated) {
+      truncationWarnings.push({
+        code: "ANALYSIS_DOCUMENT_TRUNCATED",
+        message: `${documentName} exceeded MySQL MEDIUMTEXT storage and was truncated from ${truncated.originalBytes} bytes.`,
+        level: "warning",
+        heuristic: true,
+      });
+    }
+
+    return truncated.text;
+  };
+
+  const flowDocument = truncateDocument(result.flowDocument, "flowMarkdown", "markdown");
+  const dataDependencyDocument = truncateDocument(result.dataDependencyDocument, "dataDependencyMarkdown", "markdown");
+  const risksDocument = truncateDocument(result.risksDocument, "risksMarkdown", "markdown");
+  const rulesYaml = truncateDocument(result.rulesYaml, "rulesYaml", "yaml");
+
+  if (truncationWarnings.length === 0) {
+    return result;
+  }
+
+  const warnings = mergeAnalysisWarnings(result.warnings, truncationWarnings);
+  return {
+    ...result,
+    status: result.status === "failed" ? "failed" : "partial",
+    warnings,
+    flowDocument,
+    dataDependencyDocument,
+    risksDocument,
+    rulesYaml,
+    metrics: {
+      ...result.metrics,
+      warningCount: warnings.length,
+    },
+  };
+}
+
+function throwAnalysisPersistError(
+  error: unknown,
+  context: {
+    projectId: number;
+    executionState?: ProjectJobExecutionState;
+    operation: string;
+    table: string;
+    filePath?: string;
+  }
+): never {
+  throw toAnalysisStageError(error, {
+    stage: "ANALYSIS_PERSIST_FAILED",
+    projectId: context.projectId,
+    jobId: context.executionState?.ownership?.jobId ?? null,
+    fileCount: undefined,
+    operation: context.operation,
+    table: context.table,
+    filePath: context.filePath,
+  });
+}
+
+function updateAnalysisPersistCheckpoint(
+  checkpoint: AnalysisPersistCheckpoint,
+  next: AnalysisPersistCheckpoint
+) {
+  checkpoint.operation = next.operation;
+  checkpoint.table = next.table;
+  checkpoint.filePath = next.filePath;
 }
 
 export async function failProjectJobWithoutOwnership(jobId: number, error: AppError) {
@@ -2030,21 +2374,39 @@ async function writeSuccessfulAnalysis(
   projectId: number,
   projectFiles: Awaited<ReturnType<typeof getProjectFiles>>,
   result: ProjectAnalysisResult,
+  persistCheckpoint: AnalysisPersistCheckpoint,
   executionState?: ProjectJobExecutionState
 ) {
   await assertProjectJobExecutionActive(executionState, "analysis.write_success.prepare", { refreshLease: true });
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "clear previous analysis graph",
+    table: "analysisResults,fieldDependencies,dependencies,risks,rules,fields,symbols",
+  });
   await clearProjectAnalysisGraph(tx, projectId);
 
-  await replaceAnalysisResult(tx, projectId, {
-    status: result.status,
-    flowMarkdown: result.flowDocument,
-    dataDependencyMarkdown: result.dataDependencyDocument,
-    risksMarkdown: result.risksDocument,
-    rulesYaml: result.rulesYaml,
-    summaryJson: result.metrics,
-    warningsJson: result.warnings,
-    errorMessage: result.status === "partial" ? "Analysis completed with warnings." : null,
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "replace analysis result snapshot",
+    table: "analysisResults",
   });
+  try {
+    await replaceAnalysisResult(tx, projectId, {
+      status: result.status,
+      flowMarkdown: result.flowDocument,
+      dataDependencyMarkdown: result.dataDependencyDocument,
+      risksMarkdown: result.risksDocument,
+      rulesYaml: result.rulesYaml,
+      summaryJson: result.metrics,
+      warningsJson: result.warnings,
+      errorMessage: getAnalysisResultErrorMessage(result),
+    });
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "replace analysis result snapshot",
+      table: "analysisResults",
+    });
+  }
 
   const fileByPath = new Map(projectFiles.map((file) => [file.filePath.replace(/\\/g, "/"), file]));
   const symbolRows: Array<typeof symbols.$inferInsert> = [];
@@ -2068,9 +2430,38 @@ async function writeSuccessfulAnalysis(
       },
     });
   }
-  await insertInChunks(tx, symbols, symbolRows);
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "insert analyzed symbols",
+    table: "symbols",
+    filePath: result.symbols[0]?.file,
+  });
+  try {
+    await insertInChunks(tx, symbols, symbolRows);
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "insert analyzed symbols",
+      table: "symbols",
+      filePath: result.symbols[0]?.file,
+    });
+  }
 
-  const insertedSymbolRows = await tx.select().from(symbols).where(eq(symbols.projectId, projectId));
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "read persisted symbols",
+    table: "symbols",
+  });
+  let insertedSymbolRows;
+  try {
+    insertedSymbolRows = await tx.select().from(symbols).where(eq(symbols.projectId, projectId));
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "read persisted symbols",
+      table: "symbols",
+    });
+  }
   const insertedSymbolIds = new Map<string, number>();
   for (const row of insertedSymbolRows) {
     const stableKey = getSymbolStableKey(row);
@@ -2129,9 +2520,43 @@ async function writeSuccessfulAnalysis(
       description,
     });
   }
-  await insertInChunks(tx, fields, fieldRows);
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "insert schema fields",
+    table: "fields",
+    filePath: schemaFields[0]?.file,
+  });
+  try {
+    await insertInChunks(tx, fields, fieldRows);
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "insert schema fields",
+      table: "fields",
+      filePath: schemaFields[0]?.file,
+    });
+  }
 
-  const insertedFieldRows = await tx.select().from(fields).where(eq(fields.projectId, projectId));
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "read persisted fields",
+    table: "fields",
+  });
+  let insertedFieldRows;
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "insert field dependencies",
+    table: "fieldDependencies",
+    filePath: result.fieldReferences[0]?.file,
+  });
+  try {
+    insertedFieldRows = await tx.select().from(fields).where(eq(fields.projectId, projectId));
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "read persisted fields",
+      table: "fields",
+    });
+  }
   for (const row of insertedFieldRows) {
     if (typeof row.id !== "number") {
       continue;
@@ -2158,7 +2583,21 @@ async function writeSuccessfulAnalysis(
     });
   }
 
-  await insertInChunks(tx, fieldDependencies, fieldDependencyRows);
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "insert symbol dependencies",
+    table: "dependencies",
+  });
+  try {
+    await insertInChunks(tx, fieldDependencies, fieldDependencyRows);
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "insert field dependencies",
+      table: "fieldDependencies",
+      filePath: result.fieldReferences[0]?.file,
+    });
+  }
 
   const dependencyRows: Array<typeof dependencies.$inferInsert> = [];
   for (const dependency of result.dependencies) {
@@ -2177,7 +2616,21 @@ async function writeSuccessfulAnalysis(
     });
   }
 
-  await insertInChunks(tx, dependencies, dependencyRows);
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "insert detected risks",
+    table: "risks",
+    filePath: result.risks[0]?.sourceFile,
+  });
+  try {
+    await insertInChunks(tx, dependencies, dependencyRows);
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "insert symbol dependencies",
+      table: "dependencies",
+    });
+  }
 
   const riskRows: Array<typeof risks.$inferInsert> = [];
   for (const risk of result.risks) {
@@ -2194,7 +2647,22 @@ async function writeSuccessfulAnalysis(
     });
   }
 
-  await insertInChunks(tx, risks, riskRows);
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "insert detected rules",
+    table: "rules",
+    filePath: result.rules[0]?.sourceFile,
+  });
+  try {
+    await insertInChunks(tx, risks, riskRows);
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "insert detected risks",
+      table: "risks",
+      filePath: result.risks[0]?.sourceFile,
+    });
+  }
 
   const ruleRows: Array<typeof rules.$inferInsert> = [];
   for (const rule of result.rules) {
@@ -2209,22 +2677,57 @@ async function writeSuccessfulAnalysis(
     });
   }
 
-  await insertInChunks(tx, rules, ruleRows);
+  try {
+    await insertInChunks(tx, rules, ruleRows);
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "insert detected rules",
+      table: "rules",
+      filePath: result.rules[0]?.sourceFile,
+    });
+  }
 
   await assertProjectJobExecutionActive(executionState, "analysis.write_success.persist");
-  await transitionProjectState(tx, projectId, {
-    status: "completed",
-    analysisProgress: 100,
-    errorMessage: result.status === "partial" ? "Analysis completed with warnings." : null,
-    lastErrorCode: null,
-    lastAnalyzedAt: new Date(),
+  updateAnalysisPersistCheckpoint(persistCheckpoint, {
+    operation: "update project completion state",
+    table: "projects",
   });
+  try {
+    await transitionProjectState(tx, projectId, {
+      status: "completed",
+      analysisProgress: 100,
+      errorMessage: getAnalysisResultErrorMessage(result),
+      lastErrorCode: null,
+      lastAnalyzedAt: new Date(),
+    });
+  } catch (error) {
+    throwAnalysisPersistError(error, {
+      projectId,
+      executionState,
+      operation: "update project completion state",
+      table: "projects",
+    });
+  }
 }
 
 async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: AppError, executionState?: ProjectJobExecutionState) {
   await assertProjectJobExecutionActive(executionState, "analysis.write_failed.prepare", { refreshLease: true });
   const existingReport = await getExistingUsableAnalysisResult(tx, projectId);
-  if (!existingReport) {
+  const failureWarning = buildAnalysisFailureWarning(appError);
+  if (existingReport) {
+    await replaceAnalysisResult(tx, projectId, {
+      status: existingReport.status,
+      flowMarkdown: existingReport.flowMarkdown ?? null,
+      dataDependencyMarkdown: existingReport.dataDependencyMarkdown ?? null,
+      risksMarkdown: existingReport.risksMarkdown ?? null,
+      rulesYaml: existingReport.rulesYaml ?? null,
+      summaryJson: existingReport.summaryJson ?? null,
+      warningsJson: mergeAnalysisWarnings(existingReport.warningsJson ?? [], [failureWarning]),
+      errorMessage: appError.message,
+    });
+  } else {
     await clearProjectAnalysisGraph(tx, projectId);
     await replaceAnalysisResult(tx, projectId, {
       status: "failed",
@@ -2233,7 +2736,7 @@ async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: Ap
       risksMarkdown: null,
       rulesYaml: null,
       summaryJson: null,
-      warningsJson: [],
+      warningsJson: [failureWarning],
       errorMessage: appError.message,
     });
   }
@@ -2271,12 +2774,17 @@ async function updateAnalysisExecutionProgress(projectId: number, progress: numb
 
 export async function analyzeProject(projectId: number, userId: number, executionState?: ProjectJobExecutionState) {
   const project = await getOwnedProject(projectId, userId);
+  const jobId = executionState?.ownership?.jobId ?? null;
   if (!["ready", "completed", "failed", "analyzing"].includes(project.status)) {
     throw new AppError("INVALID_PROJECT_STATE", `Project is currently "${projectStatusLabels[project.status]}".`);
   }
 
   await assertProjectJobExecutionActive(executionState, "analysis.start", { refreshLease: true });
-  logger.info("Analysis started", { projectId, action: "analysis.start", status: "ok", focusLanguage: project.language });
+  logAnalysisEvent("info", "started", {
+    projectId,
+    jobId,
+    focusLanguage: project.language,
+  });
   const db = await requireDb();
   await db.transaction(async (tx) => {
     await assertProjectJobExecutionActive(executionState, "analysis.bootstrap");
@@ -2295,58 +2803,173 @@ export async function analyzeProject(projectId: number, userId: number, executio
   });
 
   try {
-    const projectFiles = await getProjectFiles(projectId);
+    let projectFiles: Awaited<ReturnType<typeof getProjectFiles>>;
+    try {
+      projectFiles = await getProjectFiles(projectId);
+    } catch (error) {
+      throw toAnalysisStageError(error, {
+        stage: "ANALYSIS_PARSE_FAILED",
+        projectId,
+        jobId,
+        focusLanguage: project.language,
+        operation: "load project files",
+      });
+    }
+
     if (projectFiles.length === 0) {
-      throw new AppError("EMPTY_SOURCE", "Project does not contain any files to analyze.");
+      throw new AnalysisStageError(
+        "ANALYSIS_SUMMARY_FAILED",
+        buildAnalysisErrorMessage({
+          stage: "ANALYSIS_SUMMARY_FAILED",
+          rawMessage: "Project does not contain any files to analyze.",
+          operation: "validate project files",
+        }),
+        {
+          stage: "ANALYSIS_SUMMARY_FAILED",
+          projectId,
+          jobId,
+          focusLanguage: project.language,
+          fileCount: 0,
+          operation: "validate project files",
+          rawMessage: "Project does not contain any files to analyze.",
+        }
+      );
     }
 
     await assertProjectJobExecutionActive(executionState, "analysis.files_loaded", { refreshLease: true });
+    logAnalysisEvent("info", "files.loaded", {
+      projectId,
+      jobId,
+      focusLanguage: project.language,
+      fileCount: projectFiles.length,
+    });
     await updateAnalysisExecutionProgress(projectId, 20, executionState);
     const analyzer = new Analyzer();
     await updateAnalysisExecutionProgress(projectId, 45, executionState);
-    const result = await analyzer.analyzeProject(
-      projectFiles.map((file) => ({
-        path: file.filePath,
-        content: file.content ?? "",
-        language: file.fileType?.replace(/^\./, "") ?? "unknown",
-      })),
-      projectId
-    );
+    logAnalysisEvent("info", "parser.started", {
+      projectId,
+      jobId,
+      focusLanguage: project.language,
+      fileCount: projectFiles.length,
+    });
+    let result: ProjectAnalysisResult;
+    try {
+      result = await analyzer.analyzeProject(
+        projectFiles.map((file) => ({
+          path: file.filePath,
+          content: file.content ?? "",
+          language: file.fileType?.replace(/^\./, "") ?? "unknown",
+        })),
+        projectId
+      );
+    } catch (error) {
+      throw toAnalysisStageError(error, {
+        stage: "ANALYSIS_PARSE_FAILED",
+        projectId,
+        jobId,
+        focusLanguage: project.language,
+        fileCount: projectFiles.length,
+        operation: "parse project files",
+      });
+    }
+
+    result = applyAdditionalAnalysisWarnings(result, buildImportWarningSummaryWarnings(projectFiles, project.importWarningsJson ?? []));
+    result = makeAnalysisPartialResultPersistable(result);
+    logAnalysisEvent("info", "parser.completed", {
+      projectId,
+      jobId,
+      focusLanguage: project.language,
+      fileCount: projectFiles.length,
+      warningCount: result.warnings.length,
+      resultStatus: result.status,
+    });
 
     if (result.status === "failed") {
-      throw new AppError(
-        "ANALYSIS_FAILED",
-        "No analyzable files were found in the imported source. Focus language affects UI navigation and summaries, not what files are eligible for analysis."
+      throw new AnalysisStageError(
+        "ANALYSIS_SUMMARY_FAILED",
+        buildAnalysisErrorMessage({
+          stage: "ANALYSIS_SUMMARY_FAILED",
+          rawMessage:
+            "No analyzable files produced persisted analysis artifacts. Review skipped-file warnings, parser errors, and import warnings.",
+          operation: "summarize analysis results",
+        }),
+        {
+          stage: "ANALYSIS_SUMMARY_FAILED",
+          projectId,
+          jobId,
+          focusLanguage: project.language,
+          fileCount: projectFiles.length,
+          operation: "summarize analysis results",
+          rawMessage:
+            "No analyzable files produced persisted analysis artifacts. Review skipped-file warnings, parser errors, and import warnings.",
+        }
       );
     }
 
     await assertProjectJobExecutionActive(executionState, "analysis.result_ready", { refreshLease: true });
     await updateAnalysisExecutionProgress(projectId, 70, executionState);
     await updateAnalysisExecutionProgress(projectId, 85, executionState);
-    await db.transaction(async (tx) => {
-      await writeSuccessfulAnalysis(tx, projectId, projectFiles, result, executionState);
-    });
-
-    logger.info("Analysis completed", {
+    const persistCheckpoint: AnalysisPersistCheckpoint = {
+      operation: "start analysis persistence transaction",
+      table: "analysisResults,symbols,fields,fieldDependencies,dependencies,risks,rules,projects",
+    };
+    logAnalysisEvent("info", "persist.started", {
       projectId,
-      action: "analysis.complete",
-      status: "ok",
+      jobId,
+      focusLanguage: project.language,
+      fileCount: projectFiles.length,
+      warningCount: result.warnings.length,
       resultStatus: result.status,
-      metrics: result.metrics,
-      warningCount: result.warnings?.length ?? 0,
+    });
+    try {
+      await db.transaction(async (tx) => {
+        await writeSuccessfulAnalysis(tx, projectId, projectFiles, result, persistCheckpoint, executionState);
+      });
+    } catch (error) {
+      throw toAnalysisStageError(error, {
+        stage: "ANALYSIS_PERSIST_FAILED",
+        projectId,
+        jobId,
+        focusLanguage: project.language,
+        fileCount: projectFiles.length,
+        operation: persistCheckpoint.operation,
+        table: persistCheckpoint.table,
+        filePath: persistCheckpoint.filePath,
+      });
+    }
+
+    logAnalysisEvent("info", "persist.completed", {
+      projectId,
+      jobId,
+      focusLanguage: project.language,
+      fileCount: projectFiles.length,
+      warningCount: result.warnings.length,
+      resultStatus: result.status,
     });
     return result;
   } catch (error) {
     if (error instanceof ProjectJobExecutionAbortedError) {
       throw error;
     }
-    const appError = toAppError(error, new AppError("ANALYSIS_FAILED", "Analysis failed."));
-    logger.error("Analysis failed", {
+    const appError =
+      error instanceof AppError
+        ? error
+        : toAnalysisStageError(error, {
+            stage: "ANALYSIS_UNKNOWN_FAILED",
+            projectId,
+            jobId,
+            focusLanguage: project.language,
+          });
+    const errorContext = appError instanceof AnalysisStageError ? appError.context : null;
+    logAnalysisEvent("error", "failed", {
       projectId,
-      action: "analysis.complete",
-      status: "error",
-      code: appError.code,
-      message: appError.message,
+      jobId,
+      focusLanguage: project.language,
+      fileCount: errorContext?.fileCount,
+      errorCode: appError.code,
+      errorMessage: appError.message,
+      filePath: errorContext?.filePath,
+      stackPreview: errorContext?.stackPreview,
     });
     if (executionState?.ownership) {
       await assertProjectJobExecutionActive(executionState, "analysis.error_finalize", { refreshLease: true });

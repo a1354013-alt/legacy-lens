@@ -93,6 +93,14 @@ function dedupeWarnings(warnings: AnalysisWarning[]): AnalysisWarning[] {
   });
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return String(error || "Unknown analysis error");
+}
+
 function buildRules(fieldReferences: FieldReference[], risks: DetectedRisk[]): DetectedRule[] {
   const rules: DetectedRule[] = [];
   const writeCounts = new Map<string, number>();
@@ -208,7 +216,24 @@ export class Analyzer {
     let heuristicFileCount = 0;
 
     for (const file of files) {
-      const result = await this.analyzeFile(file);
+      let result: FileAnalysisResult;
+      try {
+        result = await this.analyzeFile(file);
+      } catch (error) {
+        const eligible = ParserFactory.isLanguageSupported(file.language);
+        if (eligible) {
+          eligibleFileCount += 1;
+        }
+        warnings.push({
+          code: "ANALYSIS_FILE_SKIPPED",
+          message: `Skipped file after parser failure: ${getErrorMessage(error)}`,
+          level: "warning",
+          filePath: file.path,
+          heuristic: true,
+        });
+        continue;
+      }
+
       eligibleFileCount += result.eligible ? 1 : 0;
       analyzedFileCount += result.analyzed ? 1 : 0;
       degradedFileCount += result.degraded ? 1 : 0;
