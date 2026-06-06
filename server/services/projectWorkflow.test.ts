@@ -1757,7 +1757,7 @@ describe("project workflow", () => {
     expect(fakeDb.store.projectJobs[0]).toMatchObject({ id: 1, status: "running" });
   });
 
-  it("treats a queued job as claimed even when the stored timestamp loses milliseconds", async () => {
+  it("treats a queued job as claimed even when the stored lease timestamps lose milliseconds", async () => {
     const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
     seedProject(1, { status: "ready" });
     fakeDb.store.projectJobs.push({
@@ -1787,6 +1787,14 @@ describe("project workflow", () => {
               updates.startedAt instanceof Date
                 ? new Date(Math.floor(updates.startedAt.getTime() / 1000) * 1000)
                 : updates.startedAt,
+            heartbeatAt:
+              updates.heartbeatAt instanceof Date
+                ? new Date(Math.floor(updates.heartbeatAt.getTime() / 1000) * 1000)
+                : updates.heartbeatAt,
+            leaseUntil:
+              updates.leaseUntil instanceof Date
+                ? new Date(Math.floor(updates.leaseUntil.getTime() / 1000) * 1000)
+                : updates.leaseUntil,
           }),
       };
     };
@@ -1796,6 +1804,8 @@ describe("project workflow", () => {
     expect(claim).toMatchObject({ id: 1, status: "running" });
     expect(fakeDb.store.projectJobs[0]).toMatchObject({ id: 1, status: "running" });
     expect(fakeDb.store.projectJobs[0]?.startedAt).toBeInstanceOf(Date);
+    expect(fakeDb.store.projectJobs[0]?.heartbeatAt).toBeInstanceOf(Date);
+    expect(fakeDb.store.projectJobs[0]?.leaseUntil).toBeInstanceOf(Date);
   });
 
   it("allows only one worker to claim the same queued job under concurrent pressure", async () => {
@@ -1894,8 +1904,7 @@ describe("project workflow", () => {
 
   it.each([
     ["attemptCount", (row: Row) => ({ attemptCount: Number(row.attemptCount ?? 0) + 1 })],
-    ["heartbeatAt", (row: Row) => ({ heartbeatAt: new Date(Number((row.heartbeatAt as Date).getTime()) + 1000) })],
-    ["leaseUntil", (row: Row) => ({ leaseUntil: new Date(Number((row.leaseUntil as Date).getTime()) + 1000) })],
+    ["lockedBy", () => ({ lockedBy: "worker-competing" })],
   ])("rejects a fallback claim when %s changes before reselect", async (_field, mutateClaimedRow) => {
     const { claimNextQueuedProjectJobForTests } = await import("./projectWorkflow");
     seedProject(1, { status: "analyzing" });

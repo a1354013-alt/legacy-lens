@@ -236,16 +236,6 @@ function getProjectJobAttemptCount(job: Pick<ProjectJobRow, "attemptCount">) {
   return Number(job.attemptCount ?? 0);
 }
 
-function sameTimestamp(left: Date | string | null | undefined, right: Date | string | null | undefined) {
-  const leftDate = toDate(left);
-  const rightDate = toDate(right);
-  if (!leftDate || !rightDate) {
-    return leftDate === rightDate;
-  }
-
-  return leftDate.getTime() === rightDate.getTime();
-}
-
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -844,8 +834,6 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
     const startedAt = nextJob.startedAt ? toDate(nextJob.startedAt) ?? now : now;
     const lease = buildProjectJobLease(now);
     const expectedAttemptCount = getProjectJobAttemptCount(nextJob) + 1;
-    const expectedHeartbeatAt = lease.heartbeatAt;
-    const expectedLeaseUntil = lease.leaseUntil;
     const updateConditions = [eq(projectJobs.id, nextJob.id)];
 
     if (nextJob.status === "queued") {
@@ -883,8 +871,14 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
       claimedJob.status !== "running" ||
       claimedJob.lockedBy !== PROJECT_JOB_LOCK_OWNER ||
       getProjectJobAttemptCount(claimedJob) !== expectedAttemptCount ||
-      !sameTimestamp(claimedJob.heartbeatAt, expectedHeartbeatAt) ||
-      !sameTimestamp(claimedJob.leaseUntil, expectedLeaseUntil)
+      !toDate(claimedJob.heartbeatAt) ||
+      !isProjectJobOwnershipActive(claimedJob, {
+        jobId: claimedJob.id,
+        projectId: claimedJob.projectId,
+        type: claimedJob.type,
+        lockedBy: PROJECT_JOB_LOCK_OWNER,
+        attemptCount: expectedAttemptCount,
+      }, now)
     ) {
       continue;
     }
@@ -1349,7 +1343,17 @@ async function processNextQueuedProjectJob() {
   }
 
   const promise = runProjectJob(claimedJob.id)
-    .catch(() => undefined)
+    .catch((error) => {
+      const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
+      logger.error("Project job dispatch failed", {
+        action: "project.job.worker.error",
+        ...getProjectJobLogContext(claimedJob, {
+          status: "failed",
+          errorCode: appError.code,
+          errorMessage: appError.message,
+        }),
+      });
+    })
     .finally(() => {
       queuedJobPromises.delete(claimedJob.id);
     });
