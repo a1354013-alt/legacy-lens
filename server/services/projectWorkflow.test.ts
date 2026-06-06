@@ -1135,9 +1135,28 @@ describe("project workflow", () => {
     expect(symbolsPage.items).toHaveLength(5);
     expect(symbolsPage.items[0]?.name).toContain("LoadUser");
     expect(fieldsPage.items).toEqual([expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2", writeCount: 1 })]);
-    expect(risksPage.items).toEqual([expect.objectContaining({ title: "Shared risk", severity: "high" })]);
+    expect(risksPage.items).toEqual([expect.objectContaining({ title: "Shared risk", severity: "high", occurrenceCount: 1 })]);
     expect(dependenciesPage.items).toEqual([expect.objectContaining({ targetExternalName: "LegacyApi", targetKind: "external" })]);
+    expect(dependenciesPage.summary.defaultHideStandardLibrary).toBe(true);
     expect(fieldDependenciesPage.items).toEqual([expect.objectContaining({ tableName: "ERP.SIGNB", fieldName: "MARK_2", operationType: "write" })]);
+  });
+
+  it("hides Delphi standard library dependencies by default but can show them on demand", async () => {
+    const { getDependenciesPage } = await import("./projectWorkflow");
+    seedProject();
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "LoadMain", type: "procedure", startLine: 1, endLine: 2 });
+    fakeDb.store.dependencies.push(
+      { id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "Windows", targetKind: "external", dependencyType: "references", lineNumber: 1 },
+      { id: 2, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "ProjectUnit", targetKind: "external", dependencyType: "references", lineNumber: 2 }
+    );
+
+    const hiddenPage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25 }, 7);
+    const visiblePage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25, hideStandardLibrary: false }, 7);
+
+    expect(hiddenPage.items).toHaveLength(1);
+    expect(hiddenPage.items[0]?.targetExternalName).toBe("ProjectUnit");
+    expect(hiddenPage.summary.standardLibraryCount).toBe(1);
+    expect(visiblePage.items).toHaveLength(2);
   });
 
   it("recovers stale running jobs during server startup", async () => {

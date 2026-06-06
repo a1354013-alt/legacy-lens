@@ -4,6 +4,7 @@ import {
   dependencyTargetKinds,
   fieldDependencyOperationTypes,
   riskSeverities,
+  riskTypes,
   ruleTypes,
   symbolKinds,
 } from "@shared/contracts";
@@ -54,13 +55,20 @@ export function useAnalysisResultModel(projectId: number) {
   const [fieldPage, setFieldPage] = useState(1);
   const [riskSearch, setRiskSearch] = useState("");
   const [riskSeverity, setRiskSeverity] = useState<string>("all");
+  const [riskType, setRiskType] = useState<string>("all");
+  const [riskFile, setRiskFile] = useState("");
+  const [riskCriticalOnly, setRiskCriticalOnly] = useState(false);
+  const [hideDuplicateRisks, setHideDuplicateRisks] = useState(true);
   const [riskPage, setRiskPage] = useState(1);
   const [ruleSearch, setRuleSearch] = useState("");
   const [ruleType, setRuleType] = useState<string>("all");
+  const [ruleFile, setRuleFile] = useState("");
+  const [hideDuplicateRules, setHideDuplicateRules] = useState(true);
   const [rulePage, setRulePage] = useState(1);
   const [dependencySearch, setDependencySearch] = useState("");
   const [dependencyType, setDependencyType] = useState<string>("all");
   const [dependencyTargetKind, setDependencyTargetKind] = useState<string>("all");
+  const [hideStandardLibraryDependencies, setHideStandardLibraryDependencies] = useState(true);
   const [dependencyPage, setDependencyPage] = useState(1);
   const [fieldDependencySearch, setFieldDependencySearch] = useState("");
   const [fieldDependencyTable, setFieldDependencyTable] = useState<string>("all");
@@ -117,6 +125,10 @@ export function useAnalysisResultModel(projectId: number) {
       pageSize: RESULT_LIST_PAGE_SIZE,
       search: riskSearch || undefined,
       severity: riskSeverity === "all" ? undefined : (riskSeverity as (typeof riskSeverities)[number]),
+      riskType: riskType === "all" ? undefined : (riskType as (typeof riskTypes)[number]),
+      filePath: riskFile || undefined,
+      criticalOnly: riskCriticalOnly,
+      hideDuplicates: hideDuplicateRisks,
     },
     { enabled: Number.isFinite(projectId) && activeTab === "risks" }
   );
@@ -128,6 +140,8 @@ export function useAnalysisResultModel(projectId: number) {
       pageSize: RESULT_LIST_PAGE_SIZE,
       search: ruleSearch || undefined,
       ruleType: ruleType === "all" ? undefined : (ruleType as (typeof ruleTypes)[number]),
+      filePath: ruleFile || undefined,
+      hideDuplicates: hideDuplicateRules,
     },
     { enabled: Number.isFinite(projectId) && activeTab === "rules" }
   );
@@ -140,6 +154,7 @@ export function useAnalysisResultModel(projectId: number) {
       search: dependencySearch || undefined,
       dependencyType: dependencyType === "all" ? undefined : (dependencyType as (typeof dependencyKinds)[number]),
       targetKind: dependencyTargetKind === "all" ? undefined : (dependencyTargetKind as (typeof dependencyTargetKinds)[number]),
+      hideStandardLibrary: hideStandardLibraryDependencies,
     },
     { enabled: Number.isFinite(projectId) && activeTab === "dependencies" }
   );
@@ -226,12 +241,24 @@ export function useAnalysisResultModel(projectId: number) {
     setRiskSearch,
     riskSeverity,
     setRiskSeverity,
+    riskType,
+    setRiskType,
+    riskFile,
+    setRiskFile,
+    riskCriticalOnly,
+    setRiskCriticalOnly,
+    hideDuplicateRisks,
+    setHideDuplicateRisks,
     riskPage,
     setRiskPage,
     ruleSearch,
     setRuleSearch,
     ruleType,
     setRuleType,
+    ruleFile,
+    setRuleFile,
+    hideDuplicateRules,
+    setHideDuplicateRules,
     rulePage,
     setRulePage,
     dependencySearch,
@@ -240,6 +267,8 @@ export function useAnalysisResultModel(projectId: number) {
     setDependencyType,
     dependencyTargetKind,
     setDependencyTargetKind,
+    hideStandardLibraryDependencies,
+    setHideStandardLibraryDependencies,
     dependencyPage,
     setDependencyPage,
     fieldDependencySearch,

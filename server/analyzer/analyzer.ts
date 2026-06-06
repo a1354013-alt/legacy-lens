@@ -72,13 +72,30 @@ function dedupeDependencies(dependencies: SymbolDependency[]): SymbolDependency[
 function dedupeRisks(risks: DetectedRisk[]): DetectedRisk[] {
   const seen = new Set<string>();
   return risks.filter((risk) => {
-    const key = `${risk.title}:${risk.sourceFile}:${risk.lineNumber}`;
+    const normalizedDescription = risk.description
+      .toLowerCase()
+      .replace(/["'`].*?["'`]/g, "<value>")
+      .replace(/\b\d+\b/g, "<n>")
+      .replace(/\s+/g, " ")
+      .trim();
+    const key = `${risk.category}:${risk.title.toLowerCase()}:${normalizedDescription}:${risk.sourceFile}:${risk.lineNumber}`;
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
+}
+
+function buildFieldFamily(field: string) {
+  const parts = field.split(/[_\W]+/).filter(Boolean);
+  if (parts.length >= 3) {
+    return `${parts.slice(0, -1).join("_")}.*`;
+  }
+  if (parts.length === 2) {
+    return `${parts[0]}.*`;
+  }
+  return field;
 }
 
 function dedupeWarnings(warnings: AnalysisWarning[]): AnalysisWarning[] {
@@ -104,11 +121,23 @@ function getErrorMessage(error: unknown) {
 function buildRules(fieldReferences: FieldReference[], risks: DetectedRisk[]): DetectedRule[] {
   const rules: DetectedRule[] = [];
   const writeCounts = new Map<string, number>();
+  const writeReferences = new Map<string, FieldReference[]>();
+  const groupedWriteFamilies = new Map<
+    string,
+    { table: string; family: string; fields: Set<string>; occurrences: FieldReference[] }
+  >();
+  const groupedRiskRules = new Map<
+    string,
+    { ruleType: DetectedRule["ruleType"]; name: string; description: string; condition?: string; sourceFile?: string; lineNumber?: number; count: number }
+  >();
 
   for (const reference of fieldReferences) {
     if (reference.type === "write") {
       const key = buildFieldIdentityKey(reference);
       writeCounts.set(key, (writeCounts.get(key) ?? 0) + 1);
+      const bucket = writeReferences.get(key) ?? [];
+      bucket.push(reference);
+      writeReferences.set(key, bucket);
     }
 
     if (reference.type === "calculate") {
@@ -126,38 +155,77 @@ function buildRules(fieldReferences: FieldReference[], risks: DetectedRisk[]): D
   for (const [fieldKey, count] of Array.from(writeCounts.entries())) {
     if (count < 2) continue;
     const identity = parseFieldIdentityKey(fieldKey);
-    const displayName = `${identity.table}.${identity.field}`;
-    const slug = `${identity.table}_${identity.field}`.replace(/[^\w]+/g, "_");
+    const family = buildFieldFamily(identity.field);
+    const groupKey = `${identity.table}:${family}`;
+    const current =
+      groupedWriteFamilies.get(groupKey) ??
+      { table: identity.table, family, fields: new Set<string>(), occurrences: [] };
+    current.fields.add(identity.field);
+    current.occurrences.push(...(writeReferences.get(fieldKey) ?? []));
+    groupedWriteFamilies.set(groupKey, current);
+  }
+
+  for (const group of groupedWriteFamilies.values()) {
+    const slug = `${group.table}_${group.family}`.replace(/[^\w]+/g, "_");
+    const displayName = `${group.table}.${group.family}`;
+    const first = group.occurrences[0];
     rules.push({
       ruleType: "validation",
       name: `validate_${slug}_single_owner`,
-      description: `Review write ownership for ${displayName}; multiple write sites were detected.`,
+      description: `Review write ownership for ${displayName}; ${group.fields.size} related fields have multiple write sites.`,
       condition: `${displayName} should have a documented write owner`,
+      sourceFile: first?.file,
+      lineNumber: first?.line,
     });
   }
 
   for (const risk of risks) {
     if (risk.category === "magic_value") {
-      rules.push({
-        ruleType: "magic_value",
-        name: `externalize_${risk.sourceFile.replace(/[^\w]+/g, "_")}_${risk.lineNumber}`,
-        description: risk.title,
-        condition: risk.description,
-        sourceFile: risk.sourceFile,
-        lineNumber: risk.lineNumber,
-      });
+      const name = `externalize_${risk.sourceFile.replace(/[^\w]+/g, "_")}_${risk.title.replace(/[^\w]+/g, "_").toLowerCase()}`;
+      const key = `magic_value:${name}`;
+      const current =
+        groupedRiskRules.get(key) ??
+        {
+          ruleType: "magic_value" as const,
+          name,
+          description: risk.title,
+          condition: risk.description,
+          sourceFile: risk.sourceFile,
+          lineNumber: risk.lineNumber,
+          count: 0,
+        };
+      current.count += 1;
+      groupedRiskRules.set(key, current);
     }
 
     if (risk.category === "format_conversion") {
-      rules.push({
-        ruleType: "format",
-        name: `format_guard_${risk.sourceFile.replace(/[^\w]+/g, "_")}_${risk.lineNumber}`,
-        description: risk.title,
-        condition: risk.description,
-        sourceFile: risk.sourceFile,
-        lineNumber: risk.lineNumber,
-      });
+      const name = `format_guard_${risk.sourceFile.replace(/[^\w]+/g, "_")}_${risk.title.replace(/[^\w]+/g, "_").toLowerCase()}`;
+      const key = `format:${name}`;
+      const current =
+        groupedRiskRules.get(key) ??
+        {
+          ruleType: "format" as const,
+          name,
+          description: risk.title,
+          condition: risk.description,
+          sourceFile: risk.sourceFile,
+          lineNumber: risk.lineNumber,
+          count: 0,
+        };
+      current.count += 1;
+      groupedRiskRules.set(key, current);
     }
+  }
+
+  for (const rule of groupedRiskRules.values()) {
+    rules.push({
+      ruleType: rule.ruleType,
+      name: rule.name,
+      description: rule.count > 1 ? `${rule.description} (${rule.count} occurrences)` : rule.description,
+      condition: rule.condition,
+      sourceFile: rule.sourceFile,
+      lineNumber: rule.lineNumber,
+    });
   }
 
   const uniqueRules = new Map<string, DetectedRule>();

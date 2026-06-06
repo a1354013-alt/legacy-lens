@@ -26,6 +26,8 @@ function createSnapshot(): AnalysisSnapshot {
       updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     },
     importWarnings: [],
+    warningSummary: [],
+    partialReasons: [],
     totals: {
       files: 10,
       symbols: 30,
@@ -39,6 +41,16 @@ function createSnapshot(): AnalysisSnapshot {
     topSymbols: [],
     topRisks: [],
     topRules: [],
+    topRiskGroups: [],
+    topRuleGroups: [],
+    topAffectedFiles: [],
+    dependencySummary: {
+      internalCount: 0,
+      externalCount: 0,
+      standardLibraryCount: 0,
+      hiddenByDefaultCount: 0,
+      defaultHideStandardLibrary: true,
+    },
     fieldTables: [],
   };
 }

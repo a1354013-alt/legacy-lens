@@ -345,7 +345,7 @@ describe("appRouter integration", () => {
     expect(metadataJson.fileCount).toBe(1);
     expect(metadataJson.symbolCount).toBe(1);
     expect(metadataJson.dependencyCount).toBe(0);
-    expect(metadataJson.warningCount).toBe(1);
+    expect(metadataJson.warningCount).toBe(3);
 
     const summary = zip.file("analysis-summary.json");
     expect(summary).toBeTruthy();

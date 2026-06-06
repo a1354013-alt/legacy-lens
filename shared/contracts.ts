@@ -113,15 +113,22 @@ export const fieldsPageInputSchema = basePagedQuerySchema.extend({
 
 export const risksPageInputSchema = basePagedQuerySchema.extend({
   severity: riskSeveritySchema.optional(),
+  riskType: riskTypeSchema.optional(),
+  filePath: z.string().trim().max(512).optional(),
+  criticalOnly: z.boolean().default(false),
+  hideDuplicates: z.boolean().default(true),
 });
 
 export const rulesPageInputSchema = basePagedQuerySchema.extend({
   ruleType: ruleTypeSchema.optional(),
+  filePath: z.string().trim().max(512).optional(),
+  hideDuplicates: z.boolean().default(true),
 });
 
 export const dependenciesPageInputSchema = basePagedQuerySchema.extend({
   dependencyType: dependencyKindSchema.optional(),
   targetKind: dependencyTargetKindSchema.optional(),
+  hideStandardLibrary: z.boolean().default(true),
 });
 
 export const fieldDependenciesPageInputSchema = basePagedQuerySchema.extend({
@@ -318,6 +325,18 @@ export type AnalysisFieldTableSummary = z.infer<typeof analysisFieldTableSummary
 export const analysisSnapshotSummarySchema = z.object({
   report: analysisSnapshotReportSchema.nullable(),
   importWarnings: z.array(importWarningSchema),
+  warningSummary: z.array(
+    z.object({
+      code: z.string(),
+      label: z.string(),
+      description: z.string(),
+      count: z.number().int().positive(),
+      sampleMessages: z.array(z.string()),
+      sampleFiles: z.array(z.string()),
+      partialReason: z.string().nullable(),
+    })
+  ),
+  partialReasons: z.array(z.string()),
   totals: z.object({
     files: z.number().int().nonnegative(),
     symbols: z.number().int().nonnegative(),
@@ -331,6 +350,61 @@ export const analysisSnapshotSummarySchema = z.object({
   topSymbols: z.array(summarySymbolSchema),
   topRisks: z.array(summaryRiskSchema),
   topRules: z.array(summaryRuleSchema),
+  topRiskGroups: z.array(
+    z.object({
+      id: z.string(),
+      riskType: riskTypeSchema,
+      severity: riskSeveritySchema,
+      title: z.string(),
+      description: z.string().nullable(),
+      sourceFile: z.string().nullable(),
+      lineNumber: z.number().int().nullable(),
+      recommendation: z.string().nullable(),
+      occurrenceCount: z.number().int().positive(),
+      affectedFileCount: z.number().int().nonnegative(),
+      sampleLocations: z.array(
+        z.object({
+          sourceFile: z.string().nullable(),
+          lineNumber: z.number().int().nullable(),
+        })
+      ),
+    })
+  ),
+  topRuleGroups: z.array(
+    z.object({
+      id: z.string(),
+      ruleType: ruleTypeSchema,
+      title: z.string(),
+      description: z.string().nullable(),
+      recommendation: z.string().nullable(),
+      sourceFile: z.string().nullable(),
+      lineNumber: z.number().int().nullable(),
+      occurrenceCount: z.number().int().positive(),
+      affectedFileCount: z.number().int().nonnegative(),
+      sourceLabel: z.string().nullable(),
+      sampleLocations: z.array(
+        z.object({
+          sourceFile: z.string().nullable(),
+          lineNumber: z.number().int().nullable(),
+        })
+      ),
+    })
+  ),
+  topAffectedFiles: z.array(
+    z.object({
+      filePath: z.string(),
+      riskCount: z.number().int().nonnegative(),
+      ruleCount: z.number().int().nonnegative(),
+      totalCount: z.number().int().nonnegative(),
+    })
+  ),
+  dependencySummary: z.object({
+    internalCount: z.number().int().nonnegative(),
+    externalCount: z.number().int().nonnegative(),
+    standardLibraryCount: z.number().int().nonnegative(),
+    hiddenByDefaultCount: z.number().int().nonnegative(),
+    defaultHideStandardLibrary: z.boolean(),
+  }),
   fieldTables: z.array(analysisFieldTableSummarySchema),
 });
 
@@ -392,7 +466,7 @@ export const fieldDependencyListItemSchema = z.object({
 export type FieldDependencyListItem = z.infer<typeof fieldDependencyListItemSchema>;
 
 export const riskListItemSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.string(),
   riskType: riskTypeSchema,
   severity: riskSeveritySchema,
   title: z.string(),
@@ -400,18 +474,35 @@ export const riskListItemSchema = z.object({
   sourceFile: z.string().nullable(),
   lineNumber: z.number().int().nullable(),
   recommendation: z.string().nullable(),
+  occurrenceCount: z.number().int().positive(),
+  affectedFileCount: z.number().int().nonnegative(),
+  sampleLocations: z.array(
+    z.object({
+      sourceFile: z.string().nullable(),
+      lineNumber: z.number().int().nullable(),
+    })
+  ),
 });
 
 export type RiskListItem = z.infer<typeof riskListItemSchema>;
 
 export const ruleListItemSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.string(),
   ruleType: ruleTypeSchema,
-  name: z.string(),
+  title: z.string(),
   description: z.string().nullable(),
-  condition: z.string().nullable(),
+  recommendation: z.string().nullable(),
   sourceFile: z.string().nullable(),
   lineNumber: z.number().int().nullable(),
+  occurrenceCount: z.number().int().positive(),
+  affectedFileCount: z.number().int().nonnegative(),
+  sourceLabel: z.string().nullable(),
+  sampleLocations: z.array(
+    z.object({
+      sourceFile: z.string().nullable(),
+      lineNumber: z.number().int().nullable(),
+    })
+  ),
 });
 
 export type RuleListItem = z.infer<typeof ruleListItemSchema>;
@@ -483,7 +574,15 @@ export const symbolsPageOutputSchema = pagedResultSchema(symbolListItemSchema);
 export const fieldsPageOutputSchema = pagedResultSchema(fieldListItemSchema);
 export const risksPageOutputSchema = pagedResultSchema(riskListItemSchema);
 export const rulesPageOutputSchema = pagedResultSchema(ruleListItemSchema);
-export const dependenciesPageOutputSchema = pagedResultSchema(dependencyListItemSchema);
+export const dependenciesPageOutputSchema = pagedResultSchema(dependencyListItemSchema).extend({
+  summary: z.object({
+    internalCount: z.number().int().nonnegative(),
+    externalCount: z.number().int().nonnegative(),
+    standardLibraryCount: z.number().int().nonnegative(),
+    hiddenByDefaultCount: z.number().int().nonnegative(),
+    defaultHideStandardLibrary: z.boolean(),
+  }),
+});
 export const fieldDependenciesPageOutputSchema = pagedResultSchema(fieldDependencyListItemSchema);
 export const jobByIdOutputSchema = projectJobSchema;
 export const projectCreateOutputSchema = z.object({

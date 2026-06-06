@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { useLocation, useRoute } from "wouter";
-import { ArrowLeft, FileText, Loader2, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ArrowLeft, FileText, Loader2, ShieldAlert } from "lucide-react";
 import {
   dependencyKinds,
   dependencyTargetKinds,
   fieldDependencyOperationTypes,
   riskSeverities,
+  riskTypes,
   ruleTypes,
   symbolKinds,
 } from "@shared/contracts";
@@ -14,7 +15,9 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { t } from "@/locales";
@@ -22,6 +25,7 @@ import {
   analysisStatusLabel,
   dependencyKindLabel,
   dependencyTargetKindLabel,
+  localizeProjectJobErrorMessage,
   fieldOperationLabel,
   projectJobStatusLabel,
   projectJobTypeLabel,
@@ -31,7 +35,16 @@ import {
   sourceTypeLabel,
   symbolKindLabel,
 } from "@/locales/uiLabels";
-import { FileTable, PaginationControls, ProjectSummaryCard, ReportActions, RiskPanel } from "./analysisResult/components";
+import {
+  DependencySummary,
+  FileTable,
+  PaginationControls,
+  ProjectSummaryCard,
+  ReportActions,
+  RiskPanel,
+  RulePanel,
+  WarningSummaryCard,
+} from "./analysisResult/components";
 import { useAnalysisResultModel } from "./analysisResult/useAnalysisResultModel";
 
 export function renderDocumentPreview(content: string | null | undefined) {
@@ -65,12 +78,24 @@ export default function AnalysisResult() {
     setRiskSearch,
     riskSeverity,
     setRiskSeverity,
+    riskType,
+    setRiskType,
+    riskFile,
+    setRiskFile,
+    riskCriticalOnly,
+    setRiskCriticalOnly,
+    hideDuplicateRisks,
+    setHideDuplicateRisks,
     riskPage,
     setRiskPage,
     ruleSearch,
     setRuleSearch,
     ruleType,
     setRuleType,
+    ruleFile,
+    setRuleFile,
+    hideDuplicateRules,
+    setHideDuplicateRules,
     rulePage,
     setRulePage,
     dependencySearch,
@@ -79,6 +104,8 @@ export default function AnalysisResult() {
     setDependencyType,
     dependencyTargetKind,
     setDependencyTargetKind,
+    hideStandardLibraryDependencies,
+    setHideStandardLibraryDependencies,
     dependencyPage,
     setDependencyPage,
     fieldDependencySearch,
@@ -144,6 +171,15 @@ export default function AnalysisResult() {
     );
   }
 
+  const isPartialWarning =
+    report?.status === "partial" ||
+    project.errorMessage === "Analysis completed with warnings." ||
+    report?.errorMessage === "Analysis completed with warnings.";
+  const partialReasonText =
+    snapshot?.partialReasons.length && snapshot.partialReasons.length > 0
+      ? snapshot.partialReasons.join("、")
+      : "分析已完成，但部分報告因資料量過大或檔案格式限制被截斷。你仍可查看已產生的符號、相依、風險與規則。";
+
   return (
     <div className="min-h-dvh bg-slate-50">
       <header className="border-b bg-white">
@@ -199,7 +235,16 @@ export default function AnalysisResult() {
           </Alert>
         ) : null}
 
-        {project.errorMessage ? (
+        {isPartialWarning ? (
+          <Alert variant="warning">
+            <AlertTriangle className="size-4" />
+            <AlertTitle>分析完成但有警告</AlertTitle>
+            <AlertDescription>
+              分析已完成，但部分報告因資料量過大或檔案格式限制被截斷。你仍可查看已產生的符號、相依、風險與規則。
+              <span className="mt-2 block text-slate-700">原因摘要：{partialReasonText}</span>
+            </AlertDescription>
+          </Alert>
+        ) : project.errorMessage ? (
           <Alert variant="destructive">
             <AlertTitle>{t("analysis.projectErrorTitle")}</AlertTitle>
             <AlertDescription>{project.errorMessage}</AlertDescription>
@@ -209,7 +254,7 @@ export default function AnalysisResult() {
         {project.latestJob?.status === "failed" && project.latestJob.errorMessage ? (
           <Alert variant="destructive">
             <AlertTitle>{t("analysis.latestJobErrorTitle")}</AlertTitle>
-            <AlertDescription>{project.latestJob.errorMessage}</AlertDescription>
+            <AlertDescription>{localizeProjectJobErrorMessage(project.latestJob.type, project.latestJob.errorMessage)}</AlertDescription>
           </Alert>
         ) : null}
 
@@ -278,23 +323,7 @@ export default function AnalysisResult() {
               ]}
             />
 
-            {importWarnings.length > 0 ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("analysis.summary.importWarningsTitle")}</CardTitle>
-                  <CardDescription>{t("analysis.summary.importWarningsDescription")}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm text-slate-700">
-                  {importWarnings.map((warning, index) => (
-                    <div key={`${warning.code}-${warning.filePath ?? index}`} className="rounded-lg border px-3 py-2">
-                      <p className="font-medium text-slate-950">{warning.code}</p>
-                      <p>{warning.message}</p>
-                      {warning.filePath ? <p className="text-slate-500">{warning.filePath}</p> : null}
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            ) : null}
+            <WarningSummaryCard items={snapshot?.warningSummary ?? []} />
 
             <div className="grid gap-4 lg:grid-cols-3">
               <SimpleListCard
@@ -303,14 +332,35 @@ export default function AnalysisResult() {
                 emptyText={t("analysis.summary.noSymbols")}
               />
               <SimpleListCard
-                title={t("analysis.summary.topRisks")}
-                items={(snapshot?.topRisks ?? []).map((item) => `[${riskSeverityLabel(item.severity)}] ${item.title}`)}
+                title="Top 風險類型"
+                items={(snapshot?.topRiskGroups ?? []).slice(0, 10).map((item) => `[${riskSeverityLabel(item.severity)}] ${item.title} (${item.occurrenceCount})`)}
                 emptyText={t("analysis.summary.noRisks")}
               />
               <SimpleListCard
-                title={t("analysis.summary.topRules")}
-                items={(snapshot?.topRules ?? []).map((item) => `${item.name} (${ruleTypeLabel(item.ruleType)})`)}
+                title="Top 規則類型"
+                items={(snapshot?.topRuleGroups ?? []).slice(0, 10).map((item) => `${item.title} (${item.occurrenceCount})`)}
                 emptyText={t("analysis.summary.noRules")}
+              />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <SimpleListCard
+                title="最常被影響的檔案"
+                items={(snapshot?.topAffectedFiles ?? []).map((item) => `${item.filePath} (${item.totalCount})`)}
+                emptyText="目前沒有可顯示的檔案影響排行。"
+              />
+              <SimpleListCard
+                title="相依摘要"
+                items={
+                  snapshot
+                    ? [
+                        `內部相依：${snapshot.dependencySummary.internalCount}`,
+                        `外部相依：${snapshot.dependencySummary.externalCount}`,
+                        `Delphi 標準函式庫：${snapshot.dependencySummary.standardLibraryCount}`,
+                      ]
+                    : []
+                }
+                emptyText="目前沒有相依摘要。"
               />
             </div>
 
@@ -401,7 +451,23 @@ export default function AnalysisResult() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="mt-4 flex items-center gap-3">
+                <Checkbox
+                  id="hide-standard-library"
+                  checked={hideStandardLibraryDependencies}
+                  onCheckedChange={(checked) => {
+                    setHideStandardLibraryDependencies(Boolean(checked));
+                    setDependencyPage(1);
+                  }}
+                />
+                <Label htmlFor="hide-standard-library">隱藏標準函式庫</Label>
+              </div>
             </FilterCard>
+            <DependencySummary
+              hiddenCount={dependenciesQuery.data?.summary.hiddenByDefaultCount ?? snapshot?.dependencySummary.hiddenByDefaultCount ?? 0}
+              internalCount={dependenciesQuery.data?.summary.internalCount ?? snapshot?.dependencySummary.internalCount ?? 0}
+              standardLibraryCount={dependenciesQuery.data?.summary.standardLibraryCount ?? snapshot?.dependencySummary.standardLibraryCount ?? 0}
+            />
             <PaginationControls total={dependenciesQuery.data?.total ?? 0} page={dependenciesQuery.data?.page ?? dependencyPage} pageCount={dependenciesQuery.data?.pageCount ?? 0} onPrev={() => setDependencyPage((value) => Math.max(1, value - 1))} onNext={() => setDependencyPage((value) => value + 1)} />
             <ListCard
               loading={dependenciesQuery.isLoading}
@@ -466,7 +532,7 @@ export default function AnalysisResult() {
 
           <TabsContent value="risks" className="space-y-4">
             <FilterCard title={t("analysis.filters.risksTitle")} description={t("analysis.filters.risksDescription")}>
-              <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
+              <div className="grid gap-3 md:grid-cols-2">
                 <Input value={riskSearch} onChange={(event) => { setRiskSearch(event.target.value); setRiskPage(1); }} placeholder={t("analysis.filters.riskSearch")} />
                 <Select value={riskSeverity} onValueChange={(value) => { setRiskSeverity(value); setRiskPage(1); }}>
                   <SelectTrigger><SelectValue placeholder={t("analysis.filters.severityPlaceholder")} /></SelectTrigger>
@@ -475,6 +541,40 @@ export default function AnalysisResult() {
                     {riskSeverities.map((severity) => <SelectItem key={severity} value={severity}>{riskSeverityLabel(severity)}</SelectItem>)}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <Select value={riskType} onValueChange={(value) => { setRiskType(value); setRiskPage(1); }}>
+                  <SelectTrigger><SelectValue placeholder="風險類型" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部風險類型</SelectItem>
+                    {riskTypes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Input value={riskFile} onChange={(event) => { setRiskFile(event.target.value); setRiskPage(1); }} placeholder="依檔案篩選" />
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    id="risk-critical-only"
+                    checked={riskCriticalOnly}
+                    onCheckedChange={(checked) => {
+                      setRiskCriticalOnly(Boolean(checked));
+                      setRiskPage(1);
+                    }}
+                  />
+                  <Label htmlFor="risk-critical-only">只看 critical</Label>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    id="hide-duplicate-risks"
+                    checked={hideDuplicateRisks}
+                    onCheckedChange={(checked) => {
+                      setHideDuplicateRisks(Boolean(checked));
+                      setRiskPage(1);
+                    }}
+                  />
+                  <Label htmlFor="hide-duplicate-risks">隱藏重複項</Label>
+                </div>
               </div>
             </FilterCard>
             <PaginationControls total={risksQuery.data?.total ?? 0} page={risksQuery.data?.page ?? riskPage} pageCount={risksQuery.data?.pageCount ?? 0} onPrev={() => setRiskPage((value) => Math.max(1, value - 1))} onNext={() => setRiskPage((value) => value + 1)} />
@@ -493,22 +593,23 @@ export default function AnalysisResult() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-[2fr_1fr]">
+                <Input value={ruleFile} onChange={(event) => { setRuleFile(event.target.value); setRulePage(1); }} placeholder="依檔案篩選" />
+                <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
+                  <Checkbox
+                    id="hide-duplicate-rules"
+                    checked={hideDuplicateRules}
+                    onCheckedChange={(checked) => {
+                      setHideDuplicateRules(Boolean(checked));
+                      setRulePage(1);
+                    }}
+                  />
+                  <Label htmlFor="hide-duplicate-rules">隱藏重複項</Label>
+                </div>
+              </div>
             </FilterCard>
             <PaginationControls total={rulesQuery.data?.total ?? 0} page={rulesQuery.data?.page ?? rulePage} pageCount={rulesQuery.data?.pageCount ?? 0} onPrev={() => setRulePage((value) => Math.max(1, value - 1))} onNext={() => setRulePage((value) => value + 1)} />
-            <ListCard
-              loading={rulesQuery.isLoading}
-              items={(rulesQuery.data?.items ?? []).map((rule) => (
-                <div key={rule.id} className="rounded-lg border px-3 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium text-slate-950">{rule.name}</span>
-                    <Badge variant="outline">{ruleTypeLabel(rule.ruleType)}</Badge>
-                  </div>
-                  <p className="text-slate-600">{rule.description ?? t("analysis.empty.noRuleDescription")}</p>
-                  <p className="text-slate-500">{rule.sourceFile ?? t("analysis.empty.unknownFile")}{rule.lineNumber ? `:${rule.lineNumber}` : ""}</p>
-                </div>
-              ))}
-              emptyText={t("analysis.empty.noRules")}
-            />
+            <RulePanel loading={rulesQuery.isLoading} items={rulesQuery.data?.items ?? []} />
           </TabsContent>
 
           <TabsContent value="documents" className="grid gap-4 lg:grid-cols-2">

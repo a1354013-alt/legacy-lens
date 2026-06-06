@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { FileTable, PaginationControls, ProjectSummaryCard, ReportActions, RiskPanel } from "./components";
+import { FileTable, PaginationControls, ProjectSummaryCard, ReportActions, RiskPanel, WarningSummaryCard } from "./components";
 
 describe("analysis result extracted components", () => {
   it("renders report actions with disabled download state when the report is unavailable", () => {
@@ -28,22 +28,39 @@ describe("analysis result extracted components", () => {
     expect(summaryHtml).toContain("Status");
     expect(summaryHtml).toContain("completed");
     expect(tableHtml).toContain("dbo.Users");
-    expect(tableHtml).toContain("讀取 3 / 寫入 1 / 參考 4");
+    expect(tableHtml).toContain("讀取 3 / 寫入 1 / 參照 4");
   });
 
-  it("renders risks and pagination summary without changing list semantics", () => {
+  it("renders risks, warning summaries, and pagination summary without changing list semantics", () => {
     const risksHtml = renderToStaticMarkup(
       <RiskPanel
         loading={false}
         items={[
           {
-            id: 1,
+            id: "risk-1",
             title: "Dynamic SQL",
             severity: "high",
             sourceFile: "repo.sql",
             lineNumber: 12,
             description: "Runtime SQL assembly detected.",
             recommendation: "Review the generated statement manually.",
+            occurrenceCount: 3,
+            affectedFileCount: 2,
+            sampleLocations: [{ sourceFile: "repo.sql", lineNumber: 12 }],
+          },
+        ]}
+      />
+    );
+    const warningsHtml = renderToStaticMarkup(
+      <WarningSummaryCard
+        items={[
+          {
+            code: "IMPORT_LIMITED_ANALYSIS",
+            label: "DFM 有限分析",
+            description: "部分 Delphi 表單檔僅做有限分析。",
+            count: 10,
+            sampleMessages: ["Imported with limited analysis."],
+            sampleFiles: ["forms/MainForm.dfm"],
           },
         ]}
       />
@@ -53,7 +70,9 @@ describe("analysis result extracted components", () => {
     );
 
     expect(risksHtml).toContain("Dynamic SQL");
+    expect(risksHtml).toContain("出現 3 次");
     expect(risksHtml).toContain("Review the generated statement manually.");
+    expect(warningsHtml).toContain("DFM 有限分析");
     expect(pagingHtml).toContain("共 20 筆，第 2 / 4 頁");
   });
 });
