@@ -55,6 +55,36 @@ export function renderDocumentPreview(content: string | null | undefined) {
   return content.split("\n").slice(0, 12).join("\n");
 }
 
+function ImportWarningsCard({
+  items,
+}: {
+  items: Array<{ code: string; message: string; filePath?: string }>;
+}) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("analysis.summary.importWarningsTitle")}</CardTitle>
+        <CardDescription>{t("analysis.summary.importWarningsDescription")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {items.map((warning, index) => (
+          <div key={`${warning.code}:${warning.filePath ?? index}`} className="rounded-lg border px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary">{warning.code}</Badge>
+              {warning.filePath ? <span className="font-medium text-slate-950">{warning.filePath}</span> : null}
+            </div>
+            <p className="mt-2 text-slate-700">{warning.message}</p>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AnalysisResult() {
   const [, setLocation] = useLocation();
   const [, params] = useRoute("/projects/:id/analysis");
@@ -324,6 +354,7 @@ export default function AnalysisResult() {
             />
 
             <WarningSummaryCard items={snapshot?.warningSummary ?? []} />
+            <ImportWarningsCard items={importWarnings} />
 
             <div className="grid gap-4 lg:grid-cols-3">
               <SimpleListCard

@@ -19,9 +19,7 @@ import type {
   ProjectJobRecord,
   ImportWarning,
   ReportArchivePayload,
-  RiskListItem,
   RisksPageInput,
-  RuleListItem,
   RulesPageInput,
   SymbolListItem,
   SymbolsPageInput,
@@ -376,18 +374,6 @@ function getProjectJobLogContext(
     progress: Number(job.progress ?? 0),
     ...extra,
   };
-}
-
-function logProjectJobLifecycle(
-  level: "info" | "warn" | "error",
-  action: string,
-  job: Pick<ProjectJobRow, "id" | "projectId" | "type" | "status" | "progress">,
-  extra: Record<string, unknown> = {}
-) {
-  logger[level](`Project job ${action}`, {
-    action: `project.${action}`,
-    ...getProjectJobLogContext(job, extra),
-  });
 }
 
 function getErrorMessage(error: unknown) {

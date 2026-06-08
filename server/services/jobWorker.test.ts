@@ -18,6 +18,9 @@ const {
 const { failProjectJobWithoutOwnershipMock } = vi.hoisted(() => ({
   failProjectJobWithoutOwnershipMock: vi.fn(async () => true),
 }));
+const { loggerWarnMock } = vi.hoisted(() => ({
+  loggerWarnMock: vi.fn(),
+}));
 
 vi.mock("node:worker_threads", () => ({
   Worker: class Worker extends EventEmitter {
@@ -44,6 +47,15 @@ vi.mock("./projectWorkflow", () => ({
   runClaimedProjectJob: vi.fn(),
 }));
 
+vi.mock("../_core/logger", () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: loggerWarnMock,
+    error: vi.fn(),
+  },
+}));
+
 describe("runProjectJob", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -52,6 +64,7 @@ describe("runProjectJob", () => {
     workerCtorErrorRef.current = null;
     autoReadyRef.current = true;
     failProjectJobWithoutOwnershipMock.mockClear();
+    loggerWarnMock.mockClear();
     delete process.env.PROJECT_JOB_EXECUTION_TIMEOUT_MS;
     delete process.env.PROJECT_JOB_WORKER_START_TIMEOUT_MS;
     process.env.NODE_ENV = "test";
@@ -62,6 +75,8 @@ describe("runProjectJob", () => {
     workerCtorErrorRef.current = new Error("bundle missing");
 
     const { runProjectJob } = await import("./jobWorker");
+    const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
+    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
 
     await expect(runProjectJob(42)).rejects.toMatchObject({
       code: "PROJECT_JOB_WORKER_EXITED",
@@ -81,6 +96,8 @@ describe("runProjectJob", () => {
     autoReadyRef.current = false;
 
     const { runProjectJob } = await import("./jobWorker");
+    const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
+    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
     const promise = runProjectJob(42);
     const expectation = expect(promise).rejects.toMatchObject({
       code: "PROJECT_JOB_WORKER_EXITED",
@@ -98,6 +115,8 @@ describe("runProjectJob", () => {
     process.env.NODE_ENV = "production";
 
     const { runProjectJob } = await import("./jobWorker");
+    const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
+    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
     const promise = runProjectJob(42);
 
     await vi.waitFor(() => {
@@ -130,6 +149,8 @@ describe("runProjectJob", () => {
     process.env.PROJECT_JOB_EXECUTION_TIMEOUT_MS = "25";
 
     const { runProjectJob } = await import("./jobWorker");
+    const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
+    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
     const promise = runProjectJob(42);
     await vi.waitFor(() => {
       expect(workerInstances).toHaveLength(1);
@@ -146,6 +167,41 @@ describe("runProjectJob", () => {
     expect(failProjectJobWithoutOwnershipMock).toHaveBeenCalledWith(
       42,
       expect.objectContaining({ code: "PROJECT_JOB_TIMEOUT" })
+    );
+  });
+
+  it("keeps the timeout error when failing the job after timeout cannot be persisted", async () => {
+    vi.useFakeTimers();
+    process.env.NODE_ENV = "production";
+    process.env.PROJECT_JOB_EXECUTION_TIMEOUT_MS = "25";
+    failProjectJobWithoutOwnershipMock.mockRejectedValueOnce(new Error("projectJobs table missing"));
+
+    const { runProjectJob, setProjectJobFailurePersisterForTest } = await import("./jobWorker");
+    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
+    const promise = runProjectJob(42);
+    await vi.waitFor(() => {
+      expect(workerInstances).toHaveLength(1);
+      expect(workerInstances[0].postMessage).toHaveBeenCalledWith({ id: 1, jobId: 42 });
+    });
+
+    const expectation = expect(promise).rejects.toMatchObject({
+      code: "PROJECT_JOB_TIMEOUT",
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await expectation;
+    expect(failProjectJobWithoutOwnershipMock).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ code: "PROJECT_JOB_TIMEOUT" })
+    );
+    expect(loggerWarnMock).toHaveBeenCalledWith(
+      "Project job failure persistence failed",
+      expect.objectContaining({
+        action: "project.job.failure_persist_failed",
+        jobId: 42,
+        errorCode: "PROJECT_JOB_TIMEOUT",
+        persistErrorMessage: "projectJobs table missing",
+      })
     );
   });
 });

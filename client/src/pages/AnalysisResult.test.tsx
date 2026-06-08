@@ -234,6 +234,26 @@ describe("AnalysisResult", () => {
     expect(html).toContain("原因摘要");
   });
 
+  it("shows import warnings from the analysis snapshot", () => {
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        importWarnings: [
+          {
+            code: "IMPORT_LIMITED_ANALYSIS",
+            message: "Imported with limited analysis.",
+            filePath: "forms/MainForm.dfm",
+          },
+        ],
+      })
+    );
+
+    const html = renderToString(<AnalysisResult />);
+
+    expect(html).toContain("IMPORT_LIMITED_ANALYSIS");
+    expect(html).toContain("Imported with limited analysis.");
+    expect(html).toContain("forms/MainForm.dfm");
+  });
+
   it("returns stable fallback text when no document content exists", () => {
     expect(renderDocumentPreview(null)).toBe("目前沒有可預覽的文件內容。");
   });

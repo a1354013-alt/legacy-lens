@@ -35,8 +35,11 @@ type WorkerState = {
   ready: Promise<Worker>;
 };
 
+type ProjectJobFailurePersister = (jobId: number, error: AppError) => Promise<unknown>;
+
 let nextRequestId = 1;
 let workerState: WorkerState | null = null;
+let projectJobFailurePersisterOverride: ProjectJobFailurePersister | null = null;
 export const PROJECT_JOB_EXECUTION_TIMEOUT_MS = parsePositiveIntEnv("PROJECT_JOB_EXECUTION_TIMEOUT_MS", 30 * 60 * 1000);
 export const PROJECT_JOB_WORKER_START_TIMEOUT_MS = parsePositiveIntEnv("PROJECT_JOB_WORKER_START_TIMEOUT_MS", 15 * 1000);
 const pendingRequests = new Map<
@@ -153,7 +156,7 @@ function createWorkerState(): WorkerState {
     for (const [requestId, pending] of pendingRequests.entries()) {
       pendingRequests.delete(requestId);
       clearTimeout(pending.timeout);
-      void failPendingJob(
+      void failPendingJobBestEffort(
         pending.jobId,
         new AppError("PROJECT_JOB_WORKER_EXITED", `Project job worker crashed while processing job ${pending.jobId}.`)
       );
@@ -181,7 +184,7 @@ function createWorkerState(): WorkerState {
       for (const [requestId, pending] of pendingRequests.entries()) {
         pendingRequests.delete(requestId);
         clearTimeout(pending.timeout);
-        void failPendingJob(
+        void failPendingJobBestEffort(
           pending.jobId,
           new AppError("PROJECT_JOB_WORKER_EXITED", `Project job worker exited with code ${code} while processing job ${pending.jobId}.`)
         );
@@ -251,8 +254,32 @@ async function getWorker() {
 }
 
 async function failPendingJob(jobId: number, error: AppError) {
+  if (projectJobFailurePersisterOverride) {
+    await projectJobFailurePersisterOverride(jobId, error);
+    return;
+  }
+
   const { failProjectJobWithoutOwnership } = await import("./projectWorkflow");
   await failProjectJobWithoutOwnership(jobId, error);
+}
+
+async function failPendingJobBestEffort(jobId: number, error: AppError) {
+  try {
+    await failPendingJob(jobId, error);
+  } catch (persistError) {
+    logger.warn("Project job failure persistence failed", {
+      action: "project.job.failure_persist_failed",
+      status: "error",
+      jobId,
+      errorCode: error.code,
+      errorMessage: error.message,
+      persistErrorMessage: persistError instanceof Error ? persistError.message : String(persistError),
+    });
+  }
+}
+
+export function setProjectJobFailurePersisterForTest(persister: ProjectJobFailurePersister | null) {
+  projectJobFailurePersisterOverride = persister;
 }
 
 export async function runProjectJob(jobId: number) {
@@ -279,13 +306,6 @@ export async function runProjectJob(jobId: number) {
           workerState = null;
         }
         void timedOutWorker.terminate();
-        void failPendingJob(
-          request.jobId,
-          new AppError(
-            "PROJECT_JOB_TIMEOUT",
-            `Project job ${request.jobId} exceeded execution timeout (${PROJECT_JOB_EXECUTION_TIMEOUT_MS} ms).`
-          )
-        );
         reject(new AppError("PROJECT_JOB_TIMEOUT", `Project job ${jobId} exceeded execution timeout (${PROJECT_JOB_EXECUTION_TIMEOUT_MS} ms).`));
       }, PROJECT_JOB_EXECUTION_TIMEOUT_MS);
       timeout.unref?.();
@@ -320,7 +340,7 @@ export async function runProjectJob(jobId: number) {
       error instanceof AppError
         ? error
         : new AppError("PROJECT_JOB_WORKER_EXITED", error instanceof Error ? error.message : String(error));
-    await failPendingJob(jobId, appError);
+    await failPendingJobBestEffort(jobId, appError);
     throw appError;
   }
 }
