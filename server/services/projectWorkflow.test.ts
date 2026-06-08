@@ -1,8 +1,12 @@
 import JSZip from "jszip";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { DependenciesPageInput, RisksPageInput } from "../../shared/contracts";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
+type DependencyListOptions = Omit<DependenciesPageInput, "hideStandardLibrary"> & Partial<Pick<DependenciesPageInput, "hideStandardLibrary">>;
+type RiskListOptions = Omit<RisksPageInput, "criticalOnly" | "hideDuplicates"> &
+  Partial<Pick<RisksPageInput, "criticalOnly" | "hideDuplicates">>;
 type Condition =
   | { type: "eq"; column: string; value: unknown }
   | { type: "inArray"; column: string; values: unknown[] }
@@ -32,6 +36,14 @@ const { readFileMock, rmMock } = vi.hoisted(() => ({
   readFileMock: vi.fn(async () => Buffer.from("zip-bytes")),
   rmMock: vi.fn(async () => undefined),
 }));
+
+function dependencyListOptions(options: DependencyListOptions): DependenciesPageInput {
+  return { hideStandardLibrary: false, ...options };
+}
+
+function riskListOptions(options: RiskListOptions): RisksPageInput {
+  return { criticalOnly: false, hideDuplicates: false, ...options };
+}
 
 vi.mock("drizzle-orm", async () => {
   const actual = await vi.importActual<typeof import("drizzle-orm")>("drizzle-orm");
@@ -1039,7 +1051,7 @@ describe("project workflow", () => {
       targetExternalName: null,
     });
 
-    const dependenciesPage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25, search: "symbol250" }, 7);
+    const dependenciesPage = await getDependenciesPage(dependencyListOptions({ projectId: 1, page: 1, pageSize: 25, search: "symbol250" }), 7);
     const fieldDependenciesPage = await getFieldDependenciesPage({ projectId: 1, page: 1, pageSize: 25, tableName: "orders", search: "field_250" }, 7);
 
     expect(dependenciesPage.items).toEqual([expect.objectContaining({ sourceSymbolName: "Symbol0", targetSymbolName: "Symbol250" })]);
@@ -1126,8 +1138,8 @@ describe("project workflow", () => {
 
     const symbolsPage = await getSymbolsPage({ projectId: 1, page: 2, pageSize: 10, search: "loaduser", kind: "procedure" }, 7);
     const fieldsPage = await getFieldsPage({ projectId: 1, page: 1, pageSize: 25, tableName: "ERP.SIGNB", search: "mark" }, 7);
-    const risksPage = await getRisksPage({ projectId: 1, page: 1, pageSize: 25, severity: "high", search: "shared" }, 7);
-    const dependenciesPage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25, targetKind: "external", search: "legacy" }, 7);
+    const risksPage = await getRisksPage(riskListOptions({ projectId: 1, page: 1, pageSize: 25, severity: "high", search: "shared" }), 7);
+    const dependenciesPage = await getDependenciesPage(dependencyListOptions({ projectId: 1, page: 1, pageSize: 25, targetKind: "external", search: "legacy" }), 7);
     const fieldDependenciesPage = await getFieldDependenciesPage({ projectId: 1, page: 1, pageSize: 25, tableName: "ERP.SIGNB", operationType: "write", search: "mark" }, 7);
 
     expect(symbolsPage.total).toBe(15);
@@ -1150,8 +1162,8 @@ describe("project workflow", () => {
       { id: 2, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "ProjectUnit", targetKind: "external", dependencyType: "references", lineNumber: 2 }
     );
 
-    const hiddenPage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25 }, 7);
-    const visiblePage = await getDependenciesPage({ projectId: 1, page: 1, pageSize: 25, hideStandardLibrary: false }, 7);
+    const hiddenPage = await getDependenciesPage(dependencyListOptions({ projectId: 1, page: 1, pageSize: 25, hideStandardLibrary: true }), 7);
+    const visiblePage = await getDependenciesPage(dependencyListOptions({ projectId: 1, page: 1, pageSize: 25 }), 7);
 
     expect(hiddenPage.items).toHaveLength(1);
     expect(hiddenPage.items[0]?.targetExternalName).toBe("ProjectUnit");
