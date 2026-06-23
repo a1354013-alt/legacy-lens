@@ -591,6 +591,7 @@ Import pipeline is intentionally bounded:
 ## Analysis Status Semantics
 
 - `completed`: analysis produced a usable result and no files were skipped or degraded.
+- `completed_with_warnings`: analysis produced a usable result and the final persisted snapshot includes warnings, but the core artifacts were still generated successfully.
 - `partial`: analysis produced a usable result, but at least one file was skipped, degraded, or only partially parsed.
 - `failed`: analysis produced no usable result, or the core workflow failed.
 - Heuristic notes remain visible in warnings, but heuristic analysis alone does not force `partial`.

@@ -347,12 +347,15 @@ export class Analyzer {
       warningCount: combinedWarnings.length,
     };
 
+    const hasMaterialWarnings = combinedWarnings.some((warning) => warning.level !== "note");
     const status: AnalysisStatus =
       metrics.eligibleFileCount === 0 || metrics.analyzedFileCount === 0
         ? "failed"
         : metrics.skippedFileCount > 0 || metrics.degradedFileCount > 0
           ? "partial"
-          : "completed";
+          : hasMaterialWarnings
+            ? "completed_with_warnings"
+            : "completed";
 
     return {
       projectId,

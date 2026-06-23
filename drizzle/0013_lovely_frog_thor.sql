@@ -1,0 +1,1 @@
+ALTER TABLE `analysisResults` MODIFY COLUMN `status` enum('pending','processing','completed','completed_with_warnings','partial','failed') NOT NULL DEFAULT 'pending';

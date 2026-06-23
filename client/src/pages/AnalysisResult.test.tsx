@@ -159,7 +159,7 @@ describe("AnalysisResult", () => {
     useAnalysisResultModelMock.mockReset();
   });
 
-  it("shows a warning banner instead of a project error when analysis is partial", () => {
+  it("shows a warning banner instead of a project error when analysis completed with warnings", () => {
     useAnalysisResultModelMock.mockReturnValue(
       createModel({
         project: {
@@ -174,7 +174,7 @@ describe("AnalysisResult", () => {
           analysisProgress: 100,
           errorMessage: "Analysis completed with warnings.",
           lastErrorCode: null,
-          analysisStatus: "partial",
+          analysisStatus: "completed_with_warnings",
           importWarningsJson: [],
           latestJob: { id: 1, type: "analyze", status: "completed", progress: 100, errorMessage: null },
           lastAnalyzedAt: null,
@@ -185,7 +185,7 @@ describe("AnalysisResult", () => {
           report: {
             id: 1,
             projectId: 1,
-            status: "partial",
+            status: "completed_with_warnings",
             flowMarkdown: "# FLOW",
             dataDependencyMarkdown: "# DATA",
             risksMarkdown: "# RISKS",
@@ -212,7 +212,7 @@ describe("AnalysisResult", () => {
         report: {
           id: 1,
           projectId: 1,
-          status: "partial",
+          status: "completed_with_warnings",
           flowMarkdown: "# FLOW",
           dataDependencyMarkdown: "# DATA",
           risksMarkdown: "# RISKS",
@@ -223,7 +223,7 @@ describe("AnalysisResult", () => {
           createdAt: new Date("2026-01-01T00:00:00.000Z"),
           updatedAt: new Date("2026-01-01T00:00:00.000Z"),
         },
-        analysisStatus: "partial",
+        analysisStatus: "completed_with_warnings",
       })
     );
 

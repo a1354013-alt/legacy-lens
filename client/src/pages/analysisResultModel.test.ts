@@ -88,6 +88,7 @@ describe("analysisResultModel", () => {
     expect(getAnalysisViewState("ready", "pending", createJob(), false)).toBe("queued");
     expect(getAnalysisViewState("analyzing", "processing", createJob({ status: "running", progress: 60 }), false)).toBe("running");
     expect(getAnalysisViewState("completed", "completed", createJob({ status: "completed", progress: 100 }), true)).toBe("completed");
+    expect(getAnalysisViewState("completed", "completed_with_warnings", createJob({ status: "completed", progress: 100 }), true)).toBe("completed");
     expect(getAnalysisViewState("failed", "failed", createJob({ status: "failed", errorMessage: "boom" }), false)).toBe("failed");
   });
 
@@ -104,6 +105,7 @@ describe("analysisResultModel", () => {
     expect(resolveAnalysisStatus(undefined, undefined)).toBe("pending");
     expect(resolveAnalysisStatus(undefined, "processing")).toBe("processing");
     expect(resolveAnalysisStatus("partial", "processing")).toBe("partial");
+    expect(resolveAnalysisStatus("completed_with_warnings", "processing")).toBe("completed_with_warnings");
   });
 
   it("enables report download only when the persisted snapshot is complete", () => {
@@ -122,8 +124,16 @@ describe("analysisResultModel", () => {
         status: "failed" as const,
       },
     };
+    const warningSnapshot = {
+      ...createSnapshot(),
+      report: {
+        ...createSnapshot().report!,
+        status: "completed_with_warnings" as const,
+      },
+    };
 
     expect(canDownloadAnalysisReport(completedSnapshot)).toBe(true);
+    expect(canDownloadAnalysisReport(warningSnapshot)).toBe(true);
     expect(canDownloadAnalysisReport(missingYamlSnapshot)).toBe(false);
     expect(canDownloadAnalysisReport(failedSnapshot)).toBe(false);
     expect(canDownloadAnalysisReport(undefined)).toBe(false);

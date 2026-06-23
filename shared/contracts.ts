@@ -4,7 +4,7 @@ export const focusLanguages = ["go", "delphi", "sql"] as const;
 export const projectSourceTypes = ["upload", "git"] as const;
 export const projectStatuses = ["draft", "importing", "ready", "analyzing", "completed", "failed"] as const;
 export const fileStatuses = ["stored", "failed"] as const;
-export const analysisStatuses = ["pending", "processing", "completed", "partial", "failed"] as const;
+export const analysisStatuses = ["pending", "processing", "completed", "completed_with_warnings", "partial", "failed"] as const;
 export const reportFormats = ["zip"] as const;
 export const projectJobTypes = ["import_zip", "import_git", "analyze"] as const;
 export const projectJobStatuses = ["queued", "running", "completed", "failed"] as const;
@@ -204,6 +204,7 @@ export const analysisStatusLabels: Record<AnalysisStatus, string> = {
   pending: "Pending",
   processing: "Processing",
   completed: "Completed",
+  completed_with_warnings: "Completed with warnings",
   partial: "Partial",
   failed: "Failed",
 };

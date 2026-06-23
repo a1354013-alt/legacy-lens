@@ -85,7 +85,11 @@ export function getProjectDisplayStatus(project: ProjectRow) {
     return latestJob.type === "analyze" ? t("status.display.analyzing") : t("status.display.importing");
   }
 
-  if (project.analysisStatus === "completed" || project.analysisStatus === "partial") {
+  if (
+    project.analysisStatus === "completed" ||
+    project.analysisStatus === "completed_with_warnings" ||
+    project.analysisStatus === "partial"
+  ) {
     return t("status.display.analysisReady");
   }
 
@@ -101,7 +105,11 @@ export function getProjectDisplayStatus(project: ProjectRow) {
 }
 
 export function isAnalysisResultReady(project: ProjectRow) {
-  return project.analysisStatus === "completed" || project.analysisStatus === "partial";
+  return (
+    project.analysisStatus === "completed" ||
+    project.analysisStatus === "completed_with_warnings" ||
+    project.analysisStatus === "partial"
+  );
 }
 
 export function getProjectPrimaryAction(project: ProjectRow) {

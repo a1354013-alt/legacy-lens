@@ -202,6 +202,7 @@ export default function AnalysisResult() {
   }
 
   const isPartialWarning =
+    report?.status === "completed_with_warnings" ||
     report?.status === "partial" ||
     project.errorMessage === "Analysis completed with warnings." ||
     report?.errorMessage === "Analysis completed with warnings.";
@@ -240,7 +241,15 @@ export default function AnalysisResult() {
           <Badge variant={project.status === "failed" ? "destructive" : "secondary"}>
             {t("analysis.projectStatus")}：{projectStatusLabel(project.status)}
           </Badge>
-          <Badge variant={viewState === "failed" ? "destructive" : report?.status === "completed" || report?.status === "partial" ? "default" : "secondary"}>
+          <Badge
+            variant={
+              viewState === "failed"
+                ? "destructive"
+                : report?.status === "completed" || report?.status === "completed_with_warnings" || report?.status === "partial"
+                  ? "default"
+                  : "secondary"
+            }
+          >
             {t("analysis.analysisStatus")}：{analysisStatusLabel(analysisStatus)}
           </Badge>
           <Badge variant="outline">{t("analysis.language")}：{project.language.toUpperCase()}</Badge>

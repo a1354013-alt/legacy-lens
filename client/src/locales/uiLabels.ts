@@ -19,6 +19,9 @@ export function projectStatusLabel(status: ProjectStatus) {
 }
 
 export function analysisStatusLabel(status: AnalysisStatus) {
+  if (status === "completed_with_warnings") {
+    return "分析完成（含警告）";
+  }
   return t(`status.analysis.${status}`);
 }
 

@@ -570,7 +570,7 @@ describe("project workflow", () => {
     );
   });
 
-  it("keeps analyze successful and records import warnings as partial results", async () => {
+  it("keeps analyze successful and records import warnings as completed_with_warnings results", async () => {
     const { analyzeProject } = await import("./projectWorkflow");
     seedProject(1, {
       language: "delphi",
@@ -636,9 +636,12 @@ describe("project workflow", () => {
 
     const result = await analyzeProject(1, 7);
 
-    expect(result.status).toBe("partial");
+    expect(result.status).toBe("completed_with_warnings");
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed", lastErrorCode: null });
-    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "partial", errorMessage: "Analysis completed with warnings." });
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({
+      status: "completed_with_warnings",
+      errorMessage: "Analysis completed with warnings.",
+    });
     expect(fakeDb.store.analysisResults[0]?.warningsJson).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: "IMPORT_LIMITED_ANALYSIS", filePath: "forms/MainForm.dfm" }),
@@ -650,7 +653,7 @@ describe("project workflow", () => {
       "Analysis parser.completed",
       expect.objectContaining({
         action: "analysis.parser.completed",
-        resultStatus: "partial",
+        resultStatus: "completed_with_warnings",
       })
     );
   });

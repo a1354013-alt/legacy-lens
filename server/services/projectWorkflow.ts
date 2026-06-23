@@ -1,10 +1,8 @@
-import JSZip from "jszip";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { and, asc, count, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { z } from "zod";
-import { MAX_REPORT_ARCHIVE_BYTES } from "../../shared/const";
 import type {
   AnalysisWarning,
   AnalysisSnapshot,
@@ -76,6 +74,7 @@ import {
   sortProjectRules,
   sortProjectSymbols,
 } from "./projectWorkflow.helpers";
+import { buildProjectReportArchiveBuffer } from "./project/projectReportArchive";
 
 const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {
   draft: ["importing", "failed"],
@@ -663,7 +662,7 @@ async function getExistingUsableAnalysisResult(db: DbHandle, projectId: number) 
   const [report] = await db
     .select()
     .from(analysisResults)
-    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["completed", "partial"])))
+    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["completed", "completed_with_warnings", "partial"])))
     .limit(1);
 
   return report ?? null;
@@ -1186,7 +1185,10 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
       .where(eq(projects.id, job.projectId));
 
     const existingResult = await tx.select().from(analysisResults).where(eq(analysisResults.projectId, job.projectId)).limit(1);
-    const existingUsableResult = existingResult[0]?.status === "completed" || existingResult[0]?.status === "partial";
+    const existingUsableResult =
+      existingResult[0]?.status === "completed" ||
+      existingResult[0]?.status === "completed_with_warnings" ||
+      existingResult[0]?.status === "partial";
     if (existingUsableResult) {
       return;
     }
@@ -1424,7 +1426,11 @@ function applyAdditionalAnalysisWarnings(
   const warnings = mergeAnalysisWarnings(result.warnings, additionalWarnings);
   const warningCount = warnings.length;
   const nextStatus =
-    result.status === "failed" ? "failed" : result.status === "completed" ? "partial" : result.status;
+    result.status === "failed"
+      ? "failed"
+      : result.status === "completed"
+        ? "completed_with_warnings"
+        : result.status;
 
   return {
     ...result,
@@ -1438,7 +1444,9 @@ function applyAdditionalAnalysisWarnings(
 }
 
 function getAnalysisResultErrorMessage(result: Pick<ProjectAnalysisResult, "status">) {
-  return result.status === "partial" ? "Analysis completed with warnings." : null;
+  return result.status === "partial" || result.status === "completed_with_warnings"
+    ? "Analysis completed with warnings."
+    : null;
 }
 
 function truncateUtf8(text: string, maxBytes: number, footer: string) {
@@ -1506,7 +1514,7 @@ function makeAnalysisPartialResultPersistable(result: ProjectAnalysisResult): Pr
   const warnings = mergeAnalysisWarnings(result.warnings, truncationWarnings);
   return {
     ...result,
-    status: result.status === "failed" ? "failed" : "partial",
+    status: result.status === "failed" ? "failed" : result.status === "partial" ? "partial" : "completed_with_warnings",
     warnings,
     flowDocument,
     dataDependencyDocument,
@@ -3021,7 +3029,7 @@ function isReportReadyForExport(
 } {
   return Boolean(
     report &&
-      (report.status === "completed" || report.status === "partial") &&
+      (report.status === "completed" || report.status === "completed_with_warnings" || report.status === "partial") &&
       report.flowMarkdown &&
       report.dataDependencyMarkdown &&
       report.risksMarkdown &&
@@ -3912,16 +3920,6 @@ export async function getFieldDependenciesPage(
   };
 }
 
-function buildReportFileName(projectId: number) {
-  return `legacy-lens-report-${projectId}.zip`;
-}
-
-function estimateReportArchiveBytes(entries: Array<{ path: string; content: string }>) {
-  const rawBytes = entries.reduce((total, entry) => total + Buffer.byteLength(entry.content, "utf8"), 0);
-  const zipOverheadBytes = entries.length * 512 + 4096;
-  return rawBytes + zipOverheadBytes;
-}
-
 export async function buildReportArchiveBuffer(projectId: number, userId: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
   await getOwnedProject(projectId, userId);
   logger.info("Export started", { projectId, action: "export.zip.start", status: "ok" });
@@ -3937,7 +3935,6 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
   }
   const readyReport = report;
 
-  const deterministicFileOptions = { date: new Date(0) };
   const version = getAppVersion();
   const metrics = readyReport.summaryJson ?? null;
   const createdAtSource = readyReport.createdAt ?? readyReport.updatedAt ?? new Date(0);
@@ -3984,29 +3981,8 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     },
   ] as const;
 
-  const estimatedArchiveBytes = estimateReportArchiveBytes([...archiveEntries]);
-  if (estimatedArchiveBytes > MAX_REPORT_ARCHIVE_BYTES) {
-    throw new AppError(
-      "REPORT_TOO_LARGE",
-      `Report export is too large to package safely (estimated ${estimatedArchiveBytes} bytes, limit ${MAX_REPORT_ARCHIVE_BYTES}). Try a smaller project slice, narrower import scope, or paged API results.`
-    );
-  }
-
-  const archive = new JSZip();
-  for (const entry of archiveEntries) {
-    archive.file(entry.path, entry.content, deterministicFileOptions);
-  }
-
   logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
-  const buffer = await archive.generateAsync({ type: "nodebuffer" });
-  if (buffer.length > MAX_REPORT_ARCHIVE_BYTES) {
-    throw new AppError("REPORT_TOO_LARGE", `Report ZIP exceeds the ${MAX_REPORT_ARCHIVE_BYTES} byte safety limit.`);
-  }
-  return {
-    fileName: buildReportFileName(projectId),
-    mimeType: "application/zip",
-    buffer,
-  };
+  return buildProjectReportArchiveBuffer(projectId, [...archiveEntries]);
 }
 
 export async function buildReportArchive(projectId: number, userId: number): Promise<ReportArchivePayload> {

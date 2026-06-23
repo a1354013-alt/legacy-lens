@@ -67,6 +67,7 @@ This document captures the operational boundaries that matter for real deploymen
 ## Analysis Semantics
 
 - `completed`: analysis succeeded without skipped or degraded files.
+- `completed_with_warnings`: analysis succeeded and a usable snapshot was persisted, but the final result still carries warning-only caveats.
 - `partial`: analysis succeeded, but some files were skipped or degraded.
 - `failed`: no usable analysis result was produced.
 - Heuristic notes are preserved, but they do not automatically downgrade a successful result to `partial`.

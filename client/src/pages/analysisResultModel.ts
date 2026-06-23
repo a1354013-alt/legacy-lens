@@ -31,7 +31,7 @@ export function getAnalysisViewState(
   latestJob?: ProjectJobRecord | null,
   hasReport = false
 ) {
-  if (hasReport && (analysisStatus === "completed" || analysisStatus === "partial")) {
+  if (hasReport && (analysisStatus === "completed" || analysisStatus === "completed_with_warnings" || analysisStatus === "partial")) {
     return "completed" satisfies AnalysisViewState;
   }
 
@@ -56,7 +56,7 @@ export function shouldShowPreviousAnalysisFailureBanner(
   latestJob?: ProjectJobRecord | null,
   hasReport = false
 ) {
-  if (!hasReport || (reportStatus !== "completed" && reportStatus !== "partial")) {
+  if (!hasReport || (reportStatus !== "completed" && reportStatus !== "completed_with_warnings" && reportStatus !== "partial")) {
     return false;
   }
 
@@ -76,7 +76,7 @@ export function canDownloadAnalysisReport(snapshot: AnalysisSnapshot | undefined
     return false;
   }
 
-  if (report.status !== "completed" && report.status !== "partial") {
+  if (report.status !== "completed" && report.status !== "completed_with_warnings" && report.status !== "partial") {
     return false;
   }
 

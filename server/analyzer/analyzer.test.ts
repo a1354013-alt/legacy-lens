@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 describe("Analyzer", () => {
-  it("marks clean supported analysis as completed when there are no skipped or degraded files", async () => {
+  it("marks clean supported analysis as completed when only note-level heuristic warnings are present", async () => {
     const analyzer = new Analyzer();
     const result = await analyzer.analyzeProject(
       [
@@ -153,6 +153,50 @@ describe("Analyzer", () => {
     expect(result.status).toBe("failed");
     expect(result.metrics.eligibleFileCount).toBe(0);
     expect(result.metrics.analyzedFileCount).toBe(0);
+  });
+
+  it("still marks parser-warning analysis as partial because parser warnings are treated as degraded output", async () => {
+    const originalCreateParser = ParserFactory.createParser.bind(ParserFactory);
+    vi.spyOn(ParserFactory, "createParser").mockImplementation((language, content, file) => {
+      if (file === "legacy/Form1.dfm") {
+        return {
+          parseSymbols() {
+            return [];
+          },
+          parseDependencies() {
+            return [];
+          },
+          parseFieldReferences() {
+            return [];
+          },
+          parseSchemaFields() {
+            return [];
+          },
+          collectWarnings() {
+            return [{ code: "IMPORT_LIMITED_ANALYSIS", message: "Limited DFM analysis.", level: "warning" as const }];
+          },
+        };
+      }
+
+      return originalCreateParser(language, content, file);
+    });
+
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "legacy/Form1.dfm",
+          language: "delphi",
+          content: ["object Form1: TForm1", "  Caption = 'Legacy'", "end"].join("\n"),
+        },
+      ],
+      1
+    );
+
+    expect(result.status).toBe("partial");
+    expect(result.metrics.skippedFileCount).toBe(0);
+    expect(result.metrics.degradedFileCount).toBe(1);
+    expect(result.warnings.some((warning) => warning.level === "warning")).toBe(true);
   });
 
   it("records a warning and continues when one Delphi file parser fails", async () => {
