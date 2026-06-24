@@ -29,11 +29,24 @@ describe("gitHandler", () => {
       assertSafeGitUrl("https://github.com/org/repo.git", { NODE_ENV: "production" }, resolvePublicDns)
     ).resolves.toBeUndefined();
     await expect(
-      assertSafeGitUrl("git@github.com:org/repo.git", { NODE_ENV: "production" }, resolvePublicDns)
-    ).resolves.toBeUndefined();
-    await expect(
       assertSafeGitUrl("https://gitlab.com/org/repo.git", { NODE_ENV: "production" }, resolvePublicDns)
     ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    "git@github.com:org/repo.git",
+    "ssh://github.com/org/repo.git",
+    "file:///tmp/repo",
+    "git://github.com/org/repo.git",
+    "https://user:pass@github.com/org/repo.git",
+    "http://127.0.0.1/repo.git",
+    "http://localhost/repo.git",
+  ])("rejects unsupported or unsafe git URL %s", async (gitUrl) => {
+    const { assertSafeGitUrl } = await import("./gitHandler");
+
+    await expect(assertSafeGitUrl(gitUrl, { NODE_ENV: "development" })).rejects.toThrow(
+      /invalid or unsupported/i
+    );
   });
 
   it("rejects localhost, loopback, private, and metadata targets before clone", async () => {
@@ -76,7 +89,7 @@ describe("gitHandler", () => {
       assertSafeGitUrl(
         "https://example.com/org/repo.git",
         {
-          NODE_ENV: "production",
+          NODE_ENV: "development",
           LEGACY_LENS_GIT_HOST_ALLOWLIST: "example.com,github.com",
         },
         resolvePublicDns

@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { getAuthModeLabel, getLoginUrl, getLogoutRedirectUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { t } from "@/locales";
-import { projectJobStatusLabel, projectJobTypeLabel, projectStatusLabel } from "@/locales/uiLabels";
+import { analysisStatusLabel, projectJobStatusLabel, projectJobTypeLabel, projectStatusLabel } from "@/locales/uiLabels";
 import { type AnalysisStatus, type FocusLanguage, type ProjectSourceType, type ProjectStatus } from "@shared/contracts";
 import { FileSearch, FileText, GitBranch, Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -90,7 +90,7 @@ export function getProjectDisplayStatus(project: ProjectRow) {
     project.analysisStatus === "completed_with_warnings" ||
     project.analysisStatus === "partial"
   ) {
-    return t("status.display.analysisReady");
+    return analysisStatusLabel(project.analysisStatus);
   }
 
   if (project.status === "ready") {

@@ -231,6 +231,7 @@ describe("AnalysisResult", () => {
 
     expect(html).toContain("分析完成但有警告");
     expect(html).not.toContain("專案錯誤");
+    expect(html).not.toContain("completed_with_warnings");
     expect(html).toContain("原因摘要");
   });
 

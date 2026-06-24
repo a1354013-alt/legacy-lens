@@ -552,7 +552,8 @@ Docker equivalents:
 
 - `pnpm audit --audit-level high` passes as of 2026-06-05 in the latest verification. This is a point-in-time audit result, not a permanent security guarantee.
 - `package.json` keeps a small `pnpm.overrides` block for transitive packages that needed direct security pinning after dependency upgrades.
-- Current overrides are intentionally limited to security patches for `path-to-regexp`, `rollup`, `picomatch`, `tar`, `lodash`, and `lodash-es`.
+- Current overrides are intentionally limited to security patches for `path-to-regexp`, `rollup`, `picomatch`, `tar`, `lodash`, `lodash-es`, and `form-data`.
+- `form-data` remains pinned because older transitive multipart ranges can drift back to vulnerable releases during reinstall or lockfile refresh.
 - When upstream packages adopt the patched transitive versions directly, prefer removing the override instead of letting the list grow.
 - Moderate findings are tracked in [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md).
 
@@ -573,6 +574,8 @@ Import pipeline is intentionally bounded:
 - Report export performs a preflight size estimate before ZIP generation so oversized archives fail fast without first allocating the full buffer in memory
 - Archive / repository import fails only for whole-import safety boundaries such as invalid ZIP content, unsafe ZIP paths, total supported-source bytes, or supported-source file-count limits
 - Production Git host policy:
+  - only `https://` repository URLs are accepted
+  - SSH-style (`git@...`, `ssh://...`), `git://`, `file://`, credentialed URLs, and plain `http://` Git URLs are rejected
   - loopback hosts are blocked (`localhost`, `127.0.0.1`, `0.0.0.0`, `::1`)
   - private / link-local IPs are blocked
   - production mode defaults to `github.com` and `gitlab.com`

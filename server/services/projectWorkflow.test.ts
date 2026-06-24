@@ -327,6 +327,44 @@ function claimedOwnership(overrides: Row = {}): Row {
   };
 }
 
+function createPersistenceAnalysisResult() {
+  return {
+    projectId: 1,
+    status: "completed" as const,
+    language: "go",
+    symbols: [
+      { stableKey: "main.go::main::1", name: "main", type: "function" as const, file: "main.go", startLine: 1, endLine: 5, signature: "func main()" },
+      { stableKey: "repo.sql::query_1::1", name: "query_1", type: "query" as const, file: "repo.sql", startLine: 1, endLine: 1, signature: "SELECT amount FROM orders" },
+    ],
+    dependencies: [{ from: "main.go::main::1", to: "repo.sql::query_1::1", fromName: "main", toName: "query_1", type: "calls" as const, line: 3 }],
+    fieldReferences: [{ table: "orders", field: "amount", type: "read" as const, file: "repo.sql", line: 1, symbolStableKey: "repo.sql::query_1::1", context: "SELECT amount FROM orders" }],
+    schemaFields: [],
+    risks: [{ title: "Date literal", description: "hard-coded date", severity: "medium" as const, category: "magic_value" as const, sourceFile: "main.go", lineNumber: 2, suggestion: "Use a constant." }],
+    rules: [{ ruleType: "magic_value" as const, name: "externalize_main_go_2", description: "Date literal", condition: "hard-coded date", sourceFile: "main.go", lineNumber: 2 }],
+    warnings: [],
+    flowDocument: "# FLOW",
+    dataDependencyDocument: "# DATA_DEPENDENCY",
+    risksDocument: "# RISKS",
+    rulesYaml: "rules:\n  - name: externalize_main_go_2",
+    riskScore: 8,
+    metrics: {
+      fileCount: 2,
+      eligibleFileCount: 2,
+      analyzedFileCount: 2,
+      skippedFileCount: 0,
+      heuristicFileCount: 0,
+      degradedFileCount: 0,
+      symbolCount: 2,
+      dependencyCount: 1,
+      fieldCount: 1,
+      fieldDependencyCount: 1,
+      riskCount: 1,
+      ruleCount: 1,
+      warningCount: 0,
+    },
+  };
+}
+
 beforeEach(() => {
   fakeDb = createFakeDb();
   zipFiles = [];
@@ -655,6 +693,66 @@ describe("project workflow", () => {
         action: "analysis.parser.completed",
         resultStatus: "completed_with_warnings",
       })
+    );
+  });
+
+  it.each([
+    ["symbols", "insert symbols"],
+    ["fieldDependencies", "insert field dependencies"],
+    ["dependencies", "insert symbol dependencies"],
+    ["risks", "insert detected risks"],
+  ] as const)("reports the correct persistence checkpoint when %s insert fails", async (tableName, operation) => {
+    const { analyzeProject } = await import("./projectWorkflow");
+    seedProject(1, { status: "completed", analysisProgress: 100 });
+    fakeDb.store.files.push(
+      { id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 12, status: "stored" },
+      { id: 2, projectId: 1, filePath: "repo.sql", fileName: "repo.sql", fileType: ".sql", content: "SELECT amount FROM orders", lineCount: 8, status: "stored" }
+    );
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      status: "completed",
+      flowMarkdown: "# OLD FLOW",
+      dataDependencyMarkdown: "# OLD DATA",
+      risksMarkdown: "# OLD RISKS",
+      rulesYaml: "rules: []",
+      summaryJson: { fileCount: 1 },
+      warningsJson: [],
+      errorMessage: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old_symbol", type: "function", startLine: 1, endLine: 1 });
+    analyzerResult = createPersistenceAnalysisResult();
+
+    let failed = false;
+    const originalInsert = fakeDb.insert.bind(fakeDb);
+    fakeDb.insert = (table: object) => {
+      const baseInsert = originalInsert(table);
+      return {
+        values: async (payload: Row | Row[]) => {
+          if (!failed && getTableName(table) === tableName) {
+            failed = true;
+            throw new Error(`${tableName} insert failed`);
+          }
+          return baseInsert.values(payload);
+        },
+      };
+    };
+
+    await expect(analyzeProject(1, 7)).rejects.toMatchObject({ code: "ANALYSIS_PERSIST_FAILED" });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "failed",
+      lastErrorCode: "ANALYSIS_PERSIST_FAILED",
+      errorMessage: expect.stringContaining(`db=${operation} @ ${tableName}`),
+    });
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({
+      status: "completed",
+      flowMarkdown: "# OLD FLOW",
+      errorMessage: expect.stringContaining(`db=${operation} @ ${tableName}`),
+    });
+    expect(fakeDb.store.analysisResults[0]?.warningsJson).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "ANALYSIS_PERSIST_FAILED", level: "error" })])
     );
   });
 

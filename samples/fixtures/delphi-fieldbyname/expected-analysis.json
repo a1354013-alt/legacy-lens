@@ -1,0 +1,41 @@
+{
+  "symbols": [
+    {
+      "name": "LoadUsers",
+      "qualifiedName": "LoadUsers",
+      "type": "procedure",
+      "file": "Repo.pas",
+      "startLine": 7,
+      "endLine": 10
+    },
+    {
+      "name": "Repo",
+      "qualifiedName": "Repo",
+      "type": "class",
+      "file": "Repo.pas",
+      "startLine": 1,
+      "endLine": 13
+    }
+  ],
+  "fields": [
+    {
+      "table": "delphi",
+      "field": "Name",
+      "type": "read",
+      "file": "Repo.pas",
+      "line": 9,
+      "symbolName": "LoadUsers"
+    }
+  ],
+  "dependencies": [],
+  "risks": [
+    {
+      "title": "Delphi field access detected",
+      "category": "other",
+      "severity": "low",
+      "sourceFile": "Repo.pas",
+      "lineNumber": 9
+    }
+  ],
+  "rules": []
+}

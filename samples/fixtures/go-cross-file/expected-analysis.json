@@ -1,0 +1,39 @@
+{
+  "symbols": [
+    {
+      "name": "helper",
+      "qualifiedName": "helper",
+      "type": "function",
+      "file": "helpers.go",
+      "startLine": 3,
+      "endLine": 3
+    },
+    {
+      "name": "Run",
+      "qualifiedName": "Service.Run",
+      "type": "method",
+      "file": "main.go",
+      "startLine": 5,
+      "endLine": 7
+    },
+    {
+      "name": "Service",
+      "qualifiedName": null,
+      "type": "class",
+      "file": "main.go",
+      "startLine": 3,
+      "endLine": 3
+    }
+  ],
+  "fields": [],
+  "dependencies": [
+    {
+      "fromName": "Service.Run",
+      "toName": "helper",
+      "type": "calls",
+      "line": 6
+    }
+  ],
+  "risks": [],
+  "rules": []
+}

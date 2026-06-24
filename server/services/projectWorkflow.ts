@@ -38,13 +38,12 @@ import {
 } from "../../drizzle/schema";
 import { AppError, toAppError } from "../appError";
 import { Analyzer } from "../analyzer/analyzer";
-import { buildFieldIdentityKey, normalizeFieldIdentity } from "../analyzer/fieldIdentity";
 import { ImpactAnalyzer } from "../analyzer/impactAnalyzer";
 import { resolveMostSpecificSymbol } from "../analyzer/symbolOwner";
 import type { AnalyzedSymbol, ProjectAnalysisResult } from "../analyzer/types";
 import { getDb } from "../db";
 import type { DatabaseClient, InsertProjectRecord } from "../dbTypes";
-import { deleteProjectFiles, getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
+import { getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
 import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../utils/gitHandler";
 import { extractInsertId } from "../utils/insertResult";
 import { extractFilesFromZip, extractFilesFromZipBuffer } from "../utils/zipHandler";
@@ -74,6 +73,12 @@ import {
   sortProjectRules,
   sortProjectSymbols,
 } from "./projectWorkflow.helpers";
+import {
+  clearPreviousAnalysisData,
+  type AnalysisPersistCheckpoint,
+  writeFailedAnalysis,
+  writeSuccessfulAnalysis,
+} from "./project/projectAnalysisPersistence";
 import { buildProjectReportArchiveBuffer } from "./project/projectReportArchive";
 
 const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {
@@ -169,12 +174,6 @@ type AnalysisFailureContext = {
   table?: string;
   rawMessage: string;
   stackPreview?: string[];
-};
-
-type AnalysisPersistCheckpoint = {
-  operation: string;
-  table: string;
-  filePath?: string;
 };
 
 class AnalysisStageError extends AppError {
@@ -294,11 +293,6 @@ async function insertInChunks<T extends Record<string, unknown>>(db: DbHandle, t
   for (const chunk of chunkArray(rows, ANALYSIS_INSERT_CHUNK_SIZE)) {
     await db.insert(table as typeof dependencies).values(chunk as never);
   }
-}
-
-function getSymbolStableKey(row: Pick<typeof symbols.$inferSelect, "metadata">) {
-  const metadata = row.metadata as { stableKey?: unknown } | null;
-  return typeof metadata?.stableKey === "string" ? metadata.stableKey : null;
 }
 
 function getProjectJobMaxAttempts(job: Pick<ProjectJobRow, "maxAttempts">) {
@@ -607,20 +601,6 @@ async function listMatchingFieldIds(projectId: number, searchLike: string) {
     );
 
   return rows.map((row) => row.id);
-}
-
-async function clearProjectAnalysisGraph(db: DbHandle, projectId: number, includeFiles = false) {
-  await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
-  await db.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
-  await db.delete(dependencies).where(eq(dependencies.projectId, projectId));
-  await db.delete(risks).where(eq(risks.projectId, projectId));
-  await db.delete(rules).where(eq(rules.projectId, projectId));
-  await db.delete(fields).where(eq(fields.projectId, projectId));
-  await db.delete(symbols).where(eq(symbols.projectId, projectId));
-
-  if (includeFiles) {
-    await deleteProjectFiles(projectId, db);
-  }
 }
 
 export async function requireDb() {
@@ -1548,15 +1528,6 @@ function throwAnalysisPersistError(
   });
 }
 
-function updateAnalysisPersistCheckpoint(
-  checkpoint: AnalysisPersistCheckpoint,
-  next: AnalysisPersistCheckpoint
-) {
-  checkpoint.operation = next.operation;
-  checkpoint.table = next.table;
-  checkpoint.filePath = next.filePath;
-}
-
 export async function failProjectJobWithoutOwnership(jobId: number, error: AppError) {
   const job = await getProjectJobById(jobId);
   if (!job || job.status !== "running") {
@@ -2036,7 +2007,7 @@ async function replaceProjectFiles(
       importWarningsJson: [],
     });
 
-    await clearProjectAnalysisGraph(tx, projectId, true);
+    await clearPreviousAnalysisData(tx, projectId, true);
     const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);
     await assertProjectJobExecutionActive(executionState, "import.replace_files.persist");
     if (executionState?.ownership) {
@@ -2396,386 +2367,6 @@ function resolveInsertedTargetSymbolId(
   return uniqueCandidate ? insertedSymbolIds.get(buildSymbolInsertKey(uniqueCandidate)) : undefined;
 }
 
-async function writeSuccessfulAnalysis(
-  tx: DbHandle,
-  projectId: number,
-  projectFiles: Awaited<ReturnType<typeof getProjectFiles>>,
-  result: ProjectAnalysisResult,
-  persistCheckpoint: AnalysisPersistCheckpoint,
-  executionState?: ProjectJobExecutionState
-) {
-  await assertProjectJobExecutionActive(executionState, "analysis.write_success.prepare", { refreshLease: true });
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "clear previous analysis graph",
-    table: "analysisResults,fieldDependencies,dependencies,risks,rules,fields,symbols",
-  });
-  await clearProjectAnalysisGraph(tx, projectId);
-
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "replace analysis result snapshot",
-    table: "analysisResults",
-  });
-  try {
-    await replaceAnalysisResult(tx, projectId, {
-      status: result.status,
-      flowMarkdown: result.flowDocument,
-      dataDependencyMarkdown: result.dataDependencyDocument,
-      risksMarkdown: result.risksDocument,
-      rulesYaml: result.rulesYaml,
-      summaryJson: result.metrics,
-      warningsJson: result.warnings,
-      errorMessage: getAnalysisResultErrorMessage(result),
-    });
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "replace analysis result snapshot",
-      table: "analysisResults",
-    });
-  }
-
-  const fileByPath = new Map(projectFiles.map((file) => [file.filePath.replace(/\\/g, "/"), file]));
-  const symbolRows: Array<typeof symbols.$inferInsert> = [];
-  for (const symbol of result.symbols) {
-    const fileRecord = fileByPath.get(symbol.file.replace(/\\/g, "/"));
-    if (!fileRecord?.id) continue;
-
-    symbolRows.push({
-      projectId,
-      fileId: fileRecord.id,
-      name: symbol.qualifiedName ?? symbol.name,
-      type: symbol.type,
-      startLine: symbol.startLine,
-      endLine: symbol.endLine,
-      signature: symbol.signature,
-      description: symbol.description,
-      metadata: {
-        stableKey: symbol.stableKey,
-        qualifiedName: symbol.qualifiedName ?? symbol.name,
-        parser: "heuristic",
-      },
-    });
-  }
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "insert analyzed symbols",
-    table: "symbols",
-    filePath: result.symbols[0]?.file,
-  });
-  try {
-    await insertInChunks(tx, symbols, symbolRows);
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "insert analyzed symbols",
-      table: "symbols",
-      filePath: result.symbols[0]?.file,
-    });
-  }
-
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "read persisted symbols",
-    table: "symbols",
-  });
-  let insertedSymbolRows;
-  try {
-    insertedSymbolRows = await tx.select().from(symbols).where(eq(symbols.projectId, projectId));
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "read persisted symbols",
-      table: "symbols",
-    });
-  }
-  const insertedSymbolIds = new Map<string, number>();
-  for (const row of insertedSymbolRows) {
-    const stableKey = getSymbolStableKey(row);
-    if (stableKey && typeof row.id === "number") {
-      insertedSymbolIds.set(stableKey, row.id);
-    }
-  }
-
-  const fieldIds = new Map<string, number>();
-  const schemaFields = result.schemaFields ?? [];
-  const schemaFieldByKey = new Map(
-    schemaFields.map((field) => [
-      buildFieldIdentityKey({ table: field.table, field: field.field }),
-      field,
-    ])
-  );
-  const fieldDisplayByKey = new Map<string, { tableName: string; fieldName: string }>();
-  for (const field of schemaFields) {
-    const key = buildFieldIdentityKey({ table: field.table, field: field.field });
-    const normalized = normalizeFieldIdentity({ table: field.table, field: field.field });
-    fieldDisplayByKey.set(key, { tableName: normalized.originalTable, fieldName: normalized.originalField });
-  }
-  for (const reference of result.fieldReferences) {
-    const key = buildFieldIdentityKey(reference);
-    if (!fieldDisplayByKey.has(key)) {
-      const normalized = normalizeFieldIdentity(reference);
-      fieldDisplayByKey.set(key, { tableName: normalized.originalTable, fieldName: normalized.originalField });
-    }
-  }
-  const uniqueFieldKeys = Array.from(
-    new Set([
-      ...schemaFields.map((field) => buildFieldIdentityKey({ table: field.table, field: field.field })),
-      ...result.fieldReferences.map((reference) => buildFieldIdentityKey(reference)),
-    ])
-  );
-  const fieldRows: Array<typeof fields.$inferInsert> = [];
-  for (const fieldKey of uniqueFieldKeys) {
-    const schemaField = schemaFieldByKey.get(fieldKey);
-    const display = fieldDisplayByKey.get(fieldKey);
-    if (!display) continue;
-    const description = schemaField
-      ? [
-          schemaField.nullable === false ? "NOT NULL" : schemaField.nullable === true ? "NULL" : null,
-          schemaField.primaryKey ? "PRIMARY KEY" : null,
-          schemaField.defaultValue ? `DEFAULT ${schemaField.defaultValue}` : null,
-          schemaField.comment ? `COMMENT ${schemaField.comment}` : null,
-        ]
-          .filter(Boolean)
-          .join("; ") || null
-      : null;
-    fieldRows.push({
-      projectId,
-      tableName: display.tableName,
-      fieldName: display.fieldName,
-      fieldType: schemaField?.fieldType ?? null,
-      description,
-    });
-  }
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "insert schema fields",
-    table: "fields",
-    filePath: schemaFields[0]?.file,
-  });
-  try {
-    await insertInChunks(tx, fields, fieldRows);
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "insert schema fields",
-      table: "fields",
-      filePath: schemaFields[0]?.file,
-    });
-  }
-
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "read persisted fields",
-    table: "fields",
-  });
-  let insertedFieldRows;
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "insert field dependencies",
-    table: "fieldDependencies",
-    filePath: result.fieldReferences[0]?.file,
-  });
-  try {
-    insertedFieldRows = await tx.select().from(fields).where(eq(fields.projectId, projectId));
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "read persisted fields",
-      table: "fields",
-    });
-  }
-  for (const row of insertedFieldRows) {
-    if (typeof row.id !== "number") {
-      continue;
-    }
-    fieldIds.set(buildFieldIdentityKey({ table: row.tableName, field: row.fieldName }), row.id);
-  }
-
-  const fieldDependencyRows: Array<typeof fieldDependencies.$inferInsert> = [];
-  for (const reference of result.fieldReferences) {
-    const fieldId = fieldIds.get(buildFieldIdentityKey(reference));
-    const ownerSymbol = reference.symbolStableKey
-      ? result.symbols.find((symbol) => symbol.stableKey === reference.symbolStableKey)
-      : resolveOwningSymbol(result.symbols, reference.file, reference.line);
-    const symbolId = ownerSymbol ? insertedSymbolIds.get(buildSymbolInsertKey(ownerSymbol)) : undefined;
-
-    if (!fieldId || !symbolId) continue;
-    fieldDependencyRows.push({
-      projectId,
-      fieldId,
-      symbolId,
-      operationType: reference.type,
-      lineNumber: reference.line,
-      context: reference.context ?? `${reference.table}.${reference.field}`,
-    });
-  }
-
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "insert symbol dependencies",
-    table: "dependencies",
-  });
-  try {
-    await insertInChunks(tx, fieldDependencies, fieldDependencyRows);
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "insert field dependencies",
-      table: "fieldDependencies",
-      filePath: result.fieldReferences[0]?.file,
-    });
-  }
-
-  const dependencyRows: Array<typeof dependencies.$inferInsert> = [];
-  for (const dependency of result.dependencies) {
-    const sourceSymbolId = insertedSymbolIds.get(dependency.from);
-    if (!sourceSymbolId) continue;
-
-    const targetSymbolId = resolveInsertedTargetSymbolId(dependency, result.symbols, insertedSymbolIds);
-    dependencyRows.push({
-      projectId,
-      sourceSymbolId,
-      targetSymbolId: targetSymbolId ?? null,
-      targetExternalName: targetSymbolId ? null : dependency.toName,
-      targetKind: targetSymbolId ? "internal" : "unresolved",
-      dependencyType: dependency.type,
-      lineNumber: dependency.line,
-    });
-  }
-
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "insert detected risks",
-    table: "risks",
-    filePath: result.risks[0]?.sourceFile,
-  });
-  try {
-    await insertInChunks(tx, dependencies, dependencyRows);
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "insert symbol dependencies",
-      table: "dependencies",
-    });
-  }
-
-  const riskRows: Array<typeof risks.$inferInsert> = [];
-  for (const risk of result.risks) {
-    riskRows.push({
-      projectId,
-      riskType: risk.category,
-      severity: risk.severity,
-      title: risk.title,
-      description: risk.description,
-      sourceFile: risk.sourceFile,
-      lineNumber: risk.lineNumber,
-      codeSnippet: risk.codeSnippet,
-      recommendation: risk.suggestion,
-    });
-  }
-
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "insert detected rules",
-    table: "rules",
-    filePath: result.rules[0]?.sourceFile,
-  });
-  try {
-    await insertInChunks(tx, risks, riskRows);
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "insert detected risks",
-      table: "risks",
-      filePath: result.risks[0]?.sourceFile,
-    });
-  }
-
-  const ruleRows: Array<typeof rules.$inferInsert> = [];
-  for (const rule of result.rules) {
-    ruleRows.push({
-      projectId,
-      ruleType: rule.ruleType,
-      name: rule.name,
-      description: rule.description,
-      condition: rule.condition,
-      sourceFile: rule.sourceFile,
-      lineNumber: rule.lineNumber,
-    });
-  }
-
-  try {
-    await insertInChunks(tx, rules, ruleRows);
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "insert detected rules",
-      table: "rules",
-      filePath: result.rules[0]?.sourceFile,
-    });
-  }
-
-  await assertProjectJobExecutionActive(executionState, "analysis.write_success.persist");
-  updateAnalysisPersistCheckpoint(persistCheckpoint, {
-    operation: "update project completion state",
-    table: "projects",
-  });
-  try {
-    await transitionProjectState(tx, projectId, {
-      status: "completed",
-      analysisProgress: 100,
-      errorMessage: getAnalysisResultErrorMessage(result),
-      lastErrorCode: null,
-      lastAnalyzedAt: new Date(),
-    });
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "update project completion state",
-      table: "projects",
-    });
-  }
-}
-
-async function writeFailedAnalysis(tx: DbHandle, projectId: number, appError: AppError, executionState?: ProjectJobExecutionState) {
-  await assertProjectJobExecutionActive(executionState, "analysis.write_failed.prepare", { refreshLease: true });
-  const existingReport = await getExistingUsableAnalysisResult(tx, projectId);
-  const failureWarning = buildAnalysisFailureWarning(appError);
-  if (existingReport) {
-    await replaceAnalysisResult(tx, projectId, {
-      status: existingReport.status,
-      flowMarkdown: existingReport.flowMarkdown ?? null,
-      dataDependencyMarkdown: existingReport.dataDependencyMarkdown ?? null,
-      risksMarkdown: existingReport.risksMarkdown ?? null,
-      rulesYaml: existingReport.rulesYaml ?? null,
-      summaryJson: existingReport.summaryJson ?? null,
-      warningsJson: mergeAnalysisWarnings(existingReport.warningsJson ?? [], [failureWarning]),
-      errorMessage: appError.message,
-    });
-  } else {
-    await clearProjectAnalysisGraph(tx, projectId);
-    await replaceAnalysisResult(tx, projectId, {
-      status: "failed",
-      flowMarkdown: null,
-      dataDependencyMarkdown: null,
-      risksMarkdown: null,
-      rulesYaml: null,
-      summaryJson: null,
-      warningsJson: [failureWarning],
-      errorMessage: appError.message,
-    });
-  }
-  await assertProjectJobExecutionActive(executionState, "analysis.write_failed.persist");
-  await transitionProjectState(tx, projectId, {
-    status: "failed",
-    analysisProgress: 0,
-    errorMessage: appError.message,
-    lastErrorCode: appError.code,
-  });
-}
-
 async function updateAnalysisExecutionProgress(projectId: number, progress: number, executionState?: ProjectJobExecutionState) {
   const safeProgress = Math.min(100, Math.max(0, Math.floor(progress)));
   const db = await requireDb();
@@ -2950,7 +2541,28 @@ export async function analyzeProject(projectId: number, userId: number, executio
     });
     try {
       await db.transaction(async (tx) => {
-        await writeSuccessfulAnalysis(tx, projectId, projectFiles, result, persistCheckpoint, executionState);
+        await writeSuccessfulAnalysis(
+          {
+            tx,
+            projectId,
+            projectFiles,
+            result,
+            persistCheckpoint,
+            executionState,
+          },
+          {
+            assertProjectJobExecutionActive,
+            replaceAnalysisResult,
+            getAnalysisResultErrorMessage,
+            throwAnalysisPersistError,
+            insertInChunks,
+            resolveOwningSymbol,
+            resolveInsertedTargetSymbolId,
+            transitionProjectState,
+            getExistingUsableAnalysisResult,
+            mergeAnalysisWarnings,
+          }
+        );
       });
     } catch (error) {
       throw toAnalysisStageError(error, {
@@ -3002,7 +2614,26 @@ export async function analyzeProject(projectId: number, userId: number, executio
       await assertProjectJobExecutionActive(executionState, "analysis.error_finalize", { refreshLease: true });
     }
     await db.transaction(async (tx) => {
-      await writeFailedAnalysis(tx, projectId, appError, executionState);
+      await writeFailedAnalysis(
+        {
+          tx,
+          projectId,
+          appError,
+          executionState,
+        },
+        {
+          assertProjectJobExecutionActive,
+          replaceAnalysisResult,
+          getAnalysisResultErrorMessage,
+          throwAnalysisPersistError,
+          insertInChunks,
+          resolveOwningSymbol,
+          resolveInsertedTargetSymbolId,
+          transitionProjectState,
+          getExistingUsableAnalysisResult,
+          mergeAnalysisWarnings,
+        }
+      );
     });
     throw appError;
   }
@@ -4097,7 +3728,7 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
       );
     }
 
-    await clearProjectAnalysisGraph(tx, projectId, true);
+    await clearPreviousAnalysisData(tx, projectId, true);
     await tx.delete(projectJobs).where(eq(projectJobs.projectId, projectId));
     await tx.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
   });

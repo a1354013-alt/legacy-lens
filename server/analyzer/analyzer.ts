@@ -273,11 +273,11 @@ export class Analyzer {
 
   async analyzeProject(files: AnalyzableFile[], projectId: number): Promise<ProjectAnalysisResult> {
     const symbols = [];
-    const dependencies = [];
     const fieldReferences = [];
     const schemaFields = [];
     const risks = [];
     const warnings: AnalysisWarning[] = [];
+    const dependencyFiles: AnalyzableFile[] = [];
     let eligibleFileCount = 0;
     let analyzedFileCount = 0;
     let degradedFileCount = 0;
@@ -307,11 +307,19 @@ export class Analyzer {
       degradedFileCount += result.degraded ? 1 : 0;
       heuristicFileCount += result.heuristic ? 1 : 0;
       symbols.push(...result.symbols);
-      dependencies.push(...result.dependencies);
       fieldReferences.push(...result.fieldReferences);
       schemaFields.push(...result.schemaFields);
       risks.push(...result.risks);
       warnings.push(...result.warnings);
+      if (result.analyzed) {
+        dependencyFiles.push(file);
+      }
+    }
+
+    const dependencies: SymbolDependency[] = [];
+    for (const file of dependencyFiles) {
+      const parser = ParserFactory.createParser(file.language, file.content, file.path);
+      dependencies.push(...parser.parseDependencies(symbols));
     }
 
     const combinedRisks = dedupeRisks([...risks, ...this.riskDetector.detectMultipleWrites(fieldReferences)]);

@@ -22,6 +22,7 @@ const zh = {
       pending: "尚未分析",
       processing: "分析中",
       completed: "分析完成",
+      completed_with_warnings: "分析完成（含警告）",
       partial: "部分完成",
       failed: "分析失敗",
     },

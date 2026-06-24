@@ -83,7 +83,9 @@ describe("Home polling", () => {
       )
     ).toBe("分析中");
 
-    expect(getProjectDisplayStatus(project({ status: "completed", analysisStatus: "partial" }))).toBe("分析結果已就緒");
+    expect(getProjectDisplayStatus(project({ status: "completed", analysisStatus: "completed" }))).toBe("分析完成");
+    expect(getProjectDisplayStatus(project({ status: "completed", analysisStatus: "completed_with_warnings" }))).toBe("分析完成（含警告）");
+    expect(getProjectDisplayStatus(project({ status: "completed", analysisStatus: "partial" }))).toBe("部分完成");
     expect(
       getProjectDisplayStatus(
         project({

@@ -1,0 +1,63 @@
+{
+  "symbols": [
+    {
+      "name": "Button1Click",
+      "qualifiedName": "Button1Click",
+      "type": "procedure",
+      "file": "Form1.pas",
+      "startLine": 8,
+      "endLine": 9
+    },
+    {
+      "name": "Button1Click",
+      "qualifiedName": "TForm1.Button1Click",
+      "type": "method",
+      "file": "Form1.pas",
+      "startLine": 13,
+      "endLine": 15
+    },
+    {
+      "name": "Form1",
+      "qualifiedName": "Form1",
+      "type": "class",
+      "file": "Form1.dfm",
+      "startLine": 1,
+      "endLine": 6
+    },
+    {
+      "name": "Form1",
+      "qualifiedName": "Form1",
+      "type": "class",
+      "file": "Form1.pas",
+      "startLine": 1,
+      "endLine": 18
+    },
+    {
+      "name": "OnClick",
+      "qualifiedName": "Form1.Button1.OnClick",
+      "type": "method",
+      "file": "Form1.dfm",
+      "startLine": 2,
+      "endLine": 2
+    },
+    {
+      "name": "TForm1",
+      "qualifiedName": "TForm1",
+      "type": "class",
+      "file": "Form1.pas",
+      "startLine": 6,
+      "endLine": 9
+    }
+  ],
+  "fields": [],
+  "dependencies": [
+    {
+      "fromName": "Form1.Button1.OnClick",
+      "toName": "Button1Click",
+      "type": "references",
+      "line": 2
+    }
+  ],
+  "risks": [],
+  "rules": []
+}

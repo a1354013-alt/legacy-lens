@@ -1,0 +1,33 @@
+{
+  "symbols": [
+    {
+      "name": "query_1",
+      "qualifiedName": null,
+      "type": "query",
+      "file": "repo.sql",
+      "startLine": 1,
+      "endLine": 1
+    }
+  ],
+  "fields": [
+    {
+      "table": "dbo.Users",
+      "field": "Name",
+      "type": "write",
+      "file": "repo.sql",
+      "line": 1,
+      "symbolName": "query_1"
+    }
+  ],
+  "dependencies": [],
+  "risks": [
+    {
+      "title": "Write statement without WHERE clause",
+      "category": "missing_condition",
+      "severity": "critical",
+      "sourceFile": "repo.sql",
+      "lineNumber": 1
+    }
+  ],
+  "rules": []
+}

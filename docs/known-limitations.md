@@ -34,6 +34,7 @@ This document records intentionally unfinished or bounded behavior so deployment
 ## Git Import Security Boundaries
 
 - Git host validation rejects loopback, link-local, and private-network destinations, but app-level DNS/IP checks are not a complete SSRF boundary.
+- Git import intentionally accepts HTTPS repository URLs only; SSH, `git://`, `file://`, credentialed, and plain HTTP URLs stay out of scope.
 - Production deployments should use a narrow `LEGACY_LENS_GIT_HOST_ALLOWLIST` and outbound egress restrictions at the deployment layer.
 - Higher-security environments should run Git clone/import in an isolated worker or container instead of the main web process.
 

@@ -100,22 +100,13 @@ export function isValidGitUrl(url: string): boolean {
     return false;
   }
 
-  if (/^git@[^:]+:[^/]+\/[^/]+(?:\.git)?$/i.test(trimmed)) {
-    return true;
-  }
-
   try {
     const parsed = new URL(trimmed);
     if (parsed.username || parsed.password) {
       return false;
     }
 
-    if (parsed.protocol === "http:") {
-      const host = parsed.hostname.toLowerCase();
-      if (host !== "localhost" && host !== "127.0.0.1") {
-        return false;
-      }
-    } else if (parsed.protocol !== "https:") {
+    if (parsed.protocol !== "https:") {
       return false;
     }
 
@@ -142,13 +133,7 @@ function getConfiguredGitHostAllowlist(env: NodeJS.ProcessEnv) {
 }
 
 function parseGitHost(gitUrl: string) {
-  const trimmed = gitUrl.trim();
-  const sshMatch = trimmed.match(/^git@([^:]+):[^/]+\/[^/]+(?:\.git)?$/i);
-  if (sshMatch) {
-    return sshMatch[1].toLowerCase();
-  }
-
-  const parsed = new URL(trimmed);
+  const parsed = new URL(gitUrl.trim());
   return parsed.hostname.toLowerCase();
 }
 

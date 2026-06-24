@@ -18,7 +18,7 @@ It helps teams import legacy projects, inspect symbol/data dependencies, detect 
 
 ## Security Considerations
 
-- Git import blocks loopback, private-network, link-local, credentialed, SSH, and file-protocol targets.
+- Git import accepts HTTPS repositories only and blocks credentialed, SSH, `git://`, `file://`, loopback, private-network, and link-local targets.
 - Production Git import should still be isolated with outbound egress restrictions because app-level DNS/IP checks are not a complete SSRF boundary.
 - ZIP import rejects unsafe traversal entries instead of partially skipping them.
 

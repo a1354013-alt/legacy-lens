@@ -72,6 +72,11 @@ async function tableExists(connection: mysql.Connection, dbName: string, tableNa
   return Number(rows[0]?.count ?? 0) > 0;
 }
 
+async function getColumnType(connection: mysql.Connection, tableName: string, columnName: string) {
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(`SHOW COLUMNS FROM \`${tableName}\` LIKE ?`, [columnName]);
+  return String(rows[0]?.Type ?? "");
+}
+
 const maybeDescribe = DATABASE_URL ? describe : describe.skip;
 
 maybeDescribe("Drizzle migration smoke", () => {
@@ -105,6 +110,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [attemptCountColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
       const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
       const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
+      const analysisStatusType = await getColumnType(connection, "analysisResults", "status");
 
       expect(projectColumns).toHaveLength(1);
       expect(jobColumns).toHaveLength(1);
@@ -116,6 +122,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       expect(attemptCountColumns).toHaveLength(1);
       expect(maxAttemptsColumns).toHaveLength(1);
       expect(claimIndexes).toHaveLength(4);
+      expect(analysisStatusType).toContain("completed_with_warnings");
     } finally {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
@@ -168,6 +175,7 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
       const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
       const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
+      const analysisStatusType = await getColumnType(connection, "analysisResults", "status");
 
       expect(projectRows[0]?.status).toBe("completed");
       expect(projectRows[0]?.importWarningsJson).toBeDefined();
@@ -194,6 +202,39 @@ maybeDescribe("Drizzle migration smoke", () => {
       expect(maxAttemptsColumns).toHaveLength(1);
       expect(claimIndexes).toHaveLength(4);
       expect(projectColumns).toHaveLength(1);
+      expect(analysisStatusType).toContain("completed_with_warnings");
+
+      await connection.query(
+        "UPDATE `analysisResults` SET `status` = 'completed_with_warnings' WHERE `id` = 1"
+      );
+      await connection.query(
+        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (2, 1, 'status-check', 'go', 'upload', 'completed', 100, 100)"
+      );
+      await connection.query(
+        "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (2, 2, 'completed', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+      );
+      await connection.query(
+        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (3, 1, 'status-partial', 'go', 'upload', 'completed', 100, 100)"
+      );
+      await connection.query(
+        "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (3, 3, 'partial', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+      );
+      await connection.query(
+        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (4, 1, 'status-failed', 'go', 'upload', 'failed', 100, 100)"
+      );
+      await connection.query(
+        "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (4, 4, 'failed', NULL, NULL, NULL, NULL)"
+      );
+
+      const [statusRows] = await connection.query<mysql.RowDataPacket[]>(
+        "SELECT `projectId`, `status` FROM `analysisResults` WHERE `projectId` IN (1, 2, 3, 4) ORDER BY `projectId` ASC"
+      );
+      expect(statusRows).toEqual([
+        { projectId: 1, status: "completed_with_warnings" },
+        { projectId: 2, status: "completed" },
+        { projectId: 3, status: "partial" },
+        { projectId: 4, status: "failed" },
+      ]);
     } finally {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
