@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+const positiveIntegerStringSchema = z
+  .string()
+  .trim()
+  .regex(/^[1-9]\d*$/, "Must be a positive integer.");
+
 const runtimeEnvSchema = z.object({
   VITE_APP_ID: z.string().trim().min(1, "VITE_APP_ID is required."),
   VITE_OAUTH_PORTAL_URL: z.string().trim().min(1, "VITE_OAUTH_PORTAL_URL is required."),
@@ -19,6 +24,7 @@ const runtimeEnvSchema = z.object({
   PROJECT_JOB_LEASE_MS: z.string().trim().optional(),
   PROJECT_JOB_HEARTBEAT_MS: z.string().trim().optional(),
   PROJECT_JOB_MAX_ATTEMPTS: z.string().trim().optional(),
+  PROJECT_WORKER_POLL_INTERVAL_MS: positiveIntegerStringSchema.optional(),
   UPLOAD_TEMP_ZIP_TTL_MS: z.string().trim().optional(),
   LAST_SIGNED_IN_WRITE_THROTTLE_MS: z.string().trim().optional(),
   APP_VERSION: z.string().trim().optional(),

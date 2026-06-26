@@ -16,6 +16,7 @@ pnpm docker:smoke
 ## What The Tests Cover
 
 - Project job claiming, lease expiry, retry, and startup recovery
+- Worker polling, including disabled web-only replicas, periodic wake-ups on worker-enabled replicas, and non-reentrant loop scheduling
 - Ownership-fenced heartbeat/finalization so stale workers cannot overwrite reclaimed jobs
 - ZIP upload route contract (`multipart/form-data`) and server-side `.zip` validation
 - New-project import route contract (`POST /api/projects/import`) and existing-project re-import route contract (`POST /api/projects/:projectId/upload`)
@@ -32,3 +33,4 @@ pnpm docker:smoke
 
 - CI runs on Node `22.18.0`; local Node `24.x` may emit an engine warning because `package.json` currently targets `>=20 <23`.
 - `corepack enable` can require elevated filesystem access on some Windows setups. If it fails with an OS permission error, use the already-prepared `pnpm@10.4.1` binary instead of changing the repo configuration.
+- When testing multi-replica job pickup locally, simulate a web-only process with `PROJECT_WORKER_ENABLED=false`, enqueue the job, then run a worker-enabled process and confirm it picks the queued row through polling instead of relying on an in-process wake-up.

@@ -88,4 +88,34 @@ describe("dev auth bypass gating", () => {
       }).JWT_SECRET
     ).toBe("12345678901234567890123456789012");
   });
+
+  it("rejects a non-positive PROJECT_WORKER_POLL_INTERVAL_MS", async () => {
+    const { validateRuntimeConfig } = await import("./env");
+
+    expect(() =>
+      validateRuntimeConfig({
+        VITE_APP_ID: "app",
+        VITE_OAUTH_PORTAL_URL: "http://localhost:3001",
+        JWT_SECRET: "12345678901234567890123456789012",
+        DATABASE_URL: "mysql://root:password@localhost:3306/legacy_lens",
+        OAUTH_SERVER_URL: "http://localhost:3001",
+        PROJECT_WORKER_POLL_INTERVAL_MS: "0",
+      })
+    ).toThrow("Must be a positive integer.");
+  });
+
+  it("accepts a positive PROJECT_WORKER_POLL_INTERVAL_MS", async () => {
+    const { validateRuntimeConfig } = await import("./env");
+
+    expect(
+      validateRuntimeConfig({
+        VITE_APP_ID: "app",
+        VITE_OAUTH_PORTAL_URL: "http://localhost:3001",
+        JWT_SECRET: "12345678901234567890123456789012",
+        DATABASE_URL: "mysql://root:password@localhost:3306/legacy_lens",
+        OAUTH_SERVER_URL: "http://localhost:3001",
+        PROJECT_WORKER_POLL_INTERVAL_MS: "2000",
+      }).PROJECT_WORKER_POLL_INTERVAL_MS
+    ).toBe("2000");
+  });
 });

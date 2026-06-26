@@ -115,10 +115,14 @@ const STALE_PROJECT_JOB_MS = parsePositiveIntEnv("PROJECT_JOB_STALE_MS", 900000)
 const PROJECT_JOB_LEASE_MS = parsePositiveIntEnv("PROJECT_JOB_LEASE_MS", 30000);
 const PROJECT_JOB_HEARTBEAT_MS = parsePositiveIntEnv("PROJECT_JOB_HEARTBEAT_MS", 10000);
 const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = parsePositiveIntEnv("PROJECT_JOB_MAX_ATTEMPTS", 3);
+const PROJECT_WORKER_POLL_INTERVAL_MS = parsePositiveIntEnv("PROJECT_WORKER_POLL_INTERVAL_MS", 2000);
 const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
 const ANALYSIS_INSERT_CHUNK_SIZE = 250;
 const MYSQL_MEDIUMTEXT_MAX_BYTES = 16_777_215;
 let projectJobWorkerLoop: Promise<void> | null = null;
+let projectJobWorkerPollTimer: NodeJS.Timeout | null = null;
+let projectJobWorkerKickCount = 0;
+let projectJobWorkerLoopStartCount = 0;
 
 const importZipInlinePayloadSchema = z
   .object({
@@ -878,6 +882,8 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
 }
 
 function kickProjectJobWorker() {
+  projectJobWorkerKickCount += 1;
+
   if (!isProjectWorkerEnabled()) {
     return null;
   }
@@ -886,6 +892,7 @@ function kickProjectJobWorker() {
     return projectJobWorkerLoop;
   }
 
+  projectJobWorkerLoopStartCount += 1;
   projectJobWorkerLoop = (async () => {
     try {
       while (await processNextQueuedProjectJob()) {
@@ -897,6 +904,32 @@ function kickProjectJobWorker() {
   })();
 
   return projectJobWorkerLoop;
+}
+
+export function startProjectJobWorkerPolling(intervalMs = PROJECT_WORKER_POLL_INTERVAL_MS) {
+  if (!isProjectWorkerEnabled()) {
+    return null;
+  }
+
+  if (projectJobWorkerPollTimer) {
+    return projectJobWorkerPollTimer;
+  }
+
+  projectJobWorkerPollTimer = setInterval(() => {
+    void kickProjectJobWorker();
+  }, intervalMs);
+  projectJobWorkerPollTimer.unref?.();
+
+  return projectJobWorkerPollTimer;
+}
+
+export function stopProjectJobWorkerPolling() {
+  if (!projectJobWorkerPollTimer) {
+    return;
+  }
+
+  clearInterval(projectJobWorkerPollTimer);
+  projectJobWorkerPollTimer = null;
 }
 
 function compareProjectJobClaimOrder(left: Pick<ProjectJobRow, "createdAt" | "id">, right: Pick<ProjectJobRow, "createdAt" | "id">) {
@@ -1119,6 +1152,20 @@ async function createProjectAndQueuedImportJob(
 
 export async function claimNextQueuedProjectJobForTests() {
   return claimNextQueuedProjectJob();
+}
+
+export function getProjectJobWorkerSchedulerStateForTests() {
+  return {
+    kickCount: projectJobWorkerKickCount,
+    loopStartCount: projectJobWorkerLoopStartCount,
+    pollingActive: projectJobWorkerPollTimer !== null,
+  };
+}
+
+export function resetProjectJobWorkerSchedulerStateForTests() {
+  stopProjectJobWorkerPolling();
+  projectJobWorkerKickCount = 0;
+  projectJobWorkerLoopStartCount = 0;
 }
 
 async function failImportProjectIfStillImporting(job: ProjectJobRow, now: Date, error?: AppError) {

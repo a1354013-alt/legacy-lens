@@ -8,12 +8,14 @@ This document captures the operational boundaries that matter for real deploymen
 - Enqueue writes the job row and project status in the same transaction.
 - Only one active job per project is allowed through the `(projectId, activeKey)` unique index and transaction-time conflict checks.
 - The worker claims queued jobs from MySQL instead of relying on process-local promises.
+- Worker-enabled processes also poll MySQL on a fixed interval so they can discover queued jobs and expired running leases even when the enqueue happened on another replica.
 - Running jobs are leased with `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts`.
 - Multiple web replicas are supported, and multiple worker replicas are supported when they share the same MySQL database.
 - Claiming is distributed-safe through a DB-filtered candidate query plus an atomic conditional update. Competing workers may read the same candidate row, but only one claim update is allowed to win.
 - Workers heartbeat the lease while processing. Heartbeats, retry decisions, and finalization are fenced with `lockedBy + attemptCount`, so stale workers cannot overwrite a reclaimed job or its project state.
 - If the heartbeat stops and the lease expires, the job can be retried safely until `maxAttempts` is reached. Stale worker finalization is rejected and logged.
 - Startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks `projects.status in (importing, analyzing)` as failed when no active job remains.
+- Startup recovery is still a one-time boot pass; steady-state pickup is handled by the worker polling loop plus the existing local `kickProjectJobWorker()` wake-up path.
 - Startup recovery does not reset still-valid leases. Older rows without lease metadata fall back to the legacy stale-window check.
 - `PROJECT_JOB_STALE_MS` controls when a running job is considered stale.
 - If an environment cannot guarantee reliable shared-database semantics, use a single worker replica rather than disabling atomic claims.
@@ -52,6 +54,8 @@ This document captures the operational boundaries that matter for real deploymen
 - Set `PROJECT_WORKER_ENABLED=false` on web-only replicas.
 - Multiple worker-enabled replicas are supported when they share the same MySQL database.
 - Project job claiming relies on `lockedBy`, `leaseUntil`, `heartbeatAt`, and an atomic conditional update so only one worker can own a lease at a time.
+- `PROJECT_WORKER_POLL_INTERVAL_MS` defaults to `2000` ms and must be a positive integer.
+- Polling only schedules `kickProjectJobWorker()`; it does not bypass the existing loop guard, so one process will not start overlapping worker loops for the same interval ticks.
 - If a worker dies and its lease expires, another worker may reclaim the job within the configured retry budget.
 - If your deployment cannot rely on shared-database conditional updates and transactions, run a single worker replica.
 - SQLite or in-memory test doubles are useful for development/testing, but they are not the reference deployment path for multi-worker safety.
