@@ -722,12 +722,83 @@ describe("SQLParser", () => {
 
     expect(references).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ field: "Status", type: "read", symbolName: "UpdateOrder" }),
+        expect.objectContaining({ field: "Status", type: "write", symbolName: "UpdateOrder" }),
         expect.objectContaining({ field: "OrderId", type: "write", symbolName: "UpdateOrder" }),
-        expect.objectContaining({ field: "Amount", symbolName: "UpdateOrder" }),
+        expect.objectContaining({ field: "Amount", type: "write", symbolName: "UpdateOrder" }),
       ])
     );
     expect(warnings.some((warning) => warning.code === "HEURISTIC_ANALYSIS")).toBe(true);
+  });
+
+  it("distinguishes Delphi FieldByName reads from writes based on assignment side", () => {
+    const parser = new DelphiParser(
+      [
+        "unit Repo;",
+        "interface",
+        "implementation",
+        "procedure UpdateOrder;",
+        "var",
+        "  x: Double;",
+        "begin",
+        "  Query.FieldByName('Status').AsString := 'paid';",
+        "  x := Query.FieldByName('Amount').AsFloat;",
+        "  if Query.FieldByName('Flag').AsString = 'Y' then",
+        "    x := x + 1;",
+        "end;",
+        "end.",
+      ].join("\n"),
+      "repo.pas"
+    );
+
+    const references = parser.parseFieldReferences(parser.parseSymbols());
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "Status", type: "write" }),
+        expect.objectContaining({ field: "Amount", type: "read" }),
+        expect.objectContaining({ field: "Flag", type: "read" }),
+      ])
+    );
+  });
+
+  it("distinguishes Delphi ParamByName reads from writes based on assignment side", () => {
+    const parser = new DelphiParser(
+      [
+        "unit Repo;",
+        "interface",
+        "implementation",
+        "procedure UpdateOrder;",
+        "var",
+        "  x: Integer;",
+        "begin",
+        "  Query.ParamByName('OrderId').AsInteger := 42;",
+        "  x := Query.ParamByName('OrderId').AsInteger;",
+        "end;",
+        "end.",
+      ].join("\n"),
+      "repo.pas"
+    );
+
+    const references = parser.parseFieldReferences(parser.parseSymbols());
+
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "OrderId", type: "write", line: 8 }),
+        expect.objectContaining({ field: "OrderId", type: "read", line: 9 }),
+      ])
+    );
+  });
+
+  it("does not crash when parsing Delphi-related DFM, DPR, and INC imports", () => {
+    expect(() => ParserFactory.createParser("dfm", "object Form1: TForm1\nend", "Form1.dfm").parseSymbols()).not.toThrow();
+    expect(() =>
+      ParserFactory.createParser(
+        "dpr",
+        ["program Repo;", "begin", "end."].join("\n"),
+        "Repo.dpr"
+      ).parseSymbols()
+    ).not.toThrow();
+    expect(() => ParserFactory.createParser("txt", "const Foo = 1;", "types.inc").parseSymbols()).not.toThrow();
   });
 
   it("keeps aliases out of field names and supports UPDATE aliases, CTEs, and DELETE JOIN targets", () => {

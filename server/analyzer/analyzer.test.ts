@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Analyzer } from "./analyzer";
 import { ParserFactory } from "./parser";
+import { RiskDetector } from "./riskDetector";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -373,5 +374,31 @@ describe("Analyzer", () => {
         }),
       ])
     );
+  });
+
+  it("runs Delphi risk detection for pas language imports", async () => {
+    const detectSpy = vi.spyOn(RiskDetector.prototype, "detectDelphiPatterns");
+    const analyzer = new Analyzer();
+
+    await analyzer.analyzeFile({
+      path: "repo.txt",
+      language: "pas",
+      content: "Query.FieldByName('Status').AsString := 'paid';",
+    });
+
+    expect(detectSpy).toHaveBeenCalledWith("Query.FieldByName('Status').AsString := 'paid';", "repo.txt");
+  });
+
+  it("runs Delphi risk detection from file extension even when language is not delphi", async () => {
+    const detectSpy = vi.spyOn(RiskDetector.prototype, "detectDelphiPatterns");
+    const analyzer = new Analyzer();
+
+    await analyzer.analyzeFile({
+      path: "repo.pas",
+      language: "txt",
+      content: "Query.FieldByName('Status').AsString := 'paid';",
+    });
+
+    expect(detectSpy).toHaveBeenCalledWith("Query.FieldByName('Status').AsString := 'paid';", "repo.pas");
   });
 });

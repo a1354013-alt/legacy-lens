@@ -21,7 +21,7 @@
     {
       "table": "delphi",
       "field": "Name",
-      "type": "read",
+      "type": "write",
       "file": "Repo.pas",
       "line": 9,
       "symbolName": "LoadUsers"

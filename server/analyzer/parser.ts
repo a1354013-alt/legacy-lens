@@ -1,4 +1,5 @@
 import type { AnalysisWarning } from "../../shared/contracts";
+import { getNormalizedFileExtension, isDelphiLikeLanguage, normalizeLanguageTag } from "./delphiLanguage";
 import { resolveMostSpecificSymbol } from "./symbolOwner";
 import type { AnalyzedSymbol, DelphiDataBinding, DelphiEventBinding, FieldReference, SchemaField, SymbolDependency, SymbolType } from "./types";
 import { buildSymbolStableKey } from "./types";
@@ -57,8 +58,12 @@ function normalizeFilePath(value: string) {
 }
 
 function getFileExtension(filePath: string) {
-  const index = filePath.lastIndexOf(".");
-  return index >= 0 ? filePath.slice(index).toLowerCase() : "";
+  return getNormalizedFileExtension(filePath);
+}
+
+function getDelphiAccessType(line: string, matchIndex: number): FieldReference["type"] {
+  const assignmentIndex = line.indexOf(":=");
+  return assignmentIndex >= 0 && matchIndex < assignmentIndex ? "write" : "read";
 }
 
 function createSymbol(input: {
@@ -1907,7 +1912,7 @@ export class DelphiParser implements FileParser {
         references.push({
           table: "delphi",
           field: match[1],
-          type: "read",
+          type: getDelphiAccessType(line, match.index ?? -1),
           file: this.file,
           line: index + 1,
           symbolStableKey: owner?.stableKey,
@@ -1921,7 +1926,7 @@ export class DelphiParser implements FileParser {
         references.push({
           table: "delphi",
           field: match[1],
-          type: /:=|As(?:String|Integer|Float|Date|Time)|Value\s*[:=]/i.test(line) ? "write" : "read",
+          type: getDelphiAccessType(line, match.index ?? -1),
           file: this.file,
           line: index + 1,
           symbolStableKey: owner?.stableKey,
@@ -2017,12 +2022,12 @@ export class UnsupportedParser implements FileParser {
 
 export class ParserFactory {
   static isLanguageSupported(language: string) {
-    const normalized = language.replace(/^\./, "").toLowerCase();
+    const normalized = normalizeLanguageTag(language);
     return ["go", "sql", "pas", "dpr", "delphi", "dfm", "inc", "dpk", "fmx"].includes(normalized);
   }
 
   static createParser(language: string, content: string, file: string): FileParser {
-    const normalized = language.replace(/^\./, "").toLowerCase();
+    const normalized = normalizeLanguageTag(language);
     const extension = getFileExtension(file);
 
     if (normalized === "go") {
@@ -2037,7 +2042,7 @@ export class ParserFactory {
       return new DfmParser(content, file);
     }
 
-    if (normalized === "pas" || normalized === "dpr" || normalized === "delphi" || extension === ".inc" || extension === ".dpk") {
+    if (isDelphiLikeLanguage(normalized, file) && extension !== ".dfm" && extension !== ".fmx") {
       return new DelphiParser(content, file, [".inc", ".dpk"].includes(extension));
     }
 
