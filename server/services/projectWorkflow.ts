@@ -2715,6 +2715,385 @@ function isReportReadyForExport(
   );
 }
 
+const DELPHI_LIKE_EXTENSIONS = new Set([".pas", ".dpr", ".dfm", ".inc", ".dpk", ".fmx"]);
+
+function normalizeReportFileType(fileType: string | null | undefined) {
+  return (fileType ?? "unknown").trim().toLowerCase() || "unknown";
+}
+
+function classifyReportLanguage(fileType: string | null | undefined) {
+  const normalized = normalizeReportFileType(fileType).replace(/^\./, "");
+  if (normalized === "go") return "go";
+  if (normalized === "sql") return "sql";
+  if (["pas", "dpr", "dfm", "inc", "dpk", "fmx", "delphi"].includes(normalized)) return "delphi-like";
+  return "unknown";
+}
+
+function escapeMarkdownTableCell(value: unknown) {
+  return String(value ?? "")
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "\\|")
+    .trim();
+}
+
+function renderMarkdownTable(headers: string[], rows: unknown[][]) {
+  return [
+    `| ${headers.map(escapeMarkdownTableCell).join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.map(escapeMarkdownTableCell).join(" | ")} |`),
+  ].join("\n");
+}
+
+function getReportDelphiEventMap(report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>) {
+  const summary = report.summaryJson as (typeof report.summaryJson & { delphiEventMap?: Array<Record<string, unknown>> }) | null;
+  return Array.isArray(summary?.delphiEventMap) ? summary.delphiEventMap : [];
+}
+
+function getReportDelphiDataBindings(report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>) {
+  const summary = report.summaryJson as (typeof report.summaryJson & { delphiDataBindings?: Array<Record<string, unknown>> }) | null;
+  return Array.isArray(summary?.delphiDataBindings) ? summary.delphiDataBindings : [];
+}
+
+function renderDelphiEventMapMarkdown(eventMap: Array<Record<string, unknown>>) {
+  return [
+    "# DELPHI_EVENT_MAP",
+    "",
+    "This document maps DFM/FMX component events to Pascal procedure/function/method declarations.",
+    "Heuristic note: runtime event assignment, inherited forms, and cross-unit handlers may require human verification.",
+    "",
+    eventMap.length === 0
+      ? "No DFM/FMX event bindings were detected."
+      : renderMarkdownTable(
+          ["Form", "Component", "Class", "Event", "Handler", "Resolved method", "Resolved file", "Status", "Warnings"],
+          eventMap.map((entry) => [
+            entry.formName,
+            entry.componentName,
+            entry.componentClass,
+            entry.eventName,
+            entry.handlerName,
+            entry.resolvedMethod,
+            entry.resolvedFile,
+            entry.status,
+            Array.isArray(entry.warnings) ? entry.warnings.join(" ") : "",
+          ])
+        ),
+    "",
+  ].join("\n");
+}
+
+function renderDelphiDataBindingsMarkdown(bindings: Array<Record<string, unknown>>) {
+  return [
+    "# DELPHI_DATA_BINDINGS",
+    "",
+    "This document maps Delphi DB-aware UI components to DataSource, DataSet, and field metadata parsed from DFM/FMX files.",
+    "Heuristic note: runtime assignment of DataSource, DataSet, DataField, and grid columns is reported as unresolved or lower confidence.",
+    "",
+    bindings.length === 0
+      ? "No Delphi DB-aware component bindings were detected."
+      : renderMarkdownTable(
+          ["Form", "Component", "Class", "DataSource", "DataSet", "DataField", "ReadOnly", "Enabled", "Confidence", "Warning"],
+          bindings.map((binding) => [
+            binding.formName,
+            binding.componentName,
+            binding.componentClass,
+            binding.dataSource,
+            binding.dataSet,
+            binding.dataField,
+            binding.readOnly,
+            binding.enabled,
+            binding.confidence,
+            Array.isArray(binding.warnings) ? binding.warnings.join(" ") : "",
+          ])
+        ),
+    "",
+  ].join("\n");
+}
+
+function reportLimitationLines() {
+  return [
+    "- Legacy Lens currently uses heuristic static analysis. Treat the report as review support, not compiler-grade proof.",
+    "- Delphi `with` blocks may hide dataset ownership and can leave field or parameter owners as `unknown`.",
+    "- Runtime event binding, inherited forms, dynamic DataSource/DataSet/DataField assignment, dynamic grid columns, dynamic SQL, legacy encoding, and cross-file dataset ownership may be incomplete.",
+    "- Results need human review before production changes, migration planning, or audit sign-off.",
+  ];
+}
+
+async function buildReportCompletenessArtifacts(
+  db: Awaited<ReturnType<typeof requireDb>>,
+  input: {
+    project: typeof projects.$inferSelect | null;
+    report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>;
+    metadata: {
+      projectName: string;
+      analysisVersion: string;
+      createdAt: string;
+      focusLanguage: string | null;
+      fileCount: number;
+      symbolCount: number;
+      dependencyCount: number;
+      warningCount: number;
+      importWarningCount: number;
+    };
+    projectId: number;
+  }
+) {
+  const [fileRows, symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
+    db.select().from(files).where(eq(files.projectId, input.projectId)),
+    db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
+    db.select().from(dependencies).where(eq(dependencies.projectId, input.projectId)),
+    db.select().from(fields).where(eq(fields.projectId, input.projectId)),
+    db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
+    db.select().from(risks).where(eq(risks.projectId, input.projectId)),
+    db.select().from(rules).where(eq(rules.projectId, input.projectId)),
+  ]);
+
+  const sortedFiles = sortProjectFiles(fileRows);
+  const sortedSymbols = sortProjectSymbols(symbolRows);
+  const sortedDependencies = sortProjectDependencies(dependencyRows);
+  const sortedFields = sortProjectFields(fieldRows);
+  const sortedFieldDependencies = sortFieldDependencies(fieldDependencyRows);
+  const sortedRisks = sortProjectRisks(riskRows);
+  const sortedRules = sortProjectRules(ruleRows);
+
+  const importWarnings = input.project?.importWarningsJson ?? [];
+  const analyzerWarnings = input.report.warningsJson ?? [];
+  const allWarnings = [...importWarnings, ...analyzerWarnings];
+  const delphiEventMap = getReportDelphiEventMap(input.report);
+  const delphiDataBindings = getReportDelphiDataBindings(input.report);
+  const fileById = new Map(sortedFiles.map((file) => [file.id, file]));
+  const fieldById = new Map(sortedFields.map((field) => [field.id, field]));
+  const symbolById = new Map(sortedSymbols.map((symbol) => [symbol.id, symbol]));
+  const symbolsByFileId = new Map<number, number>();
+  const dependenciesByFileId = new Map<number, number>();
+  const risksByFilePath = new Map<string, number>();
+  const warningsByFilePath = new Map<string, number>();
+  const limitedFilePaths = new Set<string>();
+
+  for (const symbol of sortedSymbols) {
+    symbolsByFileId.set(symbol.fileId, (symbolsByFileId.get(symbol.fileId) ?? 0) + 1);
+  }
+
+  for (const dependency of sortedDependencies) {
+    const sourceFileId = symbolById.get(dependency.sourceSymbolId)?.fileId;
+    if (sourceFileId) {
+      dependenciesByFileId.set(sourceFileId, (dependenciesByFileId.get(sourceFileId) ?? 0) + 1);
+    }
+  }
+
+  for (const risk of sortedRisks) {
+    if (risk.sourceFile) {
+      risksByFilePath.set(risk.sourceFile, (risksByFilePath.get(risk.sourceFile) ?? 0) + 1);
+    }
+  }
+
+  for (const warning of allWarnings) {
+    if (warning.filePath) {
+      warningsByFilePath.set(warning.filePath, (warningsByFilePath.get(warning.filePath) ?? 0) + 1);
+      if (warning.code === "IMPORT_LIMITED_ANALYSIS" || ("heuristic" in warning && warning.heuristic)) {
+        limitedFilePaths.add(warning.filePath);
+      }
+    }
+  }
+
+  for (const file of sortedFiles) {
+    if (DELPHI_LIKE_EXTENSIONS.has(normalizeReportFileType(file.fileType)) && file.fileType !== ".pas" && file.fileType !== ".dpr") {
+      limitedFilePaths.add(file.filePath);
+    }
+  }
+
+  const languageCounts = sortedFiles.reduce(
+    (counts, file) => {
+      const language = classifyReportLanguage(file.fileType);
+      if (language === "delphi-like") counts.delphiLike += 1;
+      if (language === "go") counts.go += 1;
+      if (language === "sql") counts.sql += 1;
+      if (language === "unknown") counts.unknown += 1;
+      return counts;
+    },
+    { delphiLike: 0, go: 0, sql: 0, unknown: 0 }
+  );
+
+  const fileInventoryItems = sortedFiles.map((file) => {
+    const symbolCount = symbolsByFileId.get(file.id) ?? 0;
+    const dependencyCount = dependenciesByFileId.get(file.id) ?? 0;
+    const riskCount = risksByFilePath.get(file.filePath) ?? 0;
+    const warningCount = warningsByFilePath.get(file.filePath) ?? 0;
+    const importWarningCodes = importWarnings.filter((warning) => warning.filePath === file.filePath).map((warning) => warning.code);
+    const analysisSucceeded = file.status === "stored" && !importWarningCodes.includes("IMPORT_SKIPPED_UNSUPPORTED");
+
+    return {
+      filePath: file.filePath,
+      fileType: normalizeReportFileType(file.fileType),
+      language: classifyReportLanguage(file.fileType),
+      analysisSucceeded,
+      symbolCount,
+      dependencyCount,
+      riskCount,
+      warningCount,
+    };
+  });
+
+  const fieldAccessItems = sortedFieldDependencies
+    .map((dependency) => {
+      const field = fieldById.get(dependency.fieldId);
+      const symbol = symbolById.get(dependency.symbolId);
+      const filePath = symbol ? (fileById.get(symbol.fileId)?.filePath ?? null) : null;
+      const context = dependency.context ?? "";
+      const accessKind = /ParamByName\s*\(/i.test(context) ? "param" : "field";
+      const ownerMatch = context.match(/([A-Za-z_][\w.]*)\s*\.\s*(?:FieldByName|ParamByName)\s*\(/i);
+
+      return {
+        filePath: filePath ?? field?.tableName ?? "unknown",
+        lineNumber: dependency.lineNumber ?? null,
+        owner: ownerMatch?.[1] ?? "unknown",
+        accessKind,
+        name: field?.fieldName ?? "unknown",
+        operation: dependency.operationType,
+        context: context || null,
+        symbolName: symbol?.name ?? null,
+      };
+    })
+    .filter((item) => item.filePath.toLowerCase().endsWith(".pas") || item.accessKind === "param" || item.context?.match(/FieldByName|ParamByName/i));
+
+  const projectOverviewMarkdown = [
+    "# PROJECT_OVERVIEW",
+    "",
+    `- Project name: ${input.metadata.projectName}`,
+    `- Import source type: ${input.project?.sourceType ?? "unknown"}`,
+    `- Analysis time: ${input.metadata.createdAt}`,
+    `- Total scanned files: ${sortedFiles.length}`,
+    `- Delphi-like files: ${languageCounts.delphiLike}`,
+    `- Go files: ${languageCounts.go}`,
+    `- SQL files: ${languageCounts.sql}`,
+    `- Unknown files: ${languageCounts.unknown}`,
+    `- Limited-analysis files: ${limitedFilePaths.size}`,
+    "",
+    "## Findings Summary",
+    `- Symbols: ${sortedSymbols.length}`,
+    `- Dependencies: ${sortedDependencies.length}`,
+    `- Risks: ${sortedRisks.length}`,
+    `- Field accesses: ${fieldAccessItems.length}`,
+    `- Import warnings: ${importWarnings.length}`,
+    `- Analyzer warnings: ${analyzerWarnings.length}`,
+    "",
+    "## Report Limits",
+    ...reportLimitationLines(),
+    "",
+  ].join("\n");
+
+  const fileInventoryMarkdown = [
+    "# FILE_INVENTORY",
+    "",
+    renderMarkdownTable(
+      ["File path", "File type", "Language", "Analyzed", "Symbol count", "Dependency count", "Risk count", "Warning count"],
+      fileInventoryItems.map((item) => [
+        item.filePath,
+        item.fileType,
+        item.language,
+        item.analysisSucceeded ? "yes" : "no",
+        item.symbolCount,
+        item.dependencyCount,
+        item.riskCount,
+        item.warningCount,
+      ])
+    ),
+    "",
+  ].join("\n");
+
+  const delphiFieldAccessMarkdown = [
+    "# DELPHI_FIELD_ACCESS",
+    "",
+    fieldAccessItems.length === 0
+      ? "No Pascal FieldByName or ParamByName accesses were detected in persisted analysis artifacts."
+      : renderMarkdownTable(
+          ["File path", "Line", "Owner", "Field/param", "Read/write", "Context"],
+          fieldAccessItems.map((item) => [
+            item.filePath,
+            item.lineNumber ?? "unknown",
+            item.owner,
+            `${item.accessKind}:${item.name}`,
+            item.operation,
+            item.context ?? "",
+          ])
+        ),
+    "",
+    "Owner note: when dataset or parameter ownership cannot be inferred from the static context, owner is reported as `unknown`.",
+    "",
+  ].join("\n");
+
+  const delphiEventMapMarkdown = renderDelphiEventMapMarkdown(delphiEventMap);
+  const delphiDataBindingsMarkdown = renderDelphiDataBindingsMarkdown(delphiDataBindings);
+  const limitationsMarkdown = ["# LIMITATIONS", "", ...reportLimitationLines(), ""].join("\n");
+
+  const fullFindings = {
+    metadata: {
+      ...input.metadata,
+      projectId: input.projectId,
+      sourceType: input.project?.sourceType ?? "unknown",
+      reportStatus: input.report.status,
+      reportId: input.report.id,
+    },
+    files: fileInventoryItems,
+    symbols: sortedSymbols.map((symbol) => ({
+      id: symbol.id,
+      filePath: fileById.get(symbol.fileId)?.filePath ?? null,
+      name: symbol.name,
+      type: symbol.type,
+      startLine: symbol.startLine,
+      endLine: symbol.endLine,
+      signature: symbol.signature ?? null,
+      description: symbol.description ?? null,
+      metadata: symbol.metadata ?? null,
+    })),
+    dependencies: sortedDependencies.map((dependency) => ({
+      id: dependency.id,
+      sourceSymbolId: dependency.sourceSymbolId,
+      sourceSymbolName: symbolById.get(dependency.sourceSymbolId)?.name ?? null,
+      targetSymbolId: dependency.targetSymbolId ?? null,
+      targetSymbolName: dependency.targetSymbolId ? (symbolById.get(dependency.targetSymbolId)?.name ?? null) : null,
+      targetExternalName: dependency.targetExternalName ?? null,
+      targetKind: dependency.targetKind,
+      dependencyType: dependency.dependencyType,
+      lineNumber: dependency.lineNumber ?? null,
+    })),
+    risks: sortedRisks.map((risk) => ({
+      id: risk.id,
+      riskType: risk.riskType,
+      severity: risk.severity,
+      title: risk.title,
+      description: risk.description ?? null,
+      sourceFile: risk.sourceFile ?? null,
+      lineNumber: risk.lineNumber ?? null,
+      codeSnippet: risk.codeSnippet ?? null,
+      recommendation: risk.recommendation ?? null,
+    })),
+    rules: sortedRules.map((rule) => ({
+      id: rule.id,
+      ruleType: rule.ruleType,
+      name: rule.name,
+      description: rule.description ?? null,
+      condition: rule.condition ?? null,
+      sourceFile: rule.sourceFile ?? null,
+      lineNumber: rule.lineNumber ?? null,
+    })),
+    fieldAccesses: fieldAccessItems,
+    delphiEventMap,
+    delphiDataBindings,
+    importWarnings,
+    analyzerWarnings,
+  };
+
+  return {
+    projectOverviewMarkdown,
+    fileInventoryMarkdown,
+    delphiFieldAccessMarkdown,
+    delphiEventMapMarkdown,
+    delphiDataBindingsMarkdown,
+    limitationsMarkdown,
+    fullFindingsJson: JSON.stringify(fullFindings, null, 2),
+  };
+}
+
 async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requireDb>>, projectId: number) {
   const [rawProjectFiles, rawProjectSymbols, rawProjectDependencies, rawProjectRisks, rawProjectRules] = await Promise.all([
     db.select().from(files).where(eq(files.projectId, projectId)),
@@ -3631,6 +4010,12 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     warningCount: metrics?.warningCount ?? 0,
     importWarningCount: project?.importWarningsJson?.length ?? 0,
   } as const;
+  const reportCompletenessArtifacts = await buildReportCompletenessArtifacts(db, {
+    project,
+    report: readyReport,
+    metadata,
+    projectId,
+  });
 
   const archiveEntries = [
     { path: "FLOW.md", content: readyReport.flowMarkdown },
@@ -3638,6 +4023,13 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     { path: "RISKS.md", content: readyReport.risksMarkdown },
     { path: "RULES.yaml", content: readyReport.rulesYaml },
     { path: "IMPACT_ANALYSIS.md", content: impactMarkdown },
+    { path: "PROJECT_OVERVIEW.md", content: reportCompletenessArtifacts.projectOverviewMarkdown },
+    { path: "FILE_INVENTORY.md", content: reportCompletenessArtifacts.fileInventoryMarkdown },
+    { path: "DELPHI_FIELD_ACCESS.md", content: reportCompletenessArtifacts.delphiFieldAccessMarkdown },
+    { path: "DELPHI_EVENT_MAP.md", content: reportCompletenessArtifacts.delphiEventMapMarkdown },
+    { path: "DELPHI_DATA_BINDINGS.md", content: reportCompletenessArtifacts.delphiDataBindingsMarkdown },
+    { path: "LIMITATIONS.md", content: reportCompletenessArtifacts.limitationsMarkdown },
+    { path: "FULL_FINDINGS.json", content: reportCompletenessArtifacts.fullFindingsJson },
     { path: "impact-analysis.json", content: JSON.stringify(impactSummary, null, 2) },
     { path: "import-warnings.json", content: JSON.stringify(project?.importWarningsJson ?? [], null, 2) },
     { path: "metadata.json", content: JSON.stringify(metadata, null, 2) },

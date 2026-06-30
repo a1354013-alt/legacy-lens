@@ -1,6 +1,6 @@
 import type { AnalysisWarning } from "../../shared/contracts";
 import { resolveMostSpecificSymbol } from "./symbolOwner";
-import type { AnalyzedSymbol, FieldReference, SchemaField, SymbolDependency, SymbolType } from "./types";
+import type { AnalyzedSymbol, DelphiDataBinding, DelphiEventBinding, FieldReference, SchemaField, SymbolDependency, SymbolType } from "./types";
 import { buildSymbolStableKey } from "./types";
 
 export interface FileParser {
@@ -21,13 +21,19 @@ export interface DelphiUnitInfo {
 export interface DfmObjectInfo {
   objectName: string;
   objectType: string;
-  eventHandlers: Array<{ eventName: string; handlerName: string }>;
+  lineNumber: number;
+  eventHandlers: Array<{ eventName: string; handlerName: string; lineNumber: number }>;
   properties: Record<string, string>;
+  propertyLines: Record<string, number>;
+  columnFieldNames: Array<{ fieldName: string; lineNumber: number }>;
 }
 
 export interface DfmAnalysisResult {
   formName?: string;
+  formClass?: string;
   objects: DfmObjectInfo[];
+  eventBindings: DelphiEventBinding[];
+  dataBindings: DelphiDataBinding[];
   warnings: AnalysisWarning[];
 }
 
@@ -36,6 +42,14 @@ const SQL_IDENTIFIER_PATTERN = String.raw`${SQL_IDENTIFIER_PART_PATTERN}(?:\s*\.
 
 function normalizeName(value: string) {
   return value.trim().replace(/^["'`]+|["'`]+$/g, "");
+}
+
+function normalizeDfmValue(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).replace(/''/g, "'");
+  }
+  return normalizeName(trimmed);
 }
 
 function normalizeFilePath(value: string) {
@@ -1495,10 +1509,23 @@ export function parseDfmContent(content: string, filePath: string): DfmAnalysisR
   const warnings: AnalysisWarning[] = [];
   const objects: DfmObjectInfo[] = [];
   let formName: string | undefined;
+  let formClass: string | undefined;
 
   const lines = content.split(/\r?\n/);
-  let currentObject: DfmObjectInfo | null = null;
-  let depth = 0;
+  const objectStack: DfmObjectInfo[] = [];
+  let currentColumnsObject: DfmObjectInfo | null = null;
+
+  const dbAwareClasses = new Set([
+    "TDBEdit",
+    "TDBText",
+    "TDBMemo",
+    "TDBCheckBox",
+    "TDBComboBox",
+    "TDBLookupComboBox",
+    "TDBGrid",
+    "TDBRadioGroup",
+    "TDBNavigator",
+  ]);
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? "";
@@ -1509,54 +1536,83 @@ export function parseDfmContent(content: string, filePath: string): DfmAnalysisR
       continue;
     }
 
-    // Match object declaration: object ClassName or object TButton: Button1
-    const objectMatch = trimmed.match(/^object\s+([A-Za-z_][\w$]*)(?::\s*([A-Za-z_][\w$]*))?/i);
+    // Match object declaration: object Button1: TButton, inherited Form1: TForm1, inline Frame1: TFrame1
+    const objectMatch = trimmed.match(/^(?:object|inherited|inline)\s+([A-Za-z_][\w$]*)(?::\s*([A-Za-z_][\w$]*))?/i);
     if (objectMatch) {
       const objName = objectMatch[1];
       const objType = objectMatch[2] ?? objectMatch[1];
       
       // First object at root level is typically the form
-      if (depth === 0 && !formName) {
+      if (objectStack.length === 0 && !formName) {
         formName = objName;
+        formClass = objType;
       }
 
-      currentObject = {
+      const currentObject: DfmObjectInfo = {
         objectName: objName,
         objectType: objType,
+        lineNumber: i + 1,
         eventHandlers: [],
         properties: {},
+        propertyLines: {},
+        columnFieldNames: [],
       };
       objects.push(currentObject);
-      depth += 1;
+      objectStack.push(currentObject);
+      continue;
+    }
+
+    const currentObject = objectStack.at(-1) ?? null;
+    if (/^Columns\s*=\s*</i.test(trimmed) && currentObject) {
+      currentColumnsObject = currentObject;
+      continue;
+    }
+    if (currentColumnsObject && /^end$/i.test(trimmed)) {
+      continue;
+    }
+    if (currentColumnsObject && trimmed === ">") {
+      currentColumnsObject = null;
       continue;
     }
 
     // Match end of object
     if (/^end$/i.test(trimmed)) {
-      depth -= 1;
-      if (depth <= 0) {
-        currentObject = null;
-        depth = 0;
-      }
+      objectStack.pop();
+      currentColumnsObject = null;
       continue;
     }
 
     // Match property assignment: PropertyName = Value
-    const propMatch = trimmed.match(/^([A-Za-z_][\w$]*)\s*=\s*(.+)$/);
+    const propMatch = trimmed.match(/^([A-Za-z_][\w$.]*)\s*=\s*(.+)$/);
     if (propMatch && currentObject) {
       const propName = propMatch[1];
-      const propValue = propMatch[2]?.trim() ?? "";
+      const propValue = normalizeDfmValue(propMatch[2]?.trim() ?? "");
       
       // Check for event handler (On<Event> = HandlerName)
       if (propName.startsWith("On") && /^[A-Za-z_][\w$]*$/.test(propValue)) {
         currentObject.eventHandlers.push({
           eventName: propName,
           handlerName: propValue,
+          lineNumber: i + 1,
         });
       } else {
         currentObject.properties[propName] = propValue;
+        currentObject.propertyLines[propName] = i + 1;
+        if (currentColumnsObject === currentObject && /^(?:FieldName|Columns\.\d+\.FieldName)$/i.test(propName)) {
+          currentObject.columnFieldNames.push({ fieldName: propValue, lineNumber: i + 1 });
+        }
       }
     }
+  }
+
+  if (objectStack.length > 0) {
+    warnings.push({
+      code: "DFM_OBJECT_UNBALANCED",
+      message: "DFM object blocks appear incomplete; object and property extraction is best-effort.",
+      level: "warning",
+      filePath,
+      heuristic: true,
+    });
   }
 
   if (objects.length === 0) {
@@ -1569,7 +1625,93 @@ export function parseDfmContent(content: string, filePath: string): DfmAnalysisR
     });
   }
 
-  return { formName, objects, warnings };
+  const eventBindings = objects.flatMap((dfmObject) =>
+    dfmObject.eventHandlers.map((handler) => ({
+      formName: formName ?? "unknown",
+      formClass,
+      componentName: dfmObject.objectName,
+      componentClass: dfmObject.objectType,
+      eventName: handler.eventName,
+      handlerName: handler.handlerName,
+      filePath,
+      lineNumber: handler.lineNumber,
+    }))
+  );
+
+  const dataSourceByName = new Map<string, string>();
+  for (const dfmObject of objects) {
+    if (/^TDataSource$/i.test(dfmObject.objectType) && dfmObject.properties.DataSet) {
+      dataSourceByName.set(dfmObject.objectName.toLowerCase(), dfmObject.properties.DataSet);
+    }
+  }
+
+  const dataBindings: DelphiDataBinding[] = [];
+  for (const dfmObject of objects) {
+    if (!dbAwareClasses.has(dfmObject.objectType)) {
+      continue;
+    }
+
+    const dataSource = dfmObject.properties.DataSource ?? null;
+    const dataSet = dataSource ? (dataSourceByName.get(dataSource.toLowerCase()) ?? null) : null;
+    const readOnly = parseDfmBoolean(dfmObject.properties.ReadOnly);
+    const enabled = parseDfmBoolean(dfmObject.properties.Enabled);
+    const visible = parseDfmBoolean(dfmObject.properties.Visible);
+    const accessHint = readOnly === true || enabled === false ? "read-only" : dataSource && dataSet ? "read-write" : "unresolved";
+    const baseWarnings: string[] = [];
+    if (!dataSource) baseWarnings.push("DataSource property not found; runtime assignment may be required.");
+    if (dataSource && !dataSet) baseWarnings.push(`DataSource ${dataSource} did not resolve to a DFM DataSet property.`);
+    if (dfmObject.objectType === "TDBGrid" && dfmObject.columnFieldNames.length === 0) {
+      baseWarnings.push("TDBGrid has no static Columns.FieldName entries; fields may be configured at runtime.");
+    }
+
+    const lineNumber = dfmObject.propertyLines.DataField ?? dfmObject.propertyLines.DataSource ?? dfmObject.lineNumber;
+    const pushBinding = (dataField: string | null, fieldLineNumber: number, extraWarnings: string[] = []) => {
+      dataBindings.push({
+        formName: formName ?? "unknown",
+        componentName: dfmObject.objectName,
+        componentClass: dfmObject.objectType,
+        dataSource,
+        dataSet,
+        dataField,
+        readOnly,
+        enabled,
+        visible,
+        accessHint,
+        confidence: dataSource && dataSet && dataField ? "high" : dataSource && dataField ? "medium" : "low",
+        sourceFile: filePath,
+        lineNumber: fieldLineNumber,
+        warnings: [...baseWarnings, ...extraWarnings],
+      });
+    };
+
+    if (dfmObject.objectType === "TDBGrid") {
+      if (dfmObject.columnFieldNames.length > 0) {
+        for (const column of dfmObject.columnFieldNames) {
+          pushBinding(column.fieldName, column.lineNumber);
+        }
+      } else {
+        pushBinding(null, lineNumber);
+      }
+      continue;
+    }
+
+    pushBinding(dfmObject.properties.DataField ?? null, lineNumber);
+  }
+
+  return { formName, formClass, objects, eventBindings, dataBindings, warnings };
+}
+
+function parseDfmBoolean(value: string | undefined) {
+  if (value === undefined) {
+    return null;
+  }
+  if (/^true$/i.test(value)) {
+    return true;
+  }
+  if (/^false$/i.test(value)) {
+    return false;
+  }
+  return null;
 }
 
 export class DfmParser implements FileParser {
@@ -1598,7 +1740,7 @@ export class DfmParser implements FileParser {
       );
     }
 
-    for (const [objectIndex, dfmObject] of this.parsed.objects.entries()) {
+    for (const dfmObject of this.parsed.objects) {
       for (const handler of dfmObject.eventHandlers) {
         symbols.push(
           createSymbol({
@@ -1606,8 +1748,8 @@ export class DfmParser implements FileParser {
             qualifiedName: `${this.parsed.formName ?? dfmObject.objectName}.${dfmObject.objectName}.${handler.eventName}`,
             type: "method",
             file: this.file,
-            startLine: objectIndex + 1,
-            endLine: objectIndex + 1,
+            startLine: handler.lineNumber,
+            endLine: handler.lineNumber,
             signature: `${dfmObject.objectName}.${handler.eventName} -> ${handler.handlerName}`,
             description: `DFM event binding for ${dfmObject.objectName}`,
           })
@@ -1621,7 +1763,7 @@ export class DfmParser implements FileParser {
   parseDependencies(symbols: AnalyzedSymbol[]): SymbolDependency[] {
     const dependencies: SymbolDependency[] = [];
 
-    for (const [objectIndex, dfmObject] of this.parsed.objects.entries()) {
+    for (const dfmObject of this.parsed.objects) {
       for (const handler of dfmObject.eventHandlers) {
         const eventSymbol =
           symbols.find((symbol) => symbol.signature === `${dfmObject.objectName}.${handler.eventName} -> ${handler.handlerName}`) ??
@@ -1636,7 +1778,7 @@ export class DfmParser implements FileParser {
           toName: handler.handlerName,
           fromName: eventSymbol.qualifiedName ?? eventSymbol.name,
           type: "references",
-          line: objectIndex + 1,
+          line: handler.lineNumber,
         });
       }
     }
@@ -1654,6 +1796,14 @@ export class DfmParser implements FileParser {
 
   collectWarnings() {
     return this.parsed.warnings;
+  }
+
+  parseEventBindings() {
+    return this.parsed.eventBindings;
+  }
+
+  parseDataBindings() {
+    return this.parsed.dataBindings;
   }
 }
 
@@ -1883,12 +2033,12 @@ export class ParserFactory {
       return new SQLParser(content, file);
     }
 
-    if (extension === ".dfm") {
+    if (extension === ".dfm" || extension === ".fmx") {
       return new DfmParser(content, file);
     }
 
-    if (normalized === "pas" || normalized === "dpr" || normalized === "delphi" || extension === ".inc" || extension === ".dpk" || extension === ".fmx") {
-      return new DelphiParser(content, file, [".inc", ".dpk", ".fmx"].includes(extension));
+    if (normalized === "pas" || normalized === "dpr" || normalized === "delphi" || extension === ".inc" || extension === ".dpk") {
+      return new DelphiParser(content, file, [".inc", ".dpk"].includes(extension));
     }
 
     return new UnsupportedParser(file, normalized);

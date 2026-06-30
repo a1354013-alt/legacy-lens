@@ -2711,12 +2711,44 @@ describe("project workflow", () => {
       userId: 7,
       name: "report-project",
       language: "go",
+      sourceType: "upload",
       status: "completed",
       importWarningsJson: [{ code: "IMPORT_LIMITED_ANALYSIS", message: "Imported with limited analysis.", filePath: "Form1.dfm" }],
     });
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    fakeDb.store.files.push({
+      id: 2,
+      projectId: 1,
+      filePath: "repo/Invoice.pas",
+      fileName: "Invoice.pas",
+      fileType: ".pas",
+      content: "procedure UpdateOrder;\nbegin\n  Query.ParamByName('OrderId').AsInteger := 42;\nend;",
+      lineCount: 4,
+      status: "stored",
+    });
     fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 1, signature: "func main()", description: null });
+    fakeDb.store.symbols.push({
+      id: 2,
+      projectId: 1,
+      fileId: 2,
+      name: "UpdateOrder",
+      type: "procedure",
+      startLine: 1,
+      endLine: 4,
+      signature: "procedure UpdateOrder;",
+      description: null,
+    });
     fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "external.Dependency", targetKind: "unresolved", dependencyType: "references", lineNumber: 1 });
+    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "delphi", fieldName: "OrderId", fieldType: null, description: null });
+    fakeDb.store.fieldDependencies.push({
+      id: 1,
+      projectId: 1,
+      fieldId: 1,
+      symbolId: 2,
+      operationType: "write",
+      lineNumber: 3,
+      context: "Query.ParamByName('OrderId').AsInteger := 42;",
+    });
     fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", title: "Critical risk", severity: "high", sourceFile: "main.go", lineNumber: 1 });
     fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "MainRule", sourceFile: "main.go", lineNumber: 1 });
     fakeDb.store.analysisResults.push({
@@ -2743,7 +2775,28 @@ describe("project workflow", () => {
     expect(zip.file("RISKS.md")).toBeTruthy();
     expect(zip.file("RULES.yaml")).toBeTruthy();
     expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
+    expect(zip.file("PROJECT_OVERVIEW.md")).toBeTruthy();
+    expect(zip.file("FILE_INVENTORY.md")).toBeTruthy();
+    expect(zip.file("DELPHI_FIELD_ACCESS.md")).toBeTruthy();
+    expect(zip.file("LIMITATIONS.md")).toBeTruthy();
+    expect(zip.file("FULL_FINDINGS.json")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
+    await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Delphi-like files: 1");
+    await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.toContain("repo/Invoice.pas");
+    await expect(zip.file("DELPHI_FIELD_ACCESS.md")!.async("text")).resolves.toContain("param:OrderId");
+    await expect(zip.file("LIMITATIONS.md")!.async("text")).resolves.toContain("heuristic static analysis");
+    const fullFindings = JSON.parse(await zip.file("FULL_FINDINGS.json")!.async("text")) as {
+      fieldAccesses: Array<{ owner: string; name: string; operation: string }>;
+      metadata: { sourceType: string };
+      symbols: unknown[];
+      dependencies: unknown[];
+      risks: unknown[];
+    };
+    expect(fullFindings.metadata.sourceType).toBe("upload");
+    expect(fullFindings.symbols).toHaveLength(2);
+    expect(fullFindings.dependencies).toHaveLength(1);
+    expect(fullFindings.risks).toHaveLength(1);
+    expect(fullFindings.fieldAccesses).toEqual([expect.objectContaining({ owner: "Query", name: "OrderId", operation: "write" })]);
   });
 
   it("fails oversized report exports before ZIP generation allocates the archive buffer", async () => {

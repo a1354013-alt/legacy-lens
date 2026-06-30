@@ -1,0 +1,75 @@
+{
+  "symbols": [
+    {
+      "name": "CustomerForm",
+      "qualifiedName": "CustomerForm",
+      "type": "class",
+      "file": "CustomerForm.dfm",
+      "startLine": 1,
+      "endLine": 27
+    }
+  ],
+  "fields": [],
+  "dependencies": [],
+  "risks": [],
+  "rules": [],
+  "delphiEventMap": [],
+  "delphiDataBindings": [
+    {
+      "formName": "CustomerForm",
+      "componentName": "DBCheckBox1",
+      "componentClass": "TDBCheckBox",
+      "dataSource": "dsMaster",
+      "dataSet": "cdsMaster",
+      "dataField": "ACTIVE",
+      "readOnly": null,
+      "enabled": null,
+      "visible": null,
+      "accessHint": "read-write",
+      "confidence": "high",
+      "sourceFile": "CustomerForm.dfm"
+    },
+    {
+      "formName": "CustomerForm",
+      "componentName": "DBEdit1",
+      "componentClass": "TDBEdit",
+      "dataSource": "dsMaster",
+      "dataSet": "cdsMaster",
+      "dataField": "CUST_NAME",
+      "readOnly": null,
+      "enabled": null,
+      "visible": null,
+      "accessHint": "read-write",
+      "confidence": "high",
+      "sourceFile": "CustomerForm.dfm"
+    },
+    {
+      "formName": "CustomerForm",
+      "componentName": "DBGrid1",
+      "componentClass": "TDBGrid",
+      "dataSource": "dsMaster",
+      "dataSet": "cdsMaster",
+      "dataField": "CUST_ID",
+      "readOnly": null,
+      "enabled": null,
+      "visible": null,
+      "accessHint": "read-write",
+      "confidence": "high",
+      "sourceFile": "CustomerForm.dfm"
+    },
+    {
+      "formName": "CustomerForm",
+      "componentName": "DBGrid1",
+      "componentClass": "TDBGrid",
+      "dataSource": "dsMaster",
+      "dataSet": "cdsMaster",
+      "dataField": "CUST_NAME",
+      "readOnly": null,
+      "enabled": null,
+      "visible": null,
+      "accessHint": "read-write",
+      "confidence": "high",
+      "sourceFile": "CustomerForm.dfm"
+    }
+  ]
+}

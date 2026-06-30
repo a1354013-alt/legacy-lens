@@ -29,6 +29,41 @@ export interface SymbolDependency {
   line: number;
 }
 
+export interface DelphiEventBinding {
+  formName: string;
+  componentName: string;
+  componentClass: string;
+  eventName: string;
+  handlerName: string;
+  filePath: string;
+  lineNumber: number;
+  formClass?: string;
+}
+
+export interface DelphiEventMapEntry extends DelphiEventBinding {
+  resolvedMethod: string | null;
+  resolvedFile: string | null;
+  status: "resolved" | "unresolved";
+  warnings: string[];
+}
+
+export interface DelphiDataBinding {
+  formName: string;
+  componentName: string;
+  componentClass: string;
+  dataSource: string | null;
+  dataSet: string | null;
+  dataField: string | null;
+  readOnly: boolean | null;
+  enabled: boolean | null;
+  visible: boolean | null;
+  accessHint: "read-write" | "read-only" | "unresolved";
+  confidence: "high" | "medium" | "low";
+  sourceFile: string;
+  lineNumber: number;
+  warnings: string[];
+}
+
 export interface FieldReference {
   field: string;
   table: string;
@@ -100,6 +135,8 @@ export interface ProjectAnalysisResult {
   dataDependencyDocument: string;
   risksDocument: string;
   rulesYaml: string;
+  delphiEventMap: DelphiEventMapEntry[];
+  delphiDataBindings: DelphiDataBinding[];
   riskScore: number;
   metrics: AnalysisMetrics;
 }

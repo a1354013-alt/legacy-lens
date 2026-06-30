@@ -1,4 +1,4 @@
-import type { AnalyzedSymbol, DetectedRisk, DetectedRule, FieldReference, SymbolDependency } from "./types";
+import type { AnalyzedSymbol, DelphiDataBinding, DelphiEventMapEntry, DetectedRisk, DetectedRule, FieldReference, SymbolDependency } from "./types";
 
 function unique<T>(values: T[]) {
   return Array.from(new Set(values));
@@ -6,6 +6,21 @@ function unique<T>(values: T[]) {
 
 function stringifyYamlScalar(value: string | null | undefined) {
   return JSON.stringify(String(value ?? ""));
+}
+
+function escapeMarkdownTableCell(value: unknown) {
+  return String(value ?? "")
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "\\|")
+    .trim();
+}
+
+function renderMarkdownTable(headers: string[], rows: unknown[][]) {
+  return [
+    `| ${headers.map(escapeMarkdownTableCell).join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.map(escapeMarkdownTableCell).join(" | ")} |`),
+  ].join("\n");
 }
 
 export class DocumentGenerator {
@@ -153,6 +168,75 @@ export class DocumentGenerator {
       }
     }
 
+    return lines.join("\n");
+  }
+
+  generateDelphiEventMapDocument(eventMap: DelphiEventMapEntry[]): string {
+    const lines = [
+      "# DELPHI_EVENT_MAP",
+      "",
+      "This document maps DFM/FMX component events to Pascal procedure/function/method declarations.",
+      "Heuristic note: runtime event assignment, inherited forms, and cross-unit handlers may require human verification.",
+      "",
+    ];
+
+    if (eventMap.length === 0) {
+      lines.push("No DFM/FMX event bindings were detected.");
+      return lines.join("\n");
+    }
+
+    lines.push(
+      renderMarkdownTable(
+        ["Form", "Component", "Class", "Event", "Handler", "Resolved method", "Resolved file", "Status", "Warnings"],
+        eventMap.map((entry) => [
+          entry.formName,
+          entry.componentName,
+          entry.componentClass,
+          entry.eventName,
+          entry.handlerName,
+          entry.resolvedMethod ?? "",
+          entry.resolvedFile ?? "",
+          entry.status,
+          entry.warnings.join(" "),
+        ])
+      )
+    );
+    lines.push("");
+    return lines.join("\n");
+  }
+
+  generateDelphiDataBindingsDocument(bindings: DelphiDataBinding[]): string {
+    const lines = [
+      "# DELPHI_DATA_BINDINGS",
+      "",
+      "This document maps Delphi DB-aware UI components to DataSource, DataSet, and field metadata parsed from DFM/FMX files.",
+      "Heuristic note: runtime assignment of DataSource, DataSet, DataField, and grid columns is reported as unresolved or lower confidence.",
+      "",
+    ];
+
+    if (bindings.length === 0) {
+      lines.push("No Delphi DB-aware component bindings were detected.");
+      return lines.join("\n");
+    }
+
+    lines.push(
+      renderMarkdownTable(
+        ["Form", "Component", "Class", "DataSource", "DataSet", "DataField", "ReadOnly", "Enabled", "Confidence", "Warning"],
+        bindings.map((binding) => [
+          binding.formName,
+          binding.componentName,
+          binding.componentClass,
+          binding.dataSource ?? "",
+          binding.dataSet ?? "",
+          binding.dataField ?? "",
+          binding.readOnly ?? "",
+          binding.enabled ?? "",
+          binding.confidence,
+          binding.warnings.join(" "),
+        ])
+      )
+    );
+    lines.push("");
     return lines.join("\n");
   }
 }
