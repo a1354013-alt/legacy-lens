@@ -103,7 +103,7 @@ describe("DelphiParser", () => {
     expect(result.formName).toBe("Form1");
     expect(result.objects).toHaveLength(2);
     expect(result.objects[1].eventHandlers).toEqual([
-      { eventName: "OnClick", handlerName: "Button1Click" },
+      { eventName: "OnClick", handlerName: "Button1Click", lineNumber: 5 },
     ]);
 
     const parser = new DfmParser(dfm, "Form1.dfm");
@@ -163,7 +163,91 @@ describe("DelphiParser", () => {
     expect(ParserFactory.isLanguageSupported("dpk")).toBe(true);
     expect(ParserFactory.isLanguageSupported("fmx")).toBe(true);
     expect(ParserFactory.createParser("inc", "const Foo = 1;", "types.inc")).toBeInstanceOf(DelphiParser);
-    expect(ParserFactory.createParser("fmx", "object Form1: TForm1", "Form1.fmx")).toBeInstanceOf(DelphiParser);
+    expect(ParserFactory.createParser("fmx", "object Form1: TForm1", "Form1.fmx")).toBeInstanceOf(DfmParser);
+  });
+
+  it("extracts Delphi DB-aware component bindings and unresolved warnings from DFM content", () => {
+    const dfm = [
+      "object Form1: TForm1",
+      "  object cdsMaster: TClientDataSet",
+      "  end",
+      "  object dsMaster: TDataSource",
+      "    DataSet = cdsMaster",
+      "  end",
+      "  object DBEdit1: TDBEdit",
+      "    DataSource = dsMaster",
+      "    DataField = 'CUST_NAME'",
+      "  end",
+      "  object DBCheckBox1: TDBCheckBox",
+      "    DataSource = dsMaster",
+      "    DataField = 'ACTIVE'",
+      "    ReadOnly = True",
+      "  end",
+      "  object DBGrid1: TDBGrid",
+      "    DataSource = dsMaster",
+      "    Columns = <",
+      "      item",
+      "        FieldName = 'CUST_ID'",
+      "      end",
+      "      item",
+      "        FieldName = 'CUST_NAME'",
+      "      end",
+      "    >",
+      "  end",
+      "  object RuntimeEdit: TDBEdit",
+      "    DataField = 'RUNTIME_ONLY'",
+      "  end",
+      "end",
+    ].join("\n");
+
+    const result = parseDfmContent(dfm, "Form1.dfm");
+
+    expect(result.dataBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          componentName: "DBEdit1",
+          componentClass: "TDBEdit",
+          dataSource: "dsMaster",
+          dataSet: "cdsMaster",
+          dataField: "CUST_NAME",
+          accessHint: "read-write",
+          confidence: "high",
+        }),
+        expect.objectContaining({
+          componentName: "DBCheckBox1",
+          dataField: "ACTIVE",
+          accessHint: "read-only",
+        }),
+        expect.objectContaining({
+          componentName: "DBGrid1",
+          dataField: "CUST_ID",
+        }),
+        expect.objectContaining({
+          componentName: "DBGrid1",
+          dataField: "CUST_NAME",
+        }),
+        expect.objectContaining({
+          componentName: "RuntimeEdit",
+          dataSource: null,
+          dataField: "RUNTIME_ONLY",
+          confidence: "low",
+          warnings: expect.arrayContaining([expect.stringContaining("DataSource property not found")]),
+        }),
+      ])
+    );
+  });
+
+  it("warns instead of crashing on incomplete DFM object blocks", () => {
+    const result = parseDfmContent("object Form1: TForm1\n  object Button1: TButton", "Broken.dfm");
+
+    expect(result.objects).toHaveLength(2);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "DFM_OBJECT_UNBALANCED",
+        }),
+      ])
+    );
   });
 
   it("assigns Delphi SQL and field access to the most specific procedure owner", () => {

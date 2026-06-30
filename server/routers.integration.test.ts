@@ -347,6 +347,37 @@ describe("appRouter integration", () => {
     expect(metadataJson.dependencyCount).toBe(0);
     expect(metadataJson.warningCount).toBe(3);
 
+    for (const expectedPath of [
+      "FLOW.md",
+      "DATA_DEPENDENCY.md",
+      "RISKS.md",
+      "RULES.yaml",
+      "IMPACT_ANALYSIS.md",
+      "metadata.json",
+      "PROJECT_OVERVIEW.md",
+      "FILE_INVENTORY.md",
+      "DELPHI_FIELD_ACCESS.md",
+      "LIMITATIONS.md",
+      "FULL_FINDINGS.json",
+    ]) {
+      expect(zip.file(expectedPath), expectedPath).toBeTruthy();
+    }
+    await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Project name: integration-project");
+    await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.toContain("main.go");
+    await expect(zip.file("LIMITATIONS.md")!.async("text")).resolves.toContain("dynamic SQL");
+    const fullFindings = JSON.parse(await zip.file("FULL_FINDINGS.json")!.async("text")) as {
+      metadata: { projectName: string };
+      symbols: unknown[];
+      fieldAccesses: unknown[];
+      importWarnings: unknown[];
+      analyzerWarnings: unknown[];
+    };
+    expect(fullFindings.metadata.projectName).toBe("integration-project");
+    expect(fullFindings.symbols).toHaveLength(1);
+    expect(fullFindings.fieldAccesses).toEqual([]);
+    expect(fullFindings.importWarnings).toEqual(importWarnings);
+    expect(fullFindings.analyzerWarnings).toHaveLength(3);
+
     const summary = zip.file("analysis-summary.json");
     expect(summary).toBeTruthy();
     const summaryJson = JSON.parse(await summary!.async("text")) as Record<string, unknown>;

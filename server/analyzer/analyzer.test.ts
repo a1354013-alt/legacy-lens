@@ -112,6 +112,127 @@ describe("Analyzer", () => {
     expect(result.risks.some((risk) => risk.category === "missing_condition")).toBe(false);
   });
 
+  it("resolves DFM event handlers to same-basename Pascal methods and reports unresolved handlers", async () => {
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "ui/Form1.dfm",
+          language: "dfm",
+          content: [
+            "object Form1: TForm1",
+            "  object Button1: TButton",
+            "    OnClick = Button1Click",
+            "  end",
+            "  object MissingButton: TButton",
+            "    OnClick = MissingButtonClick",
+            "  end",
+            "end",
+          ].join("\n"),
+        },
+        {
+          path: "ui/Form1.pas",
+          language: "pas",
+          content: [
+            "unit Form1;",
+            "interface",
+            "type",
+            "  TForm1 = class",
+            "  public",
+            "    procedure Button1Click(Sender: TObject);",
+            "  end;",
+            "implementation",
+            "procedure TForm1.Button1Click(Sender: TObject);",
+            "begin",
+            "end;",
+            "end.",
+          ].join("\n"),
+        },
+      ],
+      1
+    );
+
+    expect(result.delphiEventMap).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          componentName: "Button1",
+          eventName: "OnClick",
+          handlerName: "Button1Click",
+          resolvedMethod: "TForm1.Button1Click",
+          resolvedFile: "ui/Form1.pas",
+          status: "resolved",
+        }),
+        expect.objectContaining({
+          componentName: "MissingButton",
+          handlerName: "MissingButtonClick",
+          resolvedMethod: null,
+          status: "unresolved",
+          warnings: expect.arrayContaining([expect.stringContaining("No matching Pascal")]),
+        }),
+      ])
+    );
+    expect(result.metrics.delphiEventMap).toEqual(result.delphiEventMap);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "DELPHI_EVENT_HANDLER_UNRESOLVED",
+          filePath: "ui/Form1.dfm",
+        }),
+      ])
+    );
+  });
+
+  it("collects Delphi DB UI bindings from DFM DataSource and grid columns", async () => {
+    const analyzer = new Analyzer();
+    const result = await analyzer.analyzeProject(
+      [
+        {
+          path: "ui/CustomerForm.dfm",
+          language: "dfm",
+          content: [
+            "object CustomerForm: TCustomerForm",
+            "  object cdsMaster: TClientDataSet",
+            "  end",
+            "  object dsMaster: TDataSource",
+            "    DataSet = cdsMaster",
+            "  end",
+            "  object DBEdit1: TDBEdit",
+            "    DataSource = dsMaster",
+            "    DataField = 'CUST_NAME'",
+            "  end",
+            "  object DBCheckBox1: TDBCheckBox",
+            "    DataSource = dsMaster",
+            "    DataField = 'ACTIVE'",
+            "  end",
+            "  object DBGrid1: TDBGrid",
+            "    DataSource = dsMaster",
+            "    Columns = <",
+            "      item",
+            "        FieldName = 'CUST_ID'",
+            "      end",
+            "      item",
+            "        FieldName = 'CUST_NAME'",
+            "      end",
+            "    >",
+            "  end",
+            "end",
+          ].join("\n"),
+        },
+      ],
+      1
+    );
+
+    expect(result.delphiDataBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ componentName: "DBEdit1", dataSource: "dsMaster", dataSet: "cdsMaster", dataField: "CUST_NAME" }),
+        expect.objectContaining({ componentName: "DBCheckBox1", dataSource: "dsMaster", dataSet: "cdsMaster", dataField: "ACTIVE" }),
+        expect.objectContaining({ componentName: "DBGrid1", dataSource: "dsMaster", dataSet: "cdsMaster", dataField: "CUST_ID" }),
+        expect.objectContaining({ componentName: "DBGrid1", dataSource: "dsMaster", dataSet: "cdsMaster", dataField: "CUST_NAME" }),
+      ])
+    );
+    expect(result.metrics.delphiDataBindings).toEqual(result.delphiDataBindings);
+  });
+
   it("raises missing WHERE only when UPDATE or DELETE truly lack predicates", async () => {
     const analyzer = new Analyzer();
     const result = await analyzer.analyzeProject(

@@ -78,6 +78,38 @@ export const analysisWarningSchema = z.object({
 export type ImportWarning = z.infer<typeof importWarningSchema>;
 export type AnalysisWarning = z.infer<typeof analysisWarningSchema>;
 
+const delphiEventMapEntrySchema = z.object({
+  formName: z.string(),
+  componentName: z.string(),
+  componentClass: z.string(),
+  eventName: z.string(),
+  handlerName: z.string(),
+  filePath: z.string(),
+  lineNumber: z.number().int().nonnegative(),
+  formClass: z.string().optional(),
+  resolvedMethod: z.string().nullable(),
+  resolvedFile: z.string().nullable(),
+  status: z.enum(["resolved", "unresolved"]),
+  warnings: z.array(z.string()),
+});
+
+const delphiDataBindingSchema = z.object({
+  formName: z.string(),
+  componentName: z.string(),
+  componentClass: z.string(),
+  dataSource: z.string().nullable(),
+  dataSet: z.string().nullable(),
+  dataField: z.string().nullable(),
+  readOnly: z.boolean().nullable(),
+  enabled: z.boolean().nullable(),
+  visible: z.boolean().nullable(),
+  accessHint: z.enum(["read-write", "read-only", "unresolved"]),
+  confidence: z.enum(["high", "medium", "low"]),
+  sourceFile: z.string(),
+  lineNumber: z.number().int().nonnegative(),
+  warnings: z.array(z.string()),
+});
+
 export const analysisMetricsSchema = z.object({
   fileCount: z.number().int().nonnegative(),
   eligibleFileCount: z.number().int().nonnegative(),
@@ -92,6 +124,8 @@ export const analysisMetricsSchema = z.object({
   riskCount: z.number().int().nonnegative(),
   ruleCount: z.number().int().nonnegative(),
   warningCount: z.number().int().nonnegative(),
+  delphiEventMap: z.array(delphiEventMapEntrySchema).optional(),
+  delphiDataBindings: z.array(delphiDataBindingSchema).optional(),
 });
 
 export type AnalysisMetrics = z.infer<typeof analysisMetricsSchema>;

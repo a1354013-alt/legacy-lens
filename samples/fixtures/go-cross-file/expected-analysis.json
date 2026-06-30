@@ -35,5 +35,7 @@
     }
   ],
   "risks": [],
-  "rules": []
+  "rules": [],
+  "delphiEventMap": [],
+  "delphiDataBindings": []
 }

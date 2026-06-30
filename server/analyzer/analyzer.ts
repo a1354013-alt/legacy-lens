@@ -1,10 +1,14 @@
 import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
 import { DocumentGenerator } from "./documentGenerator";
 import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
-import { collectSqlStatements, ParserFactory } from "./parser";
+import { collectSqlStatements, parseDfmContent, ParserFactory } from "./parser";
 import { RiskDetector } from "./riskDetector";
 import type {
   AnalyzableFile,
+  AnalyzedSymbol,
+  DelphiDataBinding,
+  DelphiEventBinding,
+  DelphiEventMapEntry,
   DetectedRule,
   DetectedRisk,
   FieldReference,
@@ -116,6 +120,88 @@ function getErrorMessage(error: unknown) {
   }
 
   return String(error || "Unknown analysis error");
+}
+
+function getNormalizedExtension(filePath: string) {
+  const index = filePath.lastIndexOf(".");
+  return index >= 0 ? filePath.slice(index).toLowerCase() : "";
+}
+
+function getBaseName(filePath: string) {
+  const normalized = filePath.replace(/\\/g, "/");
+  const fileName = normalized.split("/").at(-1) ?? normalized;
+  return fileName.replace(/\.[^.]+$/, "").toLowerCase();
+}
+
+function collectDfmProjectMetadata(files: AnalyzableFile[]) {
+  const eventBindings: DelphiEventBinding[] = [];
+  const dataBindings: DelphiDataBinding[] = [];
+  const warnings: AnalysisWarning[] = [];
+
+  for (const file of files) {
+    if (![".dfm", ".fmx"].includes(getNormalizedExtension(file.path))) {
+      continue;
+    }
+
+    try {
+      const parsed = parseDfmContent(file.content, file.path);
+      eventBindings.push(...parsed.eventBindings);
+      dataBindings.push(...parsed.dataBindings);
+      warnings.push(...parsed.warnings);
+    } catch (error) {
+      warnings.push({
+        code: "DFM_LIMITED_ANALYSIS",
+        message: `DFM analysis was limited after parser failure: ${getErrorMessage(error)}`,
+        level: "warning",
+        filePath: file.path,
+        heuristic: true,
+      });
+    }
+  }
+
+  return { eventBindings, dataBindings, warnings };
+}
+
+function collectPascalMethods(symbols: AnalyzedSymbol[]) {
+  return symbols.filter((symbol) => {
+    const extension = getNormalizedExtension(symbol.file);
+    return [".pas", ".dpr", ".inc", ".dpk"].includes(extension) && ["method", "procedure", "function"].includes(symbol.type);
+  });
+}
+
+function resolveDelphiEventMap(bindings: DelphiEventBinding[], symbols: AnalyzedSymbol[]): DelphiEventMapEntry[] {
+  const pascalMethods = collectPascalMethods(symbols);
+
+  return bindings.map((binding) => {
+    const dfmBaseName = getBaseName(binding.filePath);
+    const sameBase = pascalMethods.filter((method) => getBaseName(method.file) === dfmBaseName);
+    const candidates = sameBase.length > 0 ? sameBase : pascalMethods;
+    const qualifiedFormCandidates = [binding.formClass, `T${binding.formName}`]
+      .filter((value): value is string => Boolean(value))
+      .map((formClass) => `${formClass}.${binding.handlerName}`.toLowerCase());
+
+    const resolved =
+      candidates.find((method) => qualifiedFormCandidates.includes((method.qualifiedName ?? method.name).toLowerCase())) ??
+      candidates.find((method) => (method.qualifiedName ?? "").toLowerCase().endsWith(`.${binding.handlerName.toLowerCase()}`)) ??
+      candidates.find((method) => method.name.toLowerCase() === binding.handlerName.toLowerCase()) ??
+      pascalMethods.find((method) => qualifiedFormCandidates.includes((method.qualifiedName ?? method.name).toLowerCase())) ??
+      pascalMethods.find((method) => method.name.toLowerCase() === binding.handlerName.toLowerCase());
+
+    const warnings: string[] = [];
+    if (!resolved) {
+      warnings.push("No matching Pascal procedure/function/method was found by handler name, form-qualified name, or same-basename pairing.");
+    } else if (getBaseName(resolved.file) !== dfmBaseName) {
+      warnings.push("Resolved outside the same DFM/PAS basename; verify inherited forms or cross-unit handler wiring.");
+    }
+
+    return {
+      ...binding,
+      resolvedMethod: resolved?.qualifiedName ?? resolved?.name ?? null,
+      resolvedFile: resolved?.file ?? null,
+      status: resolved ? "resolved" : "unresolved",
+      warnings,
+    };
+  });
 }
 
 function buildRules(fieldReferences: FieldReference[], risks: DetectedRisk[]): DetectedRule[] {
@@ -324,6 +410,31 @@ export class Analyzer {
 
     const combinedRisks = dedupeRisks([...risks, ...this.riskDetector.detectMultipleWrites(fieldReferences)]);
     const combinedDependencies = dedupeDependencies(dependencies);
+    const dfmMetadata = collectDfmProjectMetadata(files);
+    const delphiEventMap = resolveDelphiEventMap(dfmMetadata.eventBindings, symbols);
+    warnings.push(...dfmMetadata.warnings);
+    for (const eventEntry of delphiEventMap) {
+      if (eventEntry.status === "unresolved") {
+        warnings.push({
+          code: "DELPHI_EVENT_HANDLER_UNRESOLVED",
+          message: `${eventEntry.formName}.${eventEntry.componentName}.${eventEntry.eventName} references ${eventEntry.handlerName}, but no Pascal method was resolved.`,
+          level: "warning",
+          filePath: eventEntry.filePath,
+          heuristic: true,
+        });
+      }
+    }
+    for (const binding of dfmMetadata.dataBindings) {
+      if (binding.confidence !== "high") {
+        warnings.push({
+          code: "DELPHI_DATA_BINDING_UNRESOLVED",
+          message: `${binding.componentName} has incomplete static DB binding metadata: ${binding.warnings.join(" ") || "runtime assignment may be required."}`,
+          level: "warning",
+          filePath: binding.sourceFile,
+          heuristic: true,
+        });
+      }
+    }
     const combinedWarnings = dedupeWarnings([
       ...warnings,
       {
@@ -353,6 +464,8 @@ export class Analyzer {
       riskCount: combinedRisks.length,
       ruleCount: rules.length,
       warningCount: combinedWarnings.length,
+      delphiEventMap,
+      delphiDataBindings: dfmMetadata.dataBindings,
     };
 
     const hasMaterialWarnings = combinedWarnings.some((warning) => warning.level !== "note");
@@ -380,6 +493,8 @@ export class Analyzer {
       dataDependencyDocument: this.documentGenerator.generateDataDependencyDocument(fieldReferences),
       risksDocument: this.documentGenerator.generateRisksDocument(combinedRisks),
       rulesYaml: this.documentGenerator.generateRulesYaml(rules),
+      delphiEventMap,
+      delphiDataBindings: dfmMetadata.dataBindings,
       riskScore: this.riskDetector.calculateRiskScore(combinedRisks),
       metrics,
     };

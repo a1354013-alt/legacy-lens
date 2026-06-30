@@ -37,5 +37,7 @@
       "lineNumber": 9
     }
   ],
-  "rules": []
+  "rules": [],
+  "delphiEventMap": [],
+  "delphiDataBindings": []
 }

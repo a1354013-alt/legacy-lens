@@ -33,4 +33,48 @@ describe("DocumentGenerator", () => {
     expect(generator.generateDataDependencyDocument([])).toContain("dynamic SQL");
     expect(generator.generateRisksDocument([])).toContain("validated by a human reviewer");
   });
+
+  it("generates Delphi event and DB binding reports", () => {
+    const generator = new DocumentGenerator();
+
+    expect(
+      generator.generateDelphiEventMapDocument([
+        {
+          formName: "Form1",
+          componentName: "Button1",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "Button1Click",
+          filePath: "Form1.dfm",
+          lineNumber: 3,
+          resolvedMethod: "TForm1.Button1Click",
+          resolvedFile: "Form1.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ])
+    ).toContain("TForm1.Button1Click");
+
+    const dataBindings = generator.generateDelphiDataBindingsDocument([
+      {
+        formName: "CustomerForm",
+        componentName: "DBEdit1",
+        componentClass: "TDBEdit",
+        dataSource: "dsMaster",
+        dataSet: "cdsMaster",
+        dataField: "CUST_NAME",
+        readOnly: false,
+        enabled: true,
+        visible: true,
+        accessHint: "read-write",
+        confidence: "high",
+        sourceFile: "CustomerForm.dfm",
+        lineNumber: 9,
+        warnings: [],
+      },
+    ]);
+
+    expect(dataBindings).toContain("DB-aware UI components");
+    expect(dataBindings).toContain("CUST_NAME");
+  });
 });

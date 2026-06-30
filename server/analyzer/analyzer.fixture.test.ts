@@ -8,6 +8,7 @@ const fixtureCases = [
   { name: "go-cross-file", files: ["main.go", "helpers.go"] },
   { name: "sql-dynamic", files: ["repo.sql"] },
   { name: "delphi-dfm-event", files: ["Form1.pas", "Form1.dfm"] },
+  { name: "delphi-dfm-data-binding", files: ["CustomerForm.dfm"] },
   { name: "delphi-fieldbyname", files: ["Repo.pas"] },
   { name: "delphi-parambyname", files: ["Repo.pas"] },
 ] as const;
@@ -19,6 +20,8 @@ function fixtureDir(name: string) {
 function languageFor(fileName: string): AnalyzableFile["language"] {
   if (fileName.endsWith(".go")) return "go";
   if (fileName.endsWith(".sql")) return "sql";
+  if (fileName.endsWith(".dfm")) return "dfm";
+  if (fileName.endsWith(".fmx")) return "fmx";
   return "delphi";
 }
 
@@ -71,6 +74,36 @@ function normalizeAnalysis(result: ProjectAnalysisResult) {
         ruleType: rule.ruleType,
         sourceFile: rule.sourceFile ?? null,
         lineNumber: rule.lineNumber ?? null,
+      }))
+    ),
+    delphiEventMap: sortByJson(
+      result.delphiEventMap.map((entry) => ({
+        formName: entry.formName,
+        componentName: entry.componentName,
+        componentClass: entry.componentClass,
+        eventName: entry.eventName,
+        handlerName: entry.handlerName,
+        filePath: entry.filePath,
+        lineNumber: entry.lineNumber,
+        resolvedMethod: entry.resolvedMethod,
+        resolvedFile: entry.resolvedFile,
+        status: entry.status,
+      }))
+    ),
+    delphiDataBindings: sortByJson(
+      result.delphiDataBindings.map((binding) => ({
+        formName: binding.formName,
+        componentName: binding.componentName,
+        componentClass: binding.componentClass,
+        dataSource: binding.dataSource,
+        dataSet: binding.dataSet,
+        dataField: binding.dataField,
+        readOnly: binding.readOnly,
+        enabled: binding.enabled,
+        visible: binding.visible,
+        accessHint: binding.accessHint,
+        confidence: binding.confidence,
+        sourceFile: binding.sourceFile,
       }))
     ),
   };
