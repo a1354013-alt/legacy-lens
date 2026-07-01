@@ -109,16 +109,14 @@ warningCount: 12
 
 The exported ZIP is generated **only** from the persisted server-side snapshot (DB), and the same snapshot yields the same ZIP output.
 
+See [docs/report-format.md](docs/report-format.md) for the purpose, intended readers, and data sources for every report file.
+
 Files at the ZIP root:
-- `metadata.json` (audit/replay metadata)
-- `analysis-summary.json` (metrics + warnings summary)
-- `import-warnings.json`
 - `FLOW.md`
 - `DATA_DEPENDENCY.md`
 - `RISKS.md`
 - `RULES.yaml`
 - `IMPACT_ANALYSIS.md`
-- `impact-analysis.json`
 - `EXECUTIVE_SUMMARY.md`
 - `PROJECT_OVERVIEW.md`
 - `FILE_INVENTORY.md`
@@ -127,6 +125,10 @@ Files at the ZIP root:
 - `DELPHI_DATA_BINDINGS.md`
 - `LIMITATIONS.md`
 - `FULL_FINDINGS.json`
+- `impact-analysis.json`
+- `import-warnings.json`
+- `metadata.json` (audit/replay metadata)
+- `analysis-summary.json` (metrics + warnings summary)
 
 `EXECUTIVE_SUMMARY.md` is a stakeholder-oriented overview of the persisted analysis. It summarizes project scope, analysis confidence, top findings, Delphi-specific audit signals, recommended next actions, and manual-review limitations without treating heuristic static analysis as compiler-grade proof.
 
@@ -631,6 +633,7 @@ Import pipeline is intentionally bounded:
 - Architecture notes: [docs/architecture.md](docs/architecture.md)
 - Deployment notes: [docs/deployment.md](docs/deployment.md)
 - Known limitations: [docs/known-limitations.md](docs/known-limitations.md)
+- Report format: [docs/report-format.md](docs/report-format.md)
 - Testing notes: [docs/testing.md](docs/testing.md)
 - Security audit summary: [docs/security-audit.md](docs/security-audit.md)
 - Accepted audit risks: [docs/security-audit-accepted-risks.md](docs/security-audit-accepted-risks.md)
