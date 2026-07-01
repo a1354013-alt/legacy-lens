@@ -354,15 +354,22 @@ describe("appRouter integration", () => {
       "RISKS.md",
       "RULES.yaml",
       "IMPACT_ANALYSIS.md",
+      "EXECUTIVE_SUMMARY.md",
       "metadata.json",
       "PROJECT_OVERVIEW.md",
       "FILE_INVENTORY.md",
       "DELPHI_FIELD_ACCESS.md",
+      "DELPHI_EVENT_MAP.md",
+      "DELPHI_DATA_BINDINGS.md",
       "LIMITATIONS.md",
       "FULL_FINDINGS.json",
+      "impact-analysis.json",
+      "import-warnings.json",
+      "analysis-summary.json",
     ]) {
       expect(zip.file(expectedPath), expectedPath).toBeTruthy();
     }
+    await expect(zip.file("EXECUTIVE_SUMMARY.md")!.async("text")).resolves.toContain("Project Summary");
     await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Project name: integration-project");
     await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.toContain("main.go");
     await expect(zip.file("LIMITATIONS.md")!.async("text")).resolves.toContain("dynamic SQL");

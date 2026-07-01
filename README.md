@@ -119,6 +119,16 @@ Files at the ZIP root:
 - `RULES.yaml`
 - `IMPACT_ANALYSIS.md`
 - `impact-analysis.json`
+- `EXECUTIVE_SUMMARY.md`
+- `PROJECT_OVERVIEW.md`
+- `FILE_INVENTORY.md`
+- `DELPHI_FIELD_ACCESS.md`
+- `DELPHI_EVENT_MAP.md`
+- `DELPHI_DATA_BINDINGS.md`
+- `LIMITATIONS.md`
+- `FULL_FINDINGS.json`
+
+`EXECUTIVE_SUMMARY.md` is a stakeholder-oriented overview of the persisted analysis. It summarizes project scope, analysis confidence, top findings, Delphi-specific audit signals, recommended next actions, and manual-review limitations without treating heuristic static analysis as compiler-grade proof.
 
 `IMPACT_ANALYSIS.md` and `impact-analysis.json` are generated from the persisted project snapshot and summarize:
 - total files / symbols / dependencies / risks / rules

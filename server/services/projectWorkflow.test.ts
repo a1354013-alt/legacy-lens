@@ -2793,6 +2793,39 @@ describe("project workflow", () => {
         riskCount: 1,
         ruleCount: 1,
         warningCount: 0,
+        delphiEventMap: [
+          {
+            formName: "InvoiceForm",
+            componentName: "SaveButton",
+            componentClass: "TButton",
+            eventName: "OnClick",
+            handlerName: "SaveButtonClick",
+            filePath: "repo/Invoice.dfm",
+            lineNumber: 3,
+            resolvedMethod: null,
+            resolvedFile: null,
+            status: "unresolved",
+            warnings: ["Handler was not resolved."],
+          },
+        ],
+        delphiDataBindings: [
+          {
+            formName: "InvoiceForm",
+            componentName: "OrderIdEdit",
+            componentClass: "TDBEdit",
+            dataSource: "OrdersSource",
+            dataSet: null,
+            dataField: "OrderId",
+            readOnly: false,
+            enabled: true,
+            visible: true,
+            accessHint: "unresolved",
+            confidence: "low",
+            sourceFile: "repo/Invoice.dfm",
+            lineNumber: 7,
+            warnings: ["DataSet was not resolved."],
+          },
+        ],
         confidence: finalConfidence,
       },
       warningsJson: [],
@@ -2810,12 +2843,32 @@ describe("project workflow", () => {
     expect(zip.file("RISKS.md")).toBeTruthy();
     expect(zip.file("RULES.yaml")).toBeTruthy();
     expect(zip.file("IMPACT_ANALYSIS.md")).toBeTruthy();
+    expect(zip.file("EXECUTIVE_SUMMARY.md")).toBeTruthy();
     expect(zip.file("PROJECT_OVERVIEW.md")).toBeTruthy();
     expect(zip.file("FILE_INVENTORY.md")).toBeTruthy();
     expect(zip.file("DELPHI_FIELD_ACCESS.md")).toBeTruthy();
+    expect(zip.file("DELPHI_EVENT_MAP.md")).toBeTruthy();
+    expect(zip.file("DELPHI_DATA_BINDINGS.md")).toBeTruthy();
     expect(zip.file("LIMITATIONS.md")).toBeTruthy();
     expect(zip.file("FULL_FINDINGS.json")).toBeTruthy();
+    expect(zip.file("impact-analysis.json")).toBeTruthy();
+    expect(zip.file("import-warnings.json")).toBeTruthy();
+    expect(zip.file("metadata.json")).toBeTruthy();
+    expect(zip.file("analysis-summary.json")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
+    const executiveSummary = await zip.file("EXECUTIVE_SUMMARY.md")!.async("text");
+    expect(executiveSummary).toContain("## Project Summary");
+    expect(executiveSummary).toContain("## Analysis Confidence");
+    expect(executiveSummary).toContain("- Score: 64/100");
+    expect(executiveSummary).toContain("## Key Findings Top 5");
+    expect(executiveSummary).toContain("FieldByName/ParamByName write access");
+    expect(executiveSummary).toContain("## Delphi Audit Summary");
+    expect(executiveSummary).toContain("Resolved / unresolved event handlers: 0 / 1");
+    expect(executiveSummary).toContain("Resolved / unresolved data bindings: 0 / 1");
+    expect(executiveSummary).toContain("## Recommended Next Actions");
+    expect(executiveSummary).toContain("P0:");
+    expect(executiveSummary).toContain("## Manual Review Notice");
+    expect(executiveSummary).toContain("heuristic static analysis");
     await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Delphi-like files: 1");
     await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Analysis Confidence");
     await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("- Score: 64/100");

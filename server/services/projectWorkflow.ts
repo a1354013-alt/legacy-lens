@@ -2879,6 +2879,161 @@ function reportLimitationLines() {
   ];
 }
 
+function countBy<T>(items: T[], predicate: (item: T) => boolean) {
+  return items.filter(predicate).length;
+}
+
+function countRiskMatches(items: Array<typeof risks.$inferSelect>, pattern: RegExp) {
+  return countBy(items, (risk) => pattern.test(`${risk.riskType ?? ""} ${risk.title ?? ""} ${risk.description ?? ""}`));
+}
+
+function countWarningMatches(items: Array<AnalysisWarning | ImportWarning>, pattern: RegExp) {
+  return countBy(items, (warning) => pattern.test(`${warning.code ?? ""} ${warning.message ?? ""}`));
+}
+
+function renderExecutiveSummaryMarkdown(input: {
+  metadata: {
+    projectName: string;
+    createdAt: string;
+    focusLanguage: string | null;
+  };
+  project: typeof projects.$inferSelect | null;
+  metrics: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>["summaryJson"];
+  confidence?: AnalysisConfidence | null;
+  languageCounts: { delphiLike: number; go: number; sql: number; unknown: number };
+  limitedFileCount: number;
+  fileInventoryItems: Array<{ analysisSucceeded: boolean }>;
+  risks: Array<typeof risks.$inferSelect>;
+  warnings: AnalysisWarning[];
+  importWarnings: ImportWarning[];
+  delphiEventMap: Array<Record<string, unknown>>;
+  delphiDataBindings: Array<Record<string, unknown>>;
+  fieldAccessItems: Array<{ accessKind: string; operation: string }>;
+}) {
+  const confidenceLines = input.confidence
+    ? [
+        `- Score: ${input.confidence.score}/100`,
+        `- Level: ${input.confidence.level}`,
+        "",
+        "Top confidence drivers:",
+        ...input.confidence.breakdown
+          .filter((item) => item.impact < 0)
+          .slice(0, 5)
+          .map((item) => `- ${item.label}: ${item.impact} (${item.reason})`),
+      ]
+    : ["- Score: unavailable", "- Level: unavailable", "", "Top confidence drivers:", "- Confidence breakdown unavailable."];
+  if (input.confidence && confidenceLines[4] === undefined) {
+    confidenceLines.push("- No major confidence penalties were detected.");
+  }
+
+  const allWarnings = [...input.importWarnings, ...input.warnings];
+  const unresolvedEventCount = countBy(input.delphiEventMap, (entry) => entry.status === "unresolved");
+  const resolvedEventCount = countBy(input.delphiEventMap, (entry) => entry.status === "resolved");
+  const unresolvedBindingCount = countBy(
+    input.delphiDataBindings,
+    (binding) => binding.confidence !== "high" || binding.accessHint === "unresolved"
+  );
+  const resolvedBindingCount = Math.max(0, input.delphiDataBindings.length - unresolvedBindingCount);
+  const writeAccessCount = countBy(input.fieldAccessItems, (item) => item.operation === "write" || item.operation === "read-write");
+  const readAccessCount = Math.max(0, input.fieldAccessItems.length - writeAccessCount);
+  const dynamicSqlCount = countWarningMatches(allWarnings, /SQL_DYNAMIC_STRING|dynamic sql/i) + countRiskMatches(input.risks, /dynamic sql|sql\.text|sql\.add/i);
+  const hardcodedConfigCount = countRiskMatches(input.risks, /hardcoded|connection string|filesystem path/i);
+  const emptyExceptionCount = countRiskMatches(input.risks, /empty exception|empty except|swallowed exception/i);
+  const unknownFileCount = input.languageCounts.unknown;
+  const skippedOrDegradedCount = (input.metrics?.skippedFileCount ?? 0) + (input.metrics?.degradedFileCount ?? 0);
+
+  const keyFindingCandidates = [
+    dynamicSqlCount > 0 ? `Dynamic SQL requires review in ${dynamicSqlCount} detected signal(s).` : null,
+    hardcodedConfigCount > 0 ? `Hardcoded path or connection string findings appear in ${hardcodedConfigCount} risk item(s).` : null,
+    emptyExceptionCount > 0 ? `Empty or swallowed exception handler findings appear in ${emptyExceptionCount} risk item(s).` : null,
+    unresolvedEventCount > 0 ? `${unresolvedEventCount} DFM/FMX event handler binding(s) are unresolved.` : null,
+    unresolvedBindingCount > 0 ? `${unresolvedBindingCount} Delphi DataSource/DataSet binding(s) are unresolved or lower confidence.` : null,
+    writeAccessCount > 0 ? `${writeAccessCount} FieldByName/ParamByName write access signal(s) were detected.` : null,
+    input.limitedFileCount > 0 ? `${input.limitedFileCount} file(s) have limited or heuristic analysis signals.` : null,
+    unknownFileCount > 0 ? `${unknownFileCount} scanned file(s) have unknown language or extension.` : null,
+    input.risks.length > 0 ? `${input.risks.length} persisted risk finding(s) are available for engineering review.` : null,
+  ].filter((item): item is string => Boolean(item));
+  const keyFindings = keyFindingCandidates.slice(0, 5);
+
+  const p0 = [
+    unresolvedEventCount > 0 ? "Manually confirm unresolved event handlers before changing related forms or workflows." : null,
+    dynamicSqlCount > 0 || writeAccessCount > 0 ? "Manually review dynamic SQL and high-risk write access paths." : null,
+    hardcodedConfigCount > 0 ? "Confirm whether hardcoded connection strings or paths should move to configuration." : null,
+  ].filter((item): item is string => Boolean(item));
+  const p1 = [
+    input.risks.length > 0 || input.fieldAccessItems.length > 0 ? "Fill in data-flow documentation for the highest-risk flows." : null,
+    input.risks.length > 0 || writeAccessCount > 0 ? "Add or refresh tests around high-risk flows before refactoring." : null,
+    unresolvedBindingCount > 0 || input.delphiDataBindings.length > 0 ? "Clarify DataSource/DataSet ownership for DB-aware Delphi components." : null,
+  ].filter((item): item is string => Boolean(item));
+  const p2 = [
+    input.risks.length > 0 ? "Refactor low-risk duplicate or hard-to-follow logic after P0/P1 review is complete." : null,
+    input.languageCounts.delphiLike > 0 || input.languageCounts.unknown > 0 ? "Improve naming and local documentation around legacy modules." : null,
+    "Add examples and onboarding notes for future maintainers.",
+  ].filter((item): item is string => Boolean(item));
+
+  const renderActions = (items: string[]) => (items.length > 0 ? items.map((item) => `- ${item}`) : ["- No urgent action was inferred from the persisted findings."]);
+  const hasDelphiFindings = input.languageCounts.delphiLike > 0 || input.delphiEventMap.length > 0 || input.delphiDataBindings.length > 0 || input.fieldAccessItems.length > 0;
+
+  return [
+    "# EXECUTIVE_SUMMARY",
+    "",
+    "This summary is intended for non-engineering stakeholders and engineering leads who need a quick, conservative view of the analysis results.",
+    "",
+    "## Project Summary",
+    `- Project name: ${input.metadata.projectName}`,
+    `- Import source type: ${input.project?.sourceType ?? "unknown"}`,
+    `- Focus language: ${input.metadata.focusLanguage ?? "unknown"}`,
+    `- Analyzed at: ${input.metadata.createdAt}`,
+    `- Scanned files: ${input.metrics?.fileCount ?? input.fileInventoryItems.length}`,
+    `- Successfully analyzed files: ${input.metrics?.analyzedFileCount ?? countBy(input.fileInventoryItems, (item) => item.analysisSucceeded)}`,
+    `- Skipped / degraded files: ${skippedOrDegradedCount}`,
+    `- Language distribution: Delphi-like ${input.languageCounts.delphiLike}, Go ${input.languageCounts.go}, SQL ${input.languageCounts.sql}, Unknown ${input.languageCounts.unknown}`,
+    `- Delphi-like files: ${input.languageCounts.delphiLike}`,
+    "",
+    "## Analysis Confidence",
+    ...confidenceLines,
+    "",
+    "## Key Findings Top 5",
+    ...(keyFindings.length > 0 ? keyFindings.map((item, index) => `${index + 1}. ${item}`) : ["1. No high-priority finding signals were detected in the persisted report."]),
+    "",
+    "## Delphi Audit Summary",
+    ...(hasDelphiFindings
+      ? [
+          `- DFM/FMX event bindings: ${input.delphiEventMap.length}`,
+          `- Resolved / unresolved event handlers: ${resolvedEventCount} / ${unresolvedEventCount}`,
+          `- DB-aware data bindings: ${input.delphiDataBindings.length}`,
+          `- Resolved / unresolved data bindings: ${resolvedBindingCount} / ${unresolvedBindingCount}`,
+          `- FieldByName / ParamByName accesses: ${input.fieldAccessItems.length}`,
+          `- Read / write access summary: ${readAccessCount} / ${writeAccessCount}`,
+        ]
+      : ["- No Delphi-specific findings were detected."]),
+    "",
+    "## Recommended Next Actions",
+    "P0:",
+    ...renderActions(p0),
+    "",
+    "P1:",
+    ...renderActions(p1),
+    "",
+    "P2:",
+    ...renderActions(p2),
+    "",
+    "## Manual Review Notice",
+    "Legacy Lens uses heuristic static analysis. It is not a Delphi compiler and it is not a complete IDE parser.",
+    "Use this report to guide review, prioritization, and follow-up investigation rather than as a guarantee of complete program behavior.",
+    "",
+    "The following cases may require manual review:",
+    "- `with` blocks",
+    "- Runtime event binding",
+    "- Inherited forms",
+    "- Dynamic SQL",
+    "- Encoding issues",
+    "- Dataset ownership",
+    "- Runtime-created components",
+    "",
+  ].join("\n");
+}
+
 function resolveReportConfidence(input: {
   report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>;
   importWarnings: ImportWarning[];
@@ -3122,6 +3277,21 @@ async function buildReportCompletenessArtifacts(
   const delphiEventMapMarkdown = renderDelphiEventMapMarkdown(delphiEventMap);
   const delphiDataBindingsMarkdown = renderDelphiDataBindingsMarkdown(delphiDataBindings);
   const limitationsMarkdown = ["# LIMITATIONS", "", ...reportLimitationLines(), ""].join("\n");
+  const executiveSummaryMarkdown = renderExecutiveSummaryMarkdown({
+    metadata: input.metadata,
+    project: input.project,
+    metrics: input.report.summaryJson,
+    confidence,
+    languageCounts,
+    limitedFileCount: limitedFilePaths.size,
+    fileInventoryItems,
+    risks: sortedRisks,
+    warnings: analyzerWarnings,
+    importWarnings,
+    delphiEventMap,
+    delphiDataBindings,
+    fieldAccessItems,
+  });
 
   const fullFindings = {
     metadata: {
@@ -3184,6 +3354,7 @@ async function buildReportCompletenessArtifacts(
   };
 
   return {
+    executiveSummaryMarkdown,
     projectOverviewMarkdown,
     fileInventoryMarkdown,
     delphiFieldAccessMarkdown,
@@ -4124,6 +4295,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     { path: "RISKS.md", content: readyReport.risksMarkdown },
     { path: "RULES.yaml", content: readyReport.rulesYaml },
     { path: "IMPACT_ANALYSIS.md", content: impactMarkdown },
+    { path: "EXECUTIVE_SUMMARY.md", content: reportCompletenessArtifacts.executiveSummaryMarkdown },
     { path: "PROJECT_OVERVIEW.md", content: reportCompletenessArtifacts.projectOverviewMarkdown },
     { path: "FILE_INVENTORY.md", content: reportCompletenessArtifacts.fileInventoryMarkdown },
     { path: "DELPHI_FIELD_ACCESS.md", content: reportCompletenessArtifacts.delphiFieldAccessMarkdown },
