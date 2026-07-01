@@ -95,7 +95,15 @@ function AnalysisConfidenceCard({
   };
 }) {
   if (!confidence) {
-    return null;
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Analysis Confidence Score</CardTitle>
+          <CardDescription>Heuristic analysis confidence for this report.</CardDescription>
+        </CardHeader>
+        <CardContent className="text-sm text-slate-600">Confidence unavailable for this analysis result.</CardContent>
+      </Card>
+    );
   }
 
   const penalties = confidence.breakdown.filter((item) => item.impact < 0).slice(0, 6);

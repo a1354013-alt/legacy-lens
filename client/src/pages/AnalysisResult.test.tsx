@@ -296,6 +296,33 @@ describe("AnalysisResult", () => {
     expect(html).toContain("需要人工複核");
   });
 
+  it("shows confidence unavailable when the backend result has no final confidence", () => {
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        metrics: {
+          fileCount: 1,
+          eligibleFileCount: 1,
+          analyzedFileCount: 1,
+          skippedFileCount: 0,
+          heuristicFileCount: 0,
+          degradedFileCount: 0,
+          symbolCount: 0,
+          dependencyCount: 0,
+          fieldCount: 0,
+          fieldDependencyCount: 0,
+          riskCount: 0,
+          ruleCount: 0,
+          warningCount: 0,
+        },
+      })
+    );
+
+    const html = renderToString(<AnalysisResult />);
+
+    expect(html).toContain("Analysis Confidence Score");
+    expect(html).toContain("Confidence unavailable for this analysis result.");
+  });
+
   it("returns stable fallback text when no document content exists", () => {
     expect(renderDocumentPreview(null)).toBe("目前沒有可預覽的文件內容。");
   });

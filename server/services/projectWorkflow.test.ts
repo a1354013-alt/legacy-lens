@@ -697,6 +697,18 @@ describe("project workflow", () => {
         expect.objectContaining({ code: "ANALYSIS_INPUT_SUMMARY", level: "note" }),
       ])
     );
+    const persistedMetrics = fakeDb.store.analysisResults[0]?.summaryJson as {
+      warningCount?: number;
+      confidence?: { score: number; level: string; breakdown: Array<{ label: string; reason: string }> };
+    };
+    expect(persistedMetrics.warningCount).toBe(3);
+    expect(persistedMetrics.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
+    expect(persistedMetrics.confidence?.breakdown).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Import warnings", reason: "2 import warnings were recorded." }),
+        expect.objectContaining({ label: "Analyzer warnings", reason: "2 analyzer warnings were recorded." }),
+      ])
+    );
     expect(loggerMock.info).toHaveBeenCalledWith(
       "Analysis parser.completed",
       expect.objectContaining({
@@ -2706,6 +2718,14 @@ describe("project workflow", () => {
 
   it("builds a downloadable report archive with the expected files", async () => {
     const { buildReportArchive } = await import("./projectWorkflow");
+    const finalConfidence = {
+      score: 64,
+      level: "medium",
+      breakdown: [
+        { label: "Base score", impact: 100, reason: "Start from full confidence." },
+        { label: "Persisted final penalty", impact: -36, reason: "Use the persisted final analysis result confidence." },
+      ],
+    };
     fakeDb.store.projects.push({
       id: 1,
       userId: 7,
@@ -2759,7 +2779,22 @@ describe("project workflow", () => {
       dataDependencyMarkdown: "# DATA_DEPENDENCY",
       risksMarkdown: "# RISKS",
       rulesYaml: "rules: []",
-      summaryJson: { fileCount: 1 },
+      summaryJson: {
+        fileCount: 2,
+        eligibleFileCount: 2,
+        analyzedFileCount: 2,
+        skippedFileCount: 0,
+        heuristicFileCount: 0,
+        degradedFileCount: 0,
+        symbolCount: 2,
+        dependencyCount: 1,
+        fieldCount: 1,
+        fieldDependencyCount: 1,
+        riskCount: 1,
+        ruleCount: 1,
+        warningCount: 0,
+        confidence: finalConfidence,
+      },
       warningsJson: [],
       errorMessage: null,
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
@@ -2783,6 +2818,8 @@ describe("project workflow", () => {
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
     await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Delphi-like files: 1");
     await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Analysis Confidence");
+    await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("- Score: 64/100");
+    await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("- Level: medium");
     await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.toContain("repo/Invoice.pas");
     await expect(zip.file("DELPHI_FIELD_ACCESS.md")!.async("text")).resolves.toContain("param:OrderId");
     await expect(zip.file("LIMITATIONS.md")!.async("text")).resolves.toContain("heuristic static analysis");
@@ -2795,17 +2832,17 @@ describe("project workflow", () => {
       risks: unknown[];
     };
     expect(fullFindings.metadata.sourceType).toBe("upload");
-    expect(fullFindings.metadata.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
-    expect(fullFindings.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), breakdown: expect.any(Array) }));
+    expect(fullFindings.metadata.confidence).toEqual(finalConfidence);
+    expect(fullFindings.confidence).toEqual(finalConfidence);
     expect(fullFindings.symbols).toHaveLength(2);
     expect(fullFindings.dependencies).toHaveLength(1);
     expect(fullFindings.risks).toHaveLength(1);
     expect(fullFindings.fieldAccesses).toEqual([expect.objectContaining({ owner: "Query", name: "OrderId", operation: "write" })]);
 
     const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { confidence?: unknown };
-    expect(metadata.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
+    expect(metadata.confidence).toEqual(finalConfidence);
     const summary = JSON.parse(await zip.file("analysis-summary.json")!.async("text")) as { confidence?: unknown };
-    expect(summary.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), breakdown: expect.any(Array) }));
+    expect(summary.confidence).toEqual(finalConfidence);
   });
 
   it("fails oversized report exports before ZIP generation allocates the archive buffer", async () => {

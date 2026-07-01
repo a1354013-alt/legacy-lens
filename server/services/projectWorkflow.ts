@@ -23,7 +23,7 @@ import type {
   SymbolsPageInput,
 } from "../../shared/contracts";
 import type { ImpactTargetType, ProjectStatus } from "../../shared/contracts";
-import { calculateAnalysisConfidence } from "../../shared/analysisConfidence";
+import { calculateAnalysisConfidence, type AnalysisConfidence } from "../../shared/analysisConfidence";
 import { projectStatusLabels } from "../../shared/contracts";
 import {
   analysisResults,
@@ -1443,9 +1443,61 @@ function mergeAnalysisWarnings(base: AnalysisWarning[], additions: AnalysisWarni
   return merged;
 }
 
+function isAnalysisConfidence(value: unknown): value is AnalysisConfidence {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const confidence = value as Partial<AnalysisConfidence>;
+  return (
+    typeof confidence.score === "number" &&
+    ["high", "medium", "low"].includes(String(confidence.level)) &&
+    Array.isArray(confidence.breakdown)
+  );
+}
+
+function inferAnalysisResultFileTypes(result: ProjectAnalysisResult) {
+  const paths = [
+    ...result.symbols.map((symbol) => symbol.file),
+    ...result.fieldReferences.map((reference) => reference.file),
+    ...result.risks.map((risk) => risk.sourceFile),
+    ...result.rules.map((rule) => rule.sourceFile),
+    ...result.warnings.map((warning) => warning.filePath),
+  ];
+
+  return paths
+    .filter((path): path is string => Boolean(path))
+    .map((path) => path.match(/\.[^.\\/]+$/)?.[0] ?? path);
+}
+
+function recalculateAnalysisResultConfidence(
+  result: ProjectAnalysisResult,
+  context: { importWarnings?: ImportWarning[]; fileTypes?: string[] } = {}
+): ProjectAnalysisResult {
+  const metrics = {
+    ...result.metrics,
+    warningCount: result.warnings.length,
+  };
+
+  return {
+    ...result,
+    metrics: {
+      ...metrics,
+      confidence: calculateAnalysisConfidence({
+        metrics,
+        importWarnings: context.importWarnings ?? [],
+        analyzerWarnings: result.warnings,
+        fileTypes: context.fileTypes ?? inferAnalysisResultFileTypes(result),
+        risks: result.risks,
+      }),
+    },
+  };
+}
+
 function applyAdditionalAnalysisWarnings(
   result: ProjectAnalysisResult,
-  additionalWarnings: AnalysisWarning[]
+  additionalWarnings: AnalysisWarning[],
+  context: { importWarnings?: ImportWarning[]; fileTypes?: string[] } = {}
 ): ProjectAnalysisResult {
   if (additionalWarnings.length === 0) {
     return result;
@@ -1460,7 +1512,7 @@ function applyAdditionalAnalysisWarnings(
         ? "completed_with_warnings"
         : result.status;
 
-  return {
+  return recalculateAnalysisResultConfidence({
     ...result,
     status: nextStatus,
     warnings,
@@ -1468,7 +1520,7 @@ function applyAdditionalAnalysisWarnings(
       ...result.metrics,
       warningCount,
     },
-  };
+  }, context);
 }
 
 function getAnalysisResultErrorMessage(result: Pick<ProjectAnalysisResult, "status">) {
@@ -1514,7 +1566,10 @@ function buildDocumentTruncationFooter(kind: "markdown" | "yaml") {
     : "\n\n> Truncated to fit Legacy Lens database storage limits.\n";
 }
 
-function makeAnalysisPartialResultPersistable(result: ProjectAnalysisResult): ProjectAnalysisResult {
+function makeAnalysisPartialResultPersistable(
+  result: ProjectAnalysisResult,
+  context: { importWarnings?: ImportWarning[]; fileTypes?: string[] } = {}
+): ProjectAnalysisResult {
   const truncationWarnings: AnalysisWarning[] = [];
   const truncateDocument = (value: string, documentName: string, kind: "markdown" | "yaml") => {
     const truncated = truncateUtf8(value, MYSQL_MEDIUMTEXT_MAX_BYTES, buildDocumentTruncationFooter(kind));
@@ -1540,7 +1595,7 @@ function makeAnalysisPartialResultPersistable(result: ProjectAnalysisResult): Pr
   }
 
   const warnings = mergeAnalysisWarnings(result.warnings, truncationWarnings);
-  return {
+  return recalculateAnalysisResultConfidence({
     ...result,
     status: result.status === "failed" ? "failed" : result.status === "partial" ? "partial" : "completed_with_warnings",
     warnings,
@@ -1552,7 +1607,7 @@ function makeAnalysisPartialResultPersistable(result: ProjectAnalysisResult): Pr
       ...result.metrics,
       warningCount: warnings.length,
     },
-  };
+  }, context);
 }
 
 function throwAnalysisPersistError(
@@ -2539,8 +2594,13 @@ export async function analyzeProject(projectId: number, userId: number, executio
       });
     }
 
-    result = applyAdditionalAnalysisWarnings(result, buildImportWarningSummaryWarnings(projectFiles, project.importWarningsJson ?? []));
-    result = makeAnalysisPartialResultPersistable(result);
+    const confidenceContext = {
+      importWarnings: project.importWarningsJson ?? [],
+      fileTypes: projectFiles.map((file) => file.fileType ?? file.filePath.match(/\.[^.\\/]+$/)?.[0] ?? file.fileName),
+    };
+    result = applyAdditionalAnalysisWarnings(result, buildImportWarningSummaryWarnings(projectFiles, project.importWarningsJson ?? []), confidenceContext);
+    result = makeAnalysisPartialResultPersistable(result, confidenceContext);
+    result = recalculateAnalysisResultConfidence(result, confidenceContext);
     logAnalysisEvent("info", "parser.completed", {
       projectId,
       jobId,
@@ -2819,6 +2879,27 @@ function reportLimitationLines() {
   ];
 }
 
+function resolveReportConfidence(input: {
+  report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>;
+  importWarnings: ImportWarning[];
+  analyzerWarnings: AnalysisWarning[];
+  fileTypes: string[];
+  risks: Array<typeof risks.$inferSelect>;
+}) {
+  const persistedConfidence = input.report.summaryJson?.confidence;
+  if (isAnalysisConfidence(persistedConfidence)) {
+    return persistedConfidence;
+  }
+
+  return calculateAnalysisConfidence({
+    metrics: input.report.summaryJson,
+    importWarnings: input.importWarnings,
+    analyzerWarnings: input.analyzerWarnings,
+    fileTypes: input.fileTypes,
+    risks: input.risks,
+  });
+}
+
 async function buildReportCompletenessArtifacts(
   db: Awaited<ReturnType<typeof requireDb>>,
   input: {
@@ -2955,11 +3036,11 @@ async function buildReportCompletenessArtifacts(
       };
     })
     .filter((item) => item.filePath.toLowerCase().endsWith(".pas") || item.accessKind === "param" || item.context?.match(/FieldByName|ParamByName/i));
-  const confidence = calculateAnalysisConfidence({
-    metrics: input.report.summaryJson,
+  const confidence = resolveReportConfidence({
+    report: input.report,
     importWarnings,
     analyzerWarnings,
-    fileTypes: sortedFiles.map((file) => file.fileType),
+    fileTypes: sortedFiles.map((file) => file.fileType).filter((fileType): fileType is string => Boolean(fileType)),
     risks: sortedRisks,
   });
 
