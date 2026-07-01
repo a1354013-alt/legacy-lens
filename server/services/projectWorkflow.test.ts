@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DependenciesPageInput, RisksPageInput } from "../../shared/contracts";
 
 type Row = Record<string, unknown>;
@@ -386,6 +386,16 @@ beforeEach(() => {
   loggerMock.info.mockClear();
   loggerMock.warn.mockClear();
   loggerMock.error.mockClear();
+});
+
+afterEach(async () => {
+  vi.useRealTimers();
+  try {
+    const { resetProjectJobWorkerSchedulerStateForTests } = await import("./projectWorkflow");
+    resetProjectJobWorkerSchedulerStateForTests();
+  } catch {
+    // Ignore module-load failures in cleanup; the test itself should surface them.
+  }
 });
 
 describe("project workflow", () => {
@@ -1505,6 +1515,189 @@ describe("project workflow", () => {
       expect(recovered).toBe(0);
       expect(fakeDb.store.projectJobs[0]).toMatchObject({ status: "running" });
       expect(fakeDb.store.projects[0]).toMatchObject({ status: "analyzing" });
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
+  it("does not start polling when the project worker is disabled", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "false";
+
+    const {
+      getProjectJobWorkerSchedulerStateForTests,
+      resetProjectJobWorkerSchedulerStateForTests,
+      startProjectJobWorkerPolling,
+    } = await import("./projectWorkflow");
+
+    try {
+      resetProjectJobWorkerSchedulerStateForTests();
+
+      const timer = startProjectJobWorkerPolling(25);
+
+      expect(timer).toBeNull();
+      expect(getProjectJobWorkerSchedulerStateForTests()).toMatchObject({
+        kickCount: 0,
+        loopStartCount: 0,
+        pollingActive: false,
+      });
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
+  it("periodically kicks the project worker loop on worker-enabled processes", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "true";
+    vi.useFakeTimers();
+
+    const {
+      getProjectJobWorkerSchedulerStateForTests,
+      resetProjectJobWorkerSchedulerStateForTests,
+      startProjectJobWorkerPolling,
+    } = await import("./projectWorkflow");
+
+    try {
+      resetProjectJobWorkerSchedulerStateForTests();
+      startProjectJobWorkerPolling(25);
+
+      await vi.advanceTimersByTimeAsync(80);
+
+      expect(getProjectJobWorkerSchedulerStateForTests()).toMatchObject({
+        pollingActive: true,
+      });
+      expect(getProjectJobWorkerSchedulerStateForTests().kickCount).toBeGreaterThanOrEqual(3);
+      expect(getProjectJobWorkerSchedulerStateForTests().loopStartCount).toBeGreaterThanOrEqual(3);
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
+  it("does not reenter the worker loop when polling fires during an active run", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "true";
+    vi.useFakeTimers();
+    vi.resetModules();
+
+    let resolveJob!: () => void;
+    const runProjectJobMock = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveJob = resolve;
+        })
+    );
+    vi.doMock("./jobWorker", () => ({
+      runProjectJob: runProjectJobMock,
+    }));
+
+    const {
+      getProjectJobWorkerSchedulerStateForTests,
+      resetProjectJobWorkerSchedulerStateForTests,
+      startProjectJobWorkerPolling,
+    } = await import("./projectWorkflow");
+
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    try {
+      resetProjectJobWorkerSchedulerStateForTests();
+      startProjectJobWorkerPolling(20);
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(runProjectJobMock).toHaveBeenCalledTimes(1);
+      expect(getProjectJobWorkerSchedulerStateForTests().loopStartCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(80);
+      expect(getProjectJobWorkerSchedulerStateForTests().kickCount).toBeGreaterThanOrEqual(2);
+      expect(getProjectJobWorkerSchedulerStateForTests().loopStartCount).toBe(1);
+      expect(runProjectJobMock).toHaveBeenCalledTimes(1);
+
+      resolveJob();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      resolveJob?.();
+      vi.doUnmock("./jobWorker");
+      vi.resetModules();
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
+  it("lets a worker-enabled process pick up a queued job via polling after a web-only enqueue", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "false";
+    vi.useFakeTimers();
+
+    const {
+      getProjectJobWorkerSchedulerStateForTests,
+      queueAnalyzeProject,
+      resetProjectJobWorkerSchedulerStateForTests,
+      startProjectJobWorkerPolling,
+    } = await import("./projectWorkflow");
+
+    seedProject(1, { status: "ready", analysisProgress: 100 });
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 1,
+      filePath: "main.go",
+      fileName: "main.go",
+      fileType: ".go",
+      content: "package main",
+      lineCount: 1,
+      status: "stored",
+    });
+    analyzerResult = createPersistenceAnalysisResult();
+
+    try {
+      resetProjectJobWorkerSchedulerStateForTests();
+      await queueAnalyzeProject(1, 7);
+
+      expect(fakeDb.store.projectJobs[0]).toMatchObject({ status: "queued" });
+      expect(getProjectJobWorkerSchedulerStateForTests().kickCount).toBe(1);
+      expect(getProjectJobWorkerSchedulerStateForTests().loopStartCount).toBe(0);
+
+      process.env.PROJECT_WORKER_ENABLED = "true";
+      startProjectJobWorkerPolling(20);
+
+      await vi.advanceTimersByTimeAsync(80);
+
+      expect(fakeDb.store.projectJobs[0]).toMatchObject({
+        status: "completed",
+        progress: 100,
+      });
+      expect(fakeDb.store.projects[0]).toMatchObject({
+        status: "completed",
+        analysisProgress: 100,
+      });
     } finally {
       if (originalValue === undefined) {
         delete process.env.PROJECT_WORKER_ENABLED;

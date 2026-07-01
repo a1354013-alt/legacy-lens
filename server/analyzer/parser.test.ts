@@ -733,7 +733,7 @@ describe("SQLParser", () => {
       expect.arrayContaining([
         expect.objectContaining({ field: "Status", type: "write", symbolName: "UpdateOrder" }),
         expect.objectContaining({ field: "OrderId", type: "write", symbolName: "UpdateOrder" }),
-        expect.objectContaining({ field: "Amount", symbolName: "UpdateOrder" }),
+        expect.objectContaining({ field: "Amount", type: "write", symbolName: "UpdateOrder" }),
       ])
     );
     expect(warnings.some((warning) => warning.code === "HEURISTIC_ANALYSIS")).toBe(true);
@@ -746,6 +746,8 @@ describe("SQLParser", () => {
         "interface",
         "implementation",
         "procedure UpdateOrder;",
+        "var",
+        "  x: Double;",
         "begin",
         "  FieldByName('Status').AsString := 'paid';",
         "  x := FieldByName('Amount').AsFloat;",
@@ -754,6 +756,11 @@ describe("SQLParser", () => {
         "  x := ParamByName('OrderId').AsInteger;",
         "  if ParamByName('Status').AsString = 'Y' then x := 1;",
         "  if FieldByName('First').AsString = 'Y' then FieldByName('Second').AsString := 'N';",
+        "  Query.FieldByName('QueryStatus').AsString := 'paid';",
+        "  x := Query.FieldByName('QueryAmount').AsFloat;",
+        "  if Query.FieldByName('QueryFlag').AsString = 'Y' then x := x + 1;",
+        "  Query.ParamByName('QueryOrderId').AsInteger := 42;",
+        "  x := Query.ParamByName('QueryOrderId').AsInteger;",
         "end;",
         "end.",
       ].join("\n"),
@@ -763,16 +770,35 @@ describe("SQLParser", () => {
     const references = parser.parseFieldReferences(parser.parseSymbols());
     const referencesByField = new Map(references.map((reference) => [`${reference.field}:${reference.line}`, reference]));
 
-    expect(referencesByField.get("Status:6")).toEqual(expect.objectContaining({ field: "Status", type: "write" }));
-    expect(referencesByField.get("Amount:7")).toEqual(expect.objectContaining({ field: "Amount", type: "read" }));
-    expect(referencesByField.get("Flag:8")).toEqual(expect.objectContaining({ field: "Flag", type: "read" }));
+    expect(referencesByField.get("Status:8")).toEqual(expect.objectContaining({ field: "Status", type: "write" }));
+    expect(referencesByField.get("Amount:9")).toEqual(expect.objectContaining({ field: "Amount", type: "read" }));
+    expect(referencesByField.get("Flag:10")).toEqual(expect.objectContaining({ field: "Flag", type: "read" }));
     expect(references.filter((reference) => reference.field === "OrderId")).toEqual([
-      expect.objectContaining({ field: "OrderId", type: "write", line: 9 }),
-      expect.objectContaining({ field: "OrderId", type: "read", line: 10 }),
+      expect.objectContaining({ field: "OrderId", type: "write", line: 11 }),
+      expect.objectContaining({ field: "OrderId", type: "read", line: 12 }),
     ]);
-    expect(referencesByField.get("Status:11")).toEqual(expect.objectContaining({ field: "Status", type: "read" }));
-    expect(referencesByField.get("First:12")).toEqual(expect.objectContaining({ field: "First", type: "read" }));
-    expect(referencesByField.get("Second:12")).toEqual(expect.objectContaining({ field: "Second", type: "write" }));
+    expect(referencesByField.get("Status:13")).toEqual(expect.objectContaining({ field: "Status", type: "read" }));
+    expect(referencesByField.get("First:14")).toEqual(expect.objectContaining({ field: "First", type: "read" }));
+    expect(referencesByField.get("Second:14")).toEqual(expect.objectContaining({ field: "Second", type: "write" }));
+    expect(referencesByField.get("QueryStatus:15")).toEqual(expect.objectContaining({ field: "QueryStatus", type: "write" }));
+    expect(referencesByField.get("QueryAmount:16")).toEqual(expect.objectContaining({ field: "QueryAmount", type: "read" }));
+    expect(referencesByField.get("QueryFlag:17")).toEqual(expect.objectContaining({ field: "QueryFlag", type: "read" }));
+    expect(references.filter((reference) => reference.field === "QueryOrderId")).toEqual([
+      expect.objectContaining({ field: "QueryOrderId", type: "write", line: 18 }),
+      expect.objectContaining({ field: "QueryOrderId", type: "read", line: 19 }),
+    ]);
+  });
+
+  it("does not crash when parsing Delphi-related DFM, DPR, and INC imports", () => {
+    expect(() => ParserFactory.createParser("dfm", "object Form1: TForm1\nend", "Form1.dfm").parseSymbols()).not.toThrow();
+    expect(() =>
+      ParserFactory.createParser(
+        "dpr",
+        ["program Repo;", "begin", "end."].join("\n"),
+        "Repo.dpr"
+      ).parseSymbols()
+    ).not.toThrow();
+    expect(() => ParserFactory.createParser("txt", "const Foo = 1;", "types.inc").parseSymbols()).not.toThrow();
   });
 
   it("keeps aliases out of field names and supports UPDATE aliases, CTEs, and DELETE JOIN targets", () => {

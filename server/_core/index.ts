@@ -16,7 +16,11 @@ import { registerHealthEndpoint } from "./health";
 import { configureTrustProxy, registerRateLimiters } from "./rateLimiter";
 import { registerSecurityHeaders } from "./securityHeaders";
 import { registerReportDownloadRoute } from "./reportRoute";
-import { recoverStaleProjectJobsOnStartup } from "../services/projectWorkflow";
+import {
+  recoverStaleProjectJobsOnStartup,
+  startProjectJobWorkerPolling,
+  stopProjectJobWorkerPolling,
+} from "../services/projectWorkflow";
 import { registerProjectUploadRoute } from "../services/projectUploadRoute";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -42,6 +46,8 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
 async function gracefulShutdown(signal: string) {
   logger.info("Server shutdown requested", { action: "server.shutdown.start", status: "ok", signal });
 
+  stopProjectJobWorkerPolling();
+
   // Close database connections
   await closeDb();
   
@@ -54,6 +60,9 @@ async function startServer() {
   await validateDbConfig();
   const recoveredJobCount = await recoverStaleProjectJobsOnStartup();
   const projectWorkerEnabled = process.env.PROJECT_WORKER_ENABLED !== "false";
+  const projectWorkerPollIntervalMs = projectWorkerEnabled
+    ? Number.parseInt(process.env.PROJECT_WORKER_POLL_INTERVAL_MS ?? "2000", 10) || 2000
+    : null;
 
   const app = express();
   const server = createServer(app);
@@ -128,11 +137,14 @@ async function startServer() {
       env: process.env.NODE_ENV || "development",
       recoveredJobCount,
       projectWorkerEnabled,
+      projectWorkerPollIntervalMs,
     });
     
     // Log health endpoint availability
     logger.info("Health endpoints ready", { action: "server.health", status: "ok", port });
   });
+
+  startProjectJobWorkerPolling();
 
   // Graceful shutdown handlers
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));

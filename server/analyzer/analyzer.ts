@@ -1,5 +1,6 @@
 import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
 import { calculateAnalysisConfidence } from "../../shared/analysisConfidence";
+import { getNormalizedFileExtension, isDelphiLikeLanguage } from "./delphiLanguage";
 import { DocumentGenerator } from "./documentGenerator";
 import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
 import { collectSqlStatements, parseDfmContent, ParserFactory } from "./parser";
@@ -123,11 +124,6 @@ function getErrorMessage(error: unknown) {
   return String(error || "Unknown analysis error");
 }
 
-function getNormalizedExtension(filePath: string) {
-  const index = filePath.lastIndexOf(".");
-  return index >= 0 ? filePath.slice(index).toLowerCase() : "";
-}
-
 function getBaseName(filePath: string) {
   const normalized = filePath.replace(/\\/g, "/");
   const fileName = normalized.split("/").at(-1) ?? normalized;
@@ -140,7 +136,7 @@ function collectDfmProjectMetadata(files: AnalyzableFile[]) {
   const warnings: AnalysisWarning[] = [];
 
   for (const file of files) {
-    if (![".dfm", ".fmx"].includes(getNormalizedExtension(file.path))) {
+    if (![".dfm", ".fmx"].includes(getNormalizedFileExtension(file.path))) {
       continue;
     }
 
@@ -165,7 +161,7 @@ function collectDfmProjectMetadata(files: AnalyzableFile[]) {
 
 function collectPascalMethods(symbols: AnalyzedSymbol[]) {
   return symbols.filter((symbol) => {
-    const extension = getNormalizedExtension(symbol.file);
+    const extension = getNormalizedFileExtension(symbol.file);
     return [".pas", ".dpr", ".inc", ".dpk"].includes(extension) && ["method", "procedure", "function"].includes(symbol.type);
   });
 }
@@ -341,7 +337,7 @@ export class Analyzer {
       ...this.riskDetector.detectMagicValues(collectMagicValues(file.content, file.path)),
       ...this.riskDetector.detectMissingConditions(sqlSnippets),
       ...this.riskDetector.detectFormatConversionRisks(file.content, file.path),
-      ...(file.language === "delphi" ? this.riskDetector.detectDelphiPatterns(file.content, file.path) : []),
+      ...(isDelphiLikeLanguage(file.language, file.path) ? this.riskDetector.detectDelphiPatterns(file.content, file.path) : []),
     ]);
 
     return {

@@ -11,7 +11,36 @@
   ],
   "fields": [],
   "dependencies": [],
-  "risks": [],
+  "risks": [
+    {
+      "title": "Delphi database component detected",
+      "category": "other",
+      "severity": "low",
+      "sourceFile": "CustomerForm.dfm",
+      "lineNumber": 12
+    },
+    {
+      "title": "Delphi database component detected",
+      "category": "other",
+      "severity": "low",
+      "sourceFile": "CustomerForm.dfm",
+      "lineNumber": 16
+    },
+    {
+      "title": "Delphi database component detected",
+      "category": "other",
+      "severity": "low",
+      "sourceFile": "CustomerForm.dfm",
+      "lineNumber": 2
+    },
+    {
+      "title": "Delphi database component detected",
+      "category": "other",
+      "severity": "low",
+      "sourceFile": "CustomerForm.dfm",
+      "lineNumber": 8
+    }
+  ],
   "rules": [],
   "delphiEventMap": [],
   "delphiDataBindings": [
