@@ -2589,21 +2589,30 @@ describe("project workflow", () => {
     expect(zip.file("FULL_FINDINGS.json")).toBeTruthy();
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("\"topImpactedFiles\"");
     await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Delphi-like files: 1");
+    await expect(zip.file("PROJECT_OVERVIEW.md")!.async("text")).resolves.toContain("Analysis Confidence");
     await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.toContain("repo/Invoice.pas");
     await expect(zip.file("DELPHI_FIELD_ACCESS.md")!.async("text")).resolves.toContain("param:OrderId");
     await expect(zip.file("LIMITATIONS.md")!.async("text")).resolves.toContain("heuristic static analysis");
     const fullFindings = JSON.parse(await zip.file("FULL_FINDINGS.json")!.async("text")) as {
       fieldAccesses: Array<{ owner: string; name: string; operation: string }>;
-      metadata: { sourceType: string };
+      metadata: { sourceType: string; confidence: unknown };
+      confidence: unknown;
       symbols: unknown[];
       dependencies: unknown[];
       risks: unknown[];
     };
     expect(fullFindings.metadata.sourceType).toBe("upload");
+    expect(fullFindings.metadata.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
+    expect(fullFindings.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), breakdown: expect.any(Array) }));
     expect(fullFindings.symbols).toHaveLength(2);
     expect(fullFindings.dependencies).toHaveLength(1);
     expect(fullFindings.risks).toHaveLength(1);
     expect(fullFindings.fieldAccesses).toEqual([expect.objectContaining({ owner: "Query", name: "OrderId", operation: "write" })]);
+
+    const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { confidence?: unknown };
+    expect(metadata.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
+    const summary = JSON.parse(await zip.file("analysis-summary.json")!.async("text")) as { confidence?: unknown };
+    expect(summary.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), breakdown: expect.any(Array) }));
   });
 
   it("fails oversized report exports before ZIP generation allocates the archive buffer", async () => {

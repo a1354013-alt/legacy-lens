@@ -85,6 +85,65 @@ function ImportWarningsCard({
   );
 }
 
+function AnalysisConfidenceCard({
+  confidence,
+}: {
+  confidence?: {
+    score: number;
+    level: "high" | "medium" | "low";
+    breakdown: Array<{ label: string; impact: number; reason: string }>;
+  };
+}) {
+  if (!confidence) {
+    return null;
+  }
+
+  const penalties = confidence.breakdown.filter((item) => item.impact < 0).slice(0, 6);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>Analysis Confidence Score</CardTitle>
+            <CardDescription>Heuristic analysis confidence for this report.</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-2xl font-semibold text-slate-950">{confidence.score}/100</span>
+            <Badge variant={confidence.level === "low" ? "destructive" : confidence.level === "medium" ? "secondary" : "default"}>
+              {confidence.level}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {confidence.score < 60 ? (
+          <Alert variant="warning">
+            <AlertTriangle className="size-4" />
+            <AlertTitle>需要人工複核</AlertTitle>
+            <AlertDescription>Confidence is below 60, so review the highlighted limitations before relying on this report.</AlertDescription>
+          </Alert>
+        ) : null}
+        {penalties.length === 0 ? (
+          <p className="text-slate-600">No major confidence penalties were detected.</p>
+        ) : (
+          <div className="space-y-2">
+            {penalties.map((item) => (
+              <div key={`${item.label}:${item.reason}`} className="rounded-lg border px-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-slate-950">{item.label}</span>
+                  <Badge variant="outline">{item.impact}</Badge>
+                </div>
+                <p className="mt-1 text-slate-600">{item.reason}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AnalysisResult() {
   const [, setLocation] = useLocation();
   const [, params] = useRoute("/projects/:id/analysis");
@@ -364,6 +423,7 @@ export default function AnalysisResult() {
 
             <WarningSummaryCard items={snapshot?.warningSummary ?? []} />
             <ImportWarningsCard items={importWarnings} />
+            <AnalysisConfidenceCard confidence={metrics?.confidence} />
 
             <div className="grid gap-4 lg:grid-cols-3">
               <SimpleListCard

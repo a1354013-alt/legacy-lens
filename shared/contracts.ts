@@ -78,6 +78,20 @@ export const analysisWarningSchema = z.object({
 export type ImportWarning = z.infer<typeof importWarningSchema>;
 export type AnalysisWarning = z.infer<typeof analysisWarningSchema>;
 
+export const analysisConfidenceSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  level: z.enum(["high", "medium", "low"]),
+  breakdown: z.array(
+    z.object({
+      label: z.string(),
+      impact: z.number().int(),
+      reason: z.string(),
+    })
+  ),
+});
+
+export type AnalysisConfidence = z.infer<typeof analysisConfidenceSchema>;
+
 const delphiEventMapEntrySchema = z.object({
   formName: z.string(),
   componentName: z.string(),
@@ -126,6 +140,7 @@ export const analysisMetricsSchema = z.object({
   warningCount: z.number().int().nonnegative(),
   delphiEventMap: z.array(delphiEventMapEntrySchema).optional(),
   delphiDataBindings: z.array(delphiDataBindingSchema).optional(),
+  confidence: analysisConfidenceSchema.optional(),
 });
 
 export type AnalysisMetrics = z.infer<typeof analysisMetricsSchema>;

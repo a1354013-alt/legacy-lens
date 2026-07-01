@@ -1714,6 +1714,11 @@ function parseDfmBoolean(value: string | undefined) {
   return null;
 }
 
+function getDelphiDatasetAccessType(line: string, matchIndex: number, matchText: string): FieldReference["type"] {
+  const afterCall = line.slice(matchIndex + matchText.length);
+  return /^\s*\.\s*(?:As[A-Za-z_]\w*|Value|Text)\b\s*:=/i.test(afterCall) ? "write" : "read";
+}
+
 export class DfmParser implements FileParser {
   private readonly parsed: DfmAnalysisResult;
 
@@ -1907,7 +1912,7 @@ export class DelphiParser implements FileParser {
         references.push({
           table: "delphi",
           field: match[1],
-          type: "read",
+          type: getDelphiDatasetAccessType(line, match.index ?? 0, match[0]),
           file: this.file,
           line: index + 1,
           symbolStableKey: owner?.stableKey,
@@ -1921,7 +1926,7 @@ export class DelphiParser implements FileParser {
         references.push({
           table: "delphi",
           field: match[1],
-          type: /:=|As(?:String|Integer|Float|Date|Time)|Value\s*[:=]/i.test(line) ? "write" : "read",
+          type: getDelphiDatasetAccessType(line, match.index ?? 0, match[0]),
           file: this.file,
           line: index + 1,
           symbolStableKey: owner?.stableKey,

@@ -1,4 +1,5 @@
 import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
+import { calculateAnalysisConfidence } from "../../shared/analysisConfidence";
 import { DocumentGenerator } from "./documentGenerator";
 import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
 import { collectSqlStatements, parseDfmContent, ParserFactory } from "./parser";
@@ -467,6 +468,12 @@ export class Analyzer {
       delphiEventMap,
       delphiDataBindings: dfmMetadata.dataBindings,
     };
+    metrics.confidence = calculateAnalysisConfidence({
+      metrics,
+      analyzerWarnings: combinedWarnings,
+      fileTypes: files.map((file) => file.path.match(/\.[^.\\/]+$/)?.[0] ?? file.language),
+      risks: combinedRisks,
+    });
 
     const hasMaterialWarnings = combinedWarnings.some((warning) => warning.level !== "note");
     const status: AnalysisStatus =

@@ -23,6 +23,7 @@ import type {
   SymbolsPageInput,
 } from "../../shared/contracts";
 import type { ImpactTargetType, ProjectStatus } from "../../shared/contracts";
+import { calculateAnalysisConfidence } from "../../shared/analysisConfidence";
 import { projectStatusLabels } from "../../shared/contracts";
 import {
   analysisResults,
@@ -2907,6 +2908,13 @@ async function buildReportCompletenessArtifacts(
       };
     })
     .filter((item) => item.filePath.toLowerCase().endsWith(".pas") || item.accessKind === "param" || item.context?.match(/FieldByName|ParamByName/i));
+  const confidence = calculateAnalysisConfidence({
+    metrics: input.report.summaryJson,
+    importWarnings,
+    analyzerWarnings,
+    fileTypes: sortedFiles.map((file) => file.fileType),
+    risks: sortedRisks,
+  });
 
   const projectOverviewMarkdown = [
     "# PROJECT_OVERVIEW",
@@ -2920,6 +2928,15 @@ async function buildReportCompletenessArtifacts(
     `- SQL files: ${languageCounts.sql}`,
     `- Unknown files: ${languageCounts.unknown}`,
     `- Limited-analysis files: ${limitedFilePaths.size}`,
+    "",
+    "## Analysis Confidence",
+    `- Score: ${confidence.score}/100`,
+    `- Level: ${confidence.level}`,
+    "",
+    renderMarkdownTable(
+      ["Label", "Impact", "Reason"],
+      confidence.breakdown.map((item) => [item.label, item.impact > 0 ? `+${item.impact}` : item.impact, item.reason])
+    ),
     "",
     "## Findings Summary",
     `- Symbols: ${sortedSymbols.length}`,
@@ -2981,11 +2998,13 @@ async function buildReportCompletenessArtifacts(
   const fullFindings = {
     metadata: {
       ...input.metadata,
+      confidence,
       projectId: input.projectId,
       sourceType: input.project?.sourceType ?? "unknown",
       reportStatus: input.report.status,
       reportId: input.report.id,
     },
+    confidence,
     files: fileInventoryItems,
     symbols: sortedSymbols.map((symbol) => ({
       id: symbol.id,
@@ -3043,6 +3062,7 @@ async function buildReportCompletenessArtifacts(
     delphiEventMapMarkdown,
     delphiDataBindingsMarkdown,
     limitationsMarkdown,
+    confidence,
     fullFindingsJson: JSON.stringify(fullFindings, null, 2),
   };
 }
@@ -3985,7 +4005,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     { path: "FULL_FINDINGS.json", content: reportCompletenessArtifacts.fullFindingsJson },
     { path: "impact-analysis.json", content: JSON.stringify(impactSummary, null, 2) },
     { path: "import-warnings.json", content: JSON.stringify(project?.importWarningsJson ?? [], null, 2) },
-    { path: "metadata.json", content: JSON.stringify(metadata, null, 2) },
+    { path: "metadata.json", content: JSON.stringify({ ...metadata, confidence: reportCompletenessArtifacts.confidence }, null, 2) },
     {
       path: "analysis-summary.json",
       content: JSON.stringify(
@@ -3993,6 +4013,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
           analysisResultId: readyReport.id,
           status: readyReport.status,
           metrics: readyReport.summaryJson,
+          confidence: reportCompletenessArtifacts.confidence,
           warnings: readyReport.warningsJson,
           importWarnings: project?.importWarningsJson ?? [],
           limitationSummary:

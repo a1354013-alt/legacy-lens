@@ -255,6 +255,47 @@ describe("AnalysisResult", () => {
     expect(html).toContain("forms/MainForm.dfm");
   });
 
+  it("shows analysis confidence score, level, breakdown, and manual review prompt", () => {
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        metrics: {
+          fileCount: 3,
+          eligibleFileCount: 3,
+          analyzedFileCount: 2,
+          skippedFileCount: 1,
+          heuristicFileCount: 1,
+          degradedFileCount: 1,
+          symbolCount: 4,
+          dependencyCount: 1,
+          fieldCount: 2,
+          fieldDependencyCount: 2,
+          riskCount: 1,
+          ruleCount: 0,
+          warningCount: 3,
+          confidence: {
+            score: 55,
+            level: "low",
+            breakdown: [
+              { label: "Base score", impact: 100, reason: "Start from full confidence." },
+              { label: "Unresolved DFM event handlers", impact: -8, reason: "2/3 DFM event handlers were unresolved." },
+              { label: "Dynamic SQL", impact: -6, reason: "2 dynamic SQL fragments or risk findings were detected." },
+            ],
+          },
+        },
+      })
+    );
+
+    const html = renderToString(<AnalysisResult />);
+
+    expect(html).toContain("Analysis Confidence Score");
+    expect(html).toContain("55");
+    expect(html).toContain("/100");
+    expect(html).toContain("low");
+    expect(html).toContain("Unresolved DFM event handlers");
+    expect(html).toContain("Dynamic SQL");
+    expect(html).toContain("需要人工複核");
+  });
+
   it("returns stable fallback text when no document content exists", () => {
     expect(renderDocumentPreview(null)).toBe("目前沒有可預覽的文件內容。");
   });

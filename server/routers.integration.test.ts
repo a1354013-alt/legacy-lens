@@ -346,6 +346,7 @@ describe("appRouter integration", () => {
     expect(metadataJson.symbolCount).toBe(1);
     expect(metadataJson.dependencyCount).toBe(0);
     expect(metadataJson.warningCount).toBe(3);
+    expect(metadataJson.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
 
     for (const expectedPath of [
       "FLOW.md",
@@ -366,13 +367,16 @@ describe("appRouter integration", () => {
     await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.toContain("main.go");
     await expect(zip.file("LIMITATIONS.md")!.async("text")).resolves.toContain("dynamic SQL");
     const fullFindings = JSON.parse(await zip.file("FULL_FINDINGS.json")!.async("text")) as {
-      metadata: { projectName: string };
+      metadata: { projectName: string; confidence: unknown };
+      confidence: unknown;
       symbols: unknown[];
       fieldAccesses: unknown[];
       importWarnings: unknown[];
       analyzerWarnings: unknown[];
     };
     expect(fullFindings.metadata.projectName).toBe("integration-project");
+    expect(fullFindings.metadata.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
+    expect(fullFindings.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), breakdown: expect.any(Array) }));
     expect(fullFindings.symbols).toHaveLength(1);
     expect(fullFindings.fieldAccesses).toEqual([]);
     expect(fullFindings.importWarnings).toEqual(importWarnings);
@@ -382,6 +386,7 @@ describe("appRouter integration", () => {
     expect(summary).toBeTruthy();
     const summaryJson = JSON.parse(await summary!.async("text")) as Record<string, unknown>;
     expect(String(summaryJson.limitationSummary)).toContain("legacy impact review assistant");
+    expect(summaryJson.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
   });
 
   it("lists only the current user's projects and jobs", async () => {
