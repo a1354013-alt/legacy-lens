@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
+import { parseStrictPositiveIntegerEnv } from "./docker-smoke-config.mjs";
 import { waitForHttp } from "./docker-smoke-http.mjs";
 
 const composeProjectName = globalThis.process.env.COMPOSE_PROJECT_NAME ?? `legacy-lens-smoke-${Date.now()}`;
 const hostPort = globalThis.process.env.LEGACY_LENS_PORT ?? "38080";
 const hostDbPort = globalThis.process.env.LEGACY_LENS_DB_PORT ?? "33306";
-const pollTimeoutMs = Number.parseInt(globalThis.process.env.LEGACY_LENS_SMOKE_TIMEOUT_MS ?? "180000", 10);
+const pollTimeoutMs = parseStrictPositiveIntegerEnv("LEGACY_LENS_SMOKE_TIMEOUT_MS", 180000);
 const pollIntervalMs = 2_000;
 const httpRequestTimeoutMs = 3_000;
 const services = ["db", "migrate", "app"];

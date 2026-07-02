@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { and, asc, count, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type {
   AnalysisWarning,
   AnalysisSnapshot,
   DependenciesPageInput,
-  DependencyListItem,
   FieldDependenciesPageInput,
   FieldDependencyListItem,
   FieldListItem,
@@ -46,20 +45,9 @@ import { getProjectFiles } from "../utils/fileExtractor";
 import { validateSafeGitUrl } from "../utils/gitHandler";
 import { extractInsertId } from "../utils/insertResult";
 import { logger } from "../_core/logger";
-import { buildContainsLikePattern, likeContainsEscaped } from "../_core/sqlLike";
 import { getAppVersion } from "../_core/version";
 import { runProjectJob } from "./jobWorker";
 import {
-  buildDependencySummary,
-  groupRisks,
-  groupRules,
-  isDelphiStandardLibrary,
-  summarizeAffectedFiles,
-  summarizePartialReasons,
-  summarizeWarnings,
-} from "./analysisPresentation";
-import {
-  mapSnapshotReport,
   renderProjectImpactSummaryMarkdown,
   severityRank,
   sortFieldDependencies,
@@ -72,6 +60,17 @@ import {
 } from "./projectWorkflow.helpers";
 import { clearPreviousAnalysisData } from "./project/projectAnalysisPersistence";
 import { buildProjectReportArchiveBuffer } from "./project/projectReportArchive";
+import { recoverStaleProjectJobsOnStartupImpl } from "./project/projectJobRecovery";
+import {
+  getDependenciesPageImpl,
+  getFieldDependenciesPageImpl,
+  getFieldsPageImpl,
+  getRisksPageImpl,
+  getRulesPageImpl,
+  getSymbolsPageImpl,
+} from "./project/projectPagedQueries";
+import { getAnalysisSnapshotImpl } from "./project/projectSnapshotQueries";
+import { extractAffectedRows, isInMemoryDb } from "./project/projectQueryUtils";
 import { analyzeProjectImpl, type ProjectAnalysisRunnerDeps } from "./project/projectAnalysisRunner";
 import { importProjectGitImpl } from "./project/projectImportGit";
 import {
@@ -162,58 +161,12 @@ function buildSymbolInsertKey(symbol: AnalyzedSymbol) {
   return symbol.stableKey;
 }
 
-function normalizeSearch(value: string | null | undefined) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function normalizeLikeSearch(value: string | null | undefined) {
-  return buildContainsLikePattern(value);
-}
-
-function normalizePagination(page: number, pageSize: number, total: number) {
-  const safePageSize = Math.min(Math.max(pageSize, 1), 100);
-  const pageCount = total === 0 ? 0 : Math.ceil(total / safePageSize);
-  const safePage = pageCount === 0 ? 1 : Math.min(Math.max(page, 1), pageCount);
-
-  return {
-    page: safePage,
-    pageSize: safePageSize,
-    pageCount,
-    offset: (safePage - 1) * safePageSize,
-  };
-}
-
 function andAll(conditions: SQL[]): SQL {
   const [first, ...rest] = conditions;
   if (!first) {
     throw new Error("andAll requires at least one SQL condition.");
   }
   return rest.length === 0 ? first : (and(first, ...rest) as SQL);
-}
-
-function orAll(conditions: SQL[]): SQL {
-  const [first, ...rest] = conditions;
-  if (!first) {
-    throw new Error("orAll requires at least one SQL condition.");
-  }
-  return rest.length === 0 ? first : (or(first, ...rest) as SQL);
-}
-
-function paginateItems<T>(items: T[], page: number, pageSize: number): PagedResult<T> {
-  const total = items.length;
-  const pagination = normalizePagination(page, pageSize, total);
-
-  return {
-    items: items.slice(pagination.offset, pagination.offset + pagination.pageSize),
-    total,
-    page: pagination.page,
-    pageSize: pagination.pageSize,
-    pageCount: pagination.pageCount,
-  };
-}
-
-function isInMemoryDb(db: DbHandle): db is DbHandle & { store: Record<string, Array<Record<string, unknown>>> } {
-  return typeof db === "object" && db !== null && "store" in db;
 }
 
 function chunkArray<T>(items: T[], size: number): T[][] {
@@ -228,30 +181,6 @@ async function insertInChunks<T extends Record<string, unknown>>(db: DbHandle, t
   for (const chunk of chunkArray(rows, ANALYSIS_INSERT_CHUNK_SIZE)) {
     await db.insert(table as typeof dependencies).values(chunk as never);
   }
-}
-
-function buildDependencyListItems(
-  dependencyRows: Array<typeof dependencies.$inferSelect>,
-  symbolById: Map<number, { name?: string | null } | string>
-): DependencyListItem[] {
-  return dependencyRows.map((row) => {
-    const sourceSymbol = symbolById.get(row.sourceSymbolId);
-    const targetSymbol = row.targetSymbolId ? symbolById.get(row.targetSymbolId) : null;
-    const sourceSymbolName = typeof sourceSymbol === "string" ? sourceSymbol : sourceSymbol?.name ?? `symbol:${row.sourceSymbolId}`;
-    const targetSymbolName = typeof targetSymbol === "string" ? targetSymbol : targetSymbol?.name ?? null;
-
-    return {
-      id: row.id,
-      sourceSymbolId: row.sourceSymbolId,
-      sourceSymbolName,
-      targetSymbolId: row.targetSymbolId ?? null,
-      targetSymbolName,
-      targetExternalName: row.targetExternalName ?? null,
-      targetKind: row.targetKind,
-      dependencyType: row.dependencyType,
-      lineNumber: row.lineNumber ?? null,
-    };
-  });
 }
 
 function getProjectJobLogContext(
@@ -390,68 +319,6 @@ function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloa
 
 function isUniqueConstraintError(error: unknown) {
   return error instanceof Error && /duplicate entry|unique/i.test(error.message);
-}
-
-function extractAffectedRows(result: unknown) {
-  if (typeof (result as { affectedRows?: number } | undefined)?.affectedRows === "number") {
-    return (result as { affectedRows: number }).affectedRows;
-  }
-
-  if (Array.isArray(result) && typeof (result[0] as { affectedRows?: number } | undefined)?.affectedRows === "number") {
-    return (result[0] as { affectedRows: number }).affectedRows;
-  }
-
-  return undefined;
-}
-
-async function countRows(
-  table: typeof files | typeof symbols | typeof dependencies | typeof fields | typeof fieldDependencies | typeof risks | typeof rules,
-  condition: SQL
-) {
-  const db = await requireDb();
-  const [row] = await db.select({ value: count() }).from(table).where(condition);
-  return Number(row?.value ?? 0);
-}
-
-async function listMatchingFileIds(projectId: number, searchLike: string) {
-  const db = await requireDb();
-  if (!searchLike) return [];
-
-  const rows = await db
-    .select({ id: files.id })
-    .from(files)
-    .where(and(eq(files.projectId, projectId), likeContainsEscaped(files.filePath, searchLike)));
-
-  return rows.map((row) => row.id);
-}
-
-async function listMatchingSymbolIds(projectId: number, searchLike: string) {
-  const db = await requireDb();
-  if (!searchLike) return [];
-
-  const rows = await db
-    .select({ id: symbols.id })
-    .from(symbols)
-    .where(and(eq(symbols.projectId, projectId), likeContainsEscaped(symbols.name, searchLike)));
-
-  return rows.map((row) => row.id);
-}
-
-async function listMatchingFieldIds(projectId: number, searchLike: string) {
-  const db = await requireDb();
-  if (!searchLike) return [];
-
-  const rows = await db
-    .select({ id: fields.id })
-    .from(fields)
-    .where(
-      and(
-        eq(fields.projectId, projectId),
-        or(likeContainsEscaped(fields.tableName, searchLike), likeContainsEscaped(fields.fieldName, searchLike))
-      )
-    );
-
-  return rows.map((row) => row.id);
 }
 
 export async function requireDb() {
@@ -1709,166 +1576,21 @@ async function markProjectAsRecoveryFailed(projectId: number, status: ProjectSta
 }
 
 export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAfterMs = STALE_PROJECT_JOB_MS) {
-  if (!isProjectWorkerEnabled()) {
-    logger.info("Project worker disabled; skipping startup recovery.", {
-      action: "project.job.recovery.skipped",
-      status: "ok",
-    });
-    return 0;
-  }
-
-  const db = await requireDb();
-  const staleBefore = new Date(now.getTime() - staleAfterMs);
-  const allJobs = await db.select().from(projectJobs).where(inArray(projectJobs.status, ["queued", "running"]));
-  let recoveredJobCount = 0;
-
-  for (const job of allJobs) {
-    if (job.status === "queued") {
-      recoveredJobCount += 1;
-      continue;
-    }
-
-    if (job.status !== "running") {
-      continue;
-    }
-
-    const heartbeatAt = toDate(job.heartbeatAt);
-    const leaseUntil = toDate(job.leaseUntil);
-    const startedAt = toDate(job.startedAt);
-    const isLeaseExpired = hasProjectJobLease(job) && isProjectJobLeaseExpired(job, now);
-    const isStaleByLegacyWindow = !heartbeatAt && !leaseUntil && (!startedAt || startedAt.getTime() <= staleBefore.getTime());
-
-    if (!isLeaseExpired && !isStaleByLegacyWindow) {
-      continue;
-    }
-
-    if (canRetryProjectJob(job)) {
-      const updateResult = await db
-        .update(projectJobs)
-        .set({
-          status: "queued",
-          progress: 0,
-          errorCode: null,
-          errorMessage: null,
-          lockedBy: null,
-          leaseUntil: null,
-          heartbeatAt: null,
-          startedAt: null,
-          finishedAt: null,
-        })
-        .where(
-          and(
-            eq(projectJobs.id, job.id),
-            eq(projectJobs.status, "running"),
-            job.lockedBy ? eq(projectJobs.lockedBy, job.lockedBy) : isNull(projectJobs.lockedBy),
-            eq(projectJobs.attemptCount, getProjectJobAttemptCount(job))
-          )
-        );
-      const affectedRows = extractAffectedRows(updateResult);
-      if (typeof affectedRows === "number" && affectedRows === 0) {
-        logger.warn("Startup recovery skipped requeue because ownership changed", {
-          action: "project.job.recovery.skipped",
-          status: "error",
-          jobId: job.id,
-          projectId: job.projectId,
-          lockedBy: job.lockedBy,
-          attemptCount: getProjectJobAttemptCount(job),
-        });
-        continue;
-      }
-      logger.warn("Recovered stale project job back to queue", {
-        action: "project.job.stale.recovered",
-        ...getProjectJobLogContext(job, {
-          status: "queued",
-          leaseUntil,
-          heartbeatAt,
-          attemptCount: getProjectJobAttemptCount(job),
-          maxAttempts: getProjectJobMaxAttempts(job),
-        }),
-      });
-      recoveredJobCount += 1;
-      continue;
-    }
-
-    const retryMessage = `Project job exceeded its retry budget (${getProjectJobAttemptCount(job)}/${getProjectJobMaxAttempts(job)}) after lease recovery.`;
-    const updateResult = await db
-      .update(projectJobs)
-      .set({
-        status: "failed",
-        activeKey: null,
-        payloadJson: null,
-        lockedBy: null,
-        leaseUntil: null,
-        heartbeatAt: null,
-        errorCode: "JOB_STALE_MAX_ATTEMPTS",
-        errorMessage: retryMessage,
-        finishedAt: now,
-      })
-      .where(
-        and(
-          eq(projectJobs.id, job.id),
-          eq(projectJobs.status, "running"),
-          job.lockedBy ? eq(projectJobs.lockedBy, job.lockedBy) : isNull(projectJobs.lockedBy),
-          eq(projectJobs.attemptCount, getProjectJobAttemptCount(job))
-        )
-      );
-
-    const affectedRows = extractAffectedRows(updateResult);
-    if (typeof affectedRows === "number" && affectedRows === 0) {
-      logger.warn("Startup recovery skipped a project job because ownership changed", {
-        action: "project.job.recovery.skipped",
-        status: "error",
-        jobId: job.id,
-        projectId: job.projectId,
-        lockedBy: job.lockedBy,
-        attemptCount: getProjectJobAttemptCount(job),
-      });
-      continue;
-    }
-
-    if (job.type === "analyze") {
-      await failAnalysisProjectIfStillAnalyzing(job, now, new AppError("JOB_STALE_MAX_ATTEMPTS", retryMessage));
-    } else {
-      await failImportProjectIfStillImporting(job, now, new AppError("JOB_STALE_MAX_ATTEMPTS", retryMessage));
-    }
-    logger.error("Project job exhausted stale recovery retries", {
-      action: "project.job.stale.failed",
-      ...getProjectJobLogContext(job, {
-        status: "failed",
-        errorCode: "JOB_STALE_MAX_ATTEMPTS",
-        errorMessage: retryMessage,
-        leaseUntil,
-        heartbeatAt,
-        attemptCount: getProjectJobAttemptCount(job),
-        maxAttempts: getProjectJobMaxAttempts(job),
-      }),
-    });
-  }
-
-  const activeJobsAfterRecovery = await db.select().from(projectJobs).where(inArray(projectJobs.status, ["queued", "running"]));
-  const projectRows = await db.select().from(projects).where(inArray(projects.status, ["importing", "analyzing"]));
-  for (const project of projectRows) {
-    if (project.status !== "importing" && project.status !== "analyzing") {
-      continue;
-    }
-
-    const hasActiveJob = activeJobsAfterRecovery.some((job) => job.projectId === project.id && isActiveProjectJobStatus(job.status));
-    if (hasActiveJob) {
-      continue;
-    }
-
-    const recoveryMessage =
-      project.status === "importing"
-        ? "Project import was left in an active state without a recoverable job after server startup."
-        : "Project analysis was left in an active state without a recoverable job after server startup.";
-    await markProjectAsRecoveryFailed(project.id, project.status, recoveryMessage, now);
-  }
-
-  if (recoveredJobCount > 0) {
-    void kickProjectJobWorker();
-  }
-
-  return recoveredJobCount;
+  return recoverStaleProjectJobsOnStartupImpl(
+    {
+      isProjectWorkerEnabled,
+      requireDb,
+      getProjectJobLogContext,
+      failAnalysisProjectIfStillAnalyzing,
+      failImportProjectIfStillImporting,
+      markProjectAsRecoveryFailed,
+      kickProjectJobWorker: () => {
+        void kickProjectJobWorker();
+      },
+    },
+    now,
+    staleAfterMs
+  );
 }
 
 export async function createProjectForUser(
@@ -2761,799 +2483,35 @@ async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requir
   };
 }
 
-function buildFieldUsageSummary(rows: Array<typeof fieldDependencies.$inferSelect>) {
-  const fieldUsageById = new Map<number, { readCount: number; writeCount: number; referenceCount: number }>();
-
-  for (const dependency of rows) {
-    const current = fieldUsageById.get(dependency.fieldId) ?? {
-      readCount: 0,
-      writeCount: 0,
-      referenceCount: 0,
-    };
-
-    current.referenceCount += 1;
-    if (dependency.operationType === "read") current.readCount += 1;
-    if (dependency.operationType === "write") current.writeCount += 1;
-    fieldUsageById.set(dependency.fieldId, current);
-  }
-
-  return fieldUsageById;
-}
-
 export async function getAnalysisSnapshot(projectId: number, userId: number): Promise<AnalysisSnapshot> {
-  const project = await getOwnedProject(projectId, userId);
-  const db = await requireDb();
-  const report = await getProjectAnalysisRecord(db, projectId);
-  if (isInMemoryDb(db)) {
-    const [fileRows, symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
-      db.select().from(files).where(eq(files.projectId, projectId)),
-      db.select().from(symbols).where(eq(symbols.projectId, projectId)),
-      db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
-      db.select().from(fields).where(eq(fields.projectId, projectId)),
-      db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, projectId)),
-      db.select().from(risks).where(eq(risks.projectId, projectId)),
-      db.select().from(rules).where(eq(rules.projectId, projectId)),
-    ]);
-
-    const sortedFields = sortProjectFields(fieldRows);
-    const sortedFieldDependencies = sortFieldDependencies(fieldDependencyRows);
-    const groupedWarnings = summarizeWarnings([...(project.importWarningsJson ?? []), ...(report?.warningsJson ?? [])]);
-    const groupedRisks = groupRisks(
-      riskRows.map((row) => ({
-        id: String(row.id),
-        riskType: row.riskType,
-        severity: row.severity,
-        title: row.title,
-        description: row.description ?? null,
-        sourceFile: row.sourceFile ?? null,
-        lineNumber: row.lineNumber ?? null,
-        recommendation: row.recommendation ?? null,
-      }))
-    );
-    const groupedRules = groupRules(
-      ruleRows.map((row) => ({
-        id: String(row.id),
-        ruleType: row.ruleType,
-        title: row.name,
-        description: row.description ?? null,
-        recommendation: row.condition ?? null,
-        sourceFile: row.sourceFile ?? null,
-        lineNumber: row.lineNumber ?? null,
-      }))
-    );
-    const fieldUsageById = buildFieldUsageSummary(sortedFieldDependencies);
-    const fieldSummaryByTable = new Map<string, { fieldCount: number; readCount: number; writeCount: number; referenceCount: number }>();
-
-    for (const field of sortedFields) {
-      const usage = fieldUsageById.get(field.id) ?? { readCount: 0, writeCount: 0, referenceCount: 0 };
-      const current = fieldSummaryByTable.get(field.tableName) ?? {
-        fieldCount: 0,
-        readCount: 0,
-        writeCount: 0,
-        referenceCount: 0,
-      };
-      current.fieldCount += 1;
-      current.readCount += usage.readCount;
-      current.writeCount += usage.writeCount;
-      current.referenceCount += usage.referenceCount;
-      fieldSummaryByTable.set(field.tableName, current);
-    }
-
-    const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
-    const symbolById = new Map(symbolRows.map((row) => [row.id, row]));
-    const dependencyItems = buildDependencyListItems(dependencyRows, symbolById);
-
-    return {
-      report: report ? mapSnapshotReport(report) : null,
-      importWarnings: project.importWarningsJson ?? [],
-      warningSummary: groupedWarnings,
-      partialReasons: summarizePartialReasons(project.importWarningsJson ?? [], report?.warningsJson ?? [], report?.errorMessage),
-      totals: {
-        files: fileRows.length,
-        symbols: symbolRows.length,
-        dependencies: dependencyRows.length,
-        fields: fieldRows.length,
-        fieldDependencies: fieldDependencyRows.length,
-        risks: riskRows.length,
-        rules: ruleRows.length,
-        importWarnings: project.importWarningsJson?.length ?? 0,
-      },
-      topSymbols: sortProjectSymbols(symbolRows)
-        .slice(0, 10)
-        .map((row) => ({
-          id: row.id,
-          name: row.name,
-          type: row.type,
-          filePath: filePathById.get(row.fileId) ?? null,
-          startLine: row.startLine,
-          endLine: row.endLine,
-        })),
-      topRisks: sortProjectRisks(riskRows)
-        .slice(0, 10)
-        .map((row) => ({
-          id: row.id,
-          riskType: row.riskType,
-          severity: row.severity,
-          title: row.title,
-          sourceFile: row.sourceFile,
-          lineNumber: row.lineNumber,
-        })),
-      topRules: sortProjectRules(ruleRows)
-        .slice(0, 10)
-        .map((row) => ({
-          id: row.id,
-          ruleType: row.ruleType,
-          name: row.name,
-          sourceFile: row.sourceFile,
-          lineNumber: row.lineNumber,
-        })),
-      topRiskGroups: groupedRisks.slice(0, 20),
-      topRuleGroups: groupedRules.slice(0, 20),
-      topAffectedFiles: summarizeAffectedFiles(groupedRisks, groupedRules),
-      dependencySummary: buildDependencySummary(dependencyItems),
-      fieldTables: Array.from(fieldSummaryByTable.entries())
-        .map(([tableName, summary]) => ({ tableName, ...summary }))
-        .sort((left, right) => left.tableName.localeCompare(right.tableName)),
-    };
-  }
-
-  const [
-    fileTotal,
-    symbolTotal,
-    dependencyTotal,
-    fieldTotal,
-    fieldDependencyTotal,
-    riskTotal,
-    ruleTotal,
-    allDependencyRows,
-    allRiskRows,
-    allRuleRows,
-    topSymbolRows,
-    topRiskRows,
-    topRuleRows,
-    fieldCountRows,
-    fieldUsageRows,
-  ] = await Promise.all([
-    countRows(files, eq(files.projectId, projectId)),
-    countRows(symbols, eq(symbols.projectId, projectId)),
-    countRows(dependencies, eq(dependencies.projectId, projectId)),
-    countRows(fields, eq(fields.projectId, projectId)),
-    countRows(fieldDependencies, eq(fieldDependencies.projectId, projectId)),
-    countRows(risks, eq(risks.projectId, projectId)),
-    countRows(rules, eq(rules.projectId, projectId)),
-    db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
-    db.select().from(risks).where(eq(risks.projectId, projectId)),
-    db.select().from(rules).where(eq(rules.projectId, projectId)),
-    db
-      .select()
-      .from(symbols)
-      .where(eq(symbols.projectId, projectId))
-      .orderBy(asc(symbols.name), asc(symbols.fileId), asc(symbols.startLine), asc(symbols.id))
-      .limit(10),
-    db
-      .select()
-      .from(risks)
-      .where(eq(risks.projectId, projectId))
-      .orderBy(
-        sql`case ${risks.severity} when 'critical' then 4 when 'high' then 3 when 'medium' then 2 when 'low' then 1 else 0 end desc`,
-        asc(risks.title),
-        asc(risks.sourceFile),
-        asc(risks.lineNumber),
-        asc(risks.id)
-      )
-      .limit(10),
-    db
-      .select()
-      .from(rules)
-      .where(eq(rules.projectId, projectId))
-      .orderBy(asc(rules.ruleType), asc(rules.name), asc(rules.sourceFile), asc(rules.lineNumber), asc(rules.id))
-      .limit(10),
-    db
-      .select({
-        tableName: fields.tableName,
-        fieldCount: count(),
-      })
-      .from(fields)
-      .where(eq(fields.projectId, projectId))
-      .groupBy(fields.tableName),
-    db
-      .select({
-        tableName: fields.tableName,
-        readCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'read' then 1 else 0 end)`,
-        writeCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'write' then 1 else 0 end)`,
-        referenceCount: count(),
-      })
-      .from(fieldDependencies)
-      .innerJoin(fields, eq(fieldDependencies.fieldId, fields.id))
-      .where(eq(fieldDependencies.projectId, projectId))
-      .groupBy(fields.tableName),
-  ]);
-
-  const topSymbolFileIds = Array.from(new Set(topSymbolRows.map((row) => row.fileId)));
-  const topSymbolFiles =
-    topSymbolFileIds.length > 0
-      ? await db.select({ id: files.id, filePath: files.filePath }).from(files).where(inArray(files.id, topSymbolFileIds))
-      : [];
-  const filePathById = new Map(topSymbolFiles.map((row) => [row.id, row.filePath]));
-  const dependencySymbolIds = Array.from(
-    new Set(allDependencyRows.flatMap((row) => [row.sourceSymbolId, row.targetSymbolId].filter((value): value is number => typeof value === "number")))
-  );
-  const dependencySymbolRows =
-    dependencySymbolIds.length > 0
-      ? await db.select({ id: symbols.id, name: symbols.name }).from(symbols).where(inArray(symbols.id, dependencySymbolIds))
-      : [];
-  const dependencyItems = buildDependencyListItems(allDependencyRows, new Map(dependencySymbolRows.map((row) => [row.id, row.name])));
-  const groupedWarnings = summarizeWarnings([...(project.importWarningsJson ?? []), ...(report?.warningsJson ?? [])]);
-  const groupedRisks = groupRisks(
-    allRiskRows.map((row) => ({
-      id: String(row.id),
-      riskType: row.riskType,
-      severity: row.severity,
-      title: row.title,
-      description: row.description ?? null,
-      sourceFile: row.sourceFile ?? null,
-      lineNumber: row.lineNumber ?? null,
-      recommendation: row.recommendation ?? null,
-    }))
-  );
-  const groupedRules = groupRules(
-    allRuleRows.map((row) => ({
-      id: String(row.id),
-      ruleType: row.ruleType,
-      title: row.name,
-      description: row.description ?? null,
-      recommendation: row.condition ?? null,
-      sourceFile: row.sourceFile ?? null,
-      lineNumber: row.lineNumber ?? null,
-    }))
-  );
-  const fieldSummaryByTable = new Map<string, { fieldCount: number; readCount: number; writeCount: number; referenceCount: number }>();
-
-  for (const row of fieldCountRows) {
-    fieldSummaryByTable.set(row.tableName, {
-      fieldCount: Number(row.fieldCount ?? 0),
-      readCount: 0,
-      writeCount: 0,
-      referenceCount: 0,
-    });
-  }
-
-  for (const row of fieldUsageRows) {
-    const current = fieldSummaryByTable.get(row.tableName) ?? {
-      fieldCount: 0,
-      readCount: 0,
-      writeCount: 0,
-      referenceCount: 0,
-    };
-    current.readCount = Number(row.readCount ?? 0);
-    current.writeCount = Number(row.writeCount ?? 0);
-    current.referenceCount = Number(row.referenceCount ?? 0);
-    fieldSummaryByTable.set(row.tableName, current);
-  }
-
-  return {
-    report: report ? mapSnapshotReport(report) : null,
-    importWarnings: project.importWarningsJson ?? [],
-    warningSummary: groupedWarnings,
-    partialReasons: summarizePartialReasons(project.importWarningsJson ?? [], report?.warningsJson ?? [], report?.errorMessage),
-    totals: {
-      files: fileTotal,
-      symbols: symbolTotal,
-      dependencies: dependencyTotal,
-      fields: fieldTotal,
-      fieldDependencies: fieldDependencyTotal,
-      risks: riskTotal,
-      rules: ruleTotal,
-      importWarnings: project.importWarningsJson?.length ?? 0,
-    },
-    topSymbols: topSymbolRows
-      .map((row) => ({
-        id: row.id,
-        name: row.name,
-        type: row.type,
-        filePath: filePathById.get(row.fileId) ?? null,
-        startLine: row.startLine,
-        endLine: row.endLine,
-      })),
-    topRisks: topRiskRows
-      .map((row) => ({
-        id: row.id,
-        riskType: row.riskType,
-        severity: row.severity,
-        title: row.title,
-        sourceFile: row.sourceFile,
-        lineNumber: row.lineNumber,
-      })),
-    topRules: topRuleRows
-      .map((row) => ({
-        id: row.id,
-        ruleType: row.ruleType,
-        name: row.name,
-        sourceFile: row.sourceFile,
-        lineNumber: row.lineNumber,
-      })),
-    topRiskGroups: groupedRisks.slice(0, 20),
-    topRuleGroups: groupedRules.slice(0, 20),
-    topAffectedFiles: summarizeAffectedFiles(groupedRisks, groupedRules),
-    dependencySummary: buildDependencySummary(dependencyItems),
-    fieldTables: Array.from(fieldSummaryByTable.entries())
-      .map(([tableName, summary]) => ({ tableName, ...summary }))
-      .sort((left, right) => left.tableName.localeCompare(right.tableName)),
-  };
+  return getAnalysisSnapshotImpl({ requireDb, getOwnedProject, getProjectAnalysisRecord }, projectId, userId);
 }
 
 export async function getSymbolsPage(input: SymbolsPageInput, userId: number): Promise<PagedResult<SymbolListItem>> {
-  await getOwnedProject(input.projectId, userId);
-  const db = await requireDb();
-  if (isInMemoryDb(db)) {
-    const [symbolRows, fileRows] = await Promise.all([
-      db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
-      db.select().from(files).where(eq(files.projectId, input.projectId)),
-    ]);
-    const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
-    const search = normalizeSearch(input.search);
-
-    const items = sortProjectSymbols(symbolRows)
-      .map((row) => ({
-        id: row.id,
-        name: row.name,
-        type: row.type,
-        fileId: row.fileId,
-        filePath: filePathById.get(row.fileId) ?? null,
-        startLine: row.startLine,
-        endLine: row.endLine,
-        signature: row.signature ?? null,
-        description: row.description ?? null,
-      }))
-      .filter((row) => (input.kind ? row.type === input.kind : true))
-      .filter((row) => {
-        if (!search) return true;
-        return normalizeSearch(row.name).includes(search) || normalizeSearch(row.filePath).includes(search);
-      });
-
-    return paginateItems(items, input.page, input.pageSize);
-  }
-
-  const searchLike = normalizeLikeSearch(input.search);
-  const matchingFileIds = await listMatchingFileIds(input.projectId, searchLike);
-  const conditions = [eq(symbols.projectId, input.projectId)];
-
-  if (input.kind) {
-    conditions.push(eq(symbols.type, input.kind));
-  }
-
-  if (searchLike) {
-    const searchClauses = [likeContainsEscaped(symbols.name, searchLike)];
-    if (matchingFileIds.length > 0) {
-      searchClauses.push(inArray(symbols.fileId, matchingFileIds));
-    }
-    conditions.push(orAll(searchClauses));
-  }
-
-  const whereCondition = andAll(conditions);
-  const total = await countRows(symbols, whereCondition);
-  const pagination = normalizePagination(input.page, input.pageSize, total);
-  const symbolRows = await db
-    .select()
-    .from(symbols)
-    .where(whereCondition)
-    .orderBy(asc(symbols.name), asc(symbols.fileId), asc(symbols.startLine), asc(symbols.id))
-    .limit(pagination.pageSize)
-    .offset(pagination.offset);
-  const fileIds = Array.from(new Set(symbolRows.map((row) => row.fileId)));
-  const fileRows = fileIds.length > 0 ? await db.select({ id: files.id, filePath: files.filePath }).from(files).where(inArray(files.id, fileIds)) : [];
-  const filePathById = new Map(fileRows.map((row) => [row.id, row.filePath]));
-
-  return {
-    items: symbolRows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      type: row.type,
-      fileId: row.fileId,
-      filePath: filePathById.get(row.fileId) ?? null,
-      startLine: row.startLine,
-      endLine: row.endLine,
-      signature: row.signature ?? null,
-      description: row.description ?? null,
-    })),
-    total,
-    page: pagination.page,
-    pageSize: pagination.pageSize,
-    pageCount: pagination.pageCount,
-  };
+  return getSymbolsPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
 export async function getFieldsPage(input: FieldsPageInput, userId: number): Promise<PagedResult<FieldListItem>> {
-  await getOwnedProject(input.projectId, userId);
-  const db = await requireDb();
-  if (isInMemoryDb(db)) {
-    const [fieldRows, fieldDependencyRows] = await Promise.all([
-      db.select().from(fields).where(eq(fields.projectId, input.projectId)),
-      db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
-    ]);
-    const fieldUsageById = buildFieldUsageSummary(sortFieldDependencies(fieldDependencyRows));
-    const search = normalizeSearch(input.search);
-
-    const items = sortProjectFields(fieldRows)
-      .map((row) => ({
-        id: row.id,
-        tableName: row.tableName,
-        fieldName: row.fieldName,
-        fieldType: row.fieldType ?? null,
-        description: row.description ?? null,
-        readCount: fieldUsageById.get(row.id)?.readCount ?? 0,
-        writeCount: fieldUsageById.get(row.id)?.writeCount ?? 0,
-        referenceCount: fieldUsageById.get(row.id)?.referenceCount ?? 0,
-      }))
-      .filter((row) => (input.tableName ? row.tableName === input.tableName : true))
-      .filter((row) => {
-        if (!search) return true;
-        return normalizeSearch(row.tableName).includes(search) || normalizeSearch(row.fieldName).includes(search);
-      });
-
-    return paginateItems(items, input.page, input.pageSize);
-  }
-
-  const searchLike = normalizeLikeSearch(input.search);
-  const conditions = [eq(fields.projectId, input.projectId)];
-
-  if (input.tableName) {
-    conditions.push(eq(fields.tableName, input.tableName));
-  }
-
-  if (searchLike) {
-    conditions.push(orAll([likeContainsEscaped(fields.tableName, searchLike), likeContainsEscaped(fields.fieldName, searchLike)]));
-  }
-
-  const whereCondition = andAll(conditions);
-  const total = await countRows(fields, whereCondition);
-  const pagination = normalizePagination(input.page, input.pageSize, total);
-  const fieldRows = await db
-    .select()
-    .from(fields)
-    .where(whereCondition)
-    .orderBy(asc(fields.tableName), asc(fields.fieldName), asc(fields.id))
-    .limit(pagination.pageSize)
-    .offset(pagination.offset);
-  const fieldIds = fieldRows.map((row) => row.id);
-  const usageRows =
-    fieldIds.length > 0
-      ? await db
-          .select({
-            fieldId: fieldDependencies.fieldId,
-            readCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'read' then 1 else 0 end)`,
-            writeCount: sql<number>`sum(case when ${fieldDependencies.operationType} = 'write' then 1 else 0 end)`,
-            referenceCount: count(),
-          })
-          .from(fieldDependencies)
-          .where(and(eq(fieldDependencies.projectId, input.projectId), inArray(fieldDependencies.fieldId, fieldIds)))
-          .groupBy(fieldDependencies.fieldId)
-      : [];
-  const usageById = new Map(
-    usageRows.map((row) => [
-      row.fieldId,
-      {
-        readCount: Number(row.readCount ?? 0),
-        writeCount: Number(row.writeCount ?? 0),
-        referenceCount: Number(row.referenceCount ?? 0),
-      },
-    ])
-  );
-
-  return {
-    items: fieldRows.map((row) => ({
-      id: row.id,
-      tableName: row.tableName,
-      fieldName: row.fieldName,
-      fieldType: row.fieldType ?? null,
-      description: row.description ?? null,
-      readCount: usageById.get(row.id)?.readCount ?? 0,
-      writeCount: usageById.get(row.id)?.writeCount ?? 0,
-      referenceCount: usageById.get(row.id)?.referenceCount ?? 0,
-    })),
-    total,
-    page: pagination.page,
-    pageSize: pagination.pageSize,
-    pageCount: pagination.pageCount,
-  };
+  return getFieldsPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
 export async function getRisksPage(input: RisksPageInput, userId: number) {
-  await getOwnedProject(input.projectId, userId);
-  const db = await requireDb();
-  const hideDuplicates = input.hideDuplicates ?? true;
-  const criticalOnly = input.criticalOnly ?? false;
-  if (isInMemoryDb(db)) {
-    const riskRows = await db.select().from(risks).where(eq(risks.projectId, input.projectId));
-    return paginateItems(
-      groupRisks(
-        sortProjectRisks(riskRows).map((row) => ({
-          id: String(row.id),
-          riskType: row.riskType,
-          severity: row.severity,
-          title: row.title,
-          description: row.description ?? null,
-          sourceFile: row.sourceFile ?? null,
-          lineNumber: row.lineNumber ?? null,
-          recommendation: row.recommendation ?? null,
-        })),
-        {
-          severity: input.severity,
-          riskType: input.riskType,
-          search: input.search,
-          file: input.filePath,
-          criticalOnly,
-          hideDuplicates,
-        }
-      ),
-      input.page,
-      input.pageSize
-    );
-  }
-
-  const riskRows = await db.select().from(risks).where(eq(risks.projectId, input.projectId));
-  return paginateItems(
-    groupRisks(
-      riskRows.map((row) => ({
-        id: String(row.id),
-        riskType: row.riskType,
-        severity: row.severity,
-        title: row.title,
-        description: row.description ?? null,
-        sourceFile: row.sourceFile ?? null,
-        lineNumber: row.lineNumber ?? null,
-        recommendation: row.recommendation ?? null,
-      })),
-      {
-        severity: input.severity,
-        riskType: input.riskType,
-        search: input.search,
-        file: input.filePath,
-        criticalOnly,
-        hideDuplicates,
-      }
-    ),
-    input.page,
-    input.pageSize
-  );
+  return getRisksPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
 export async function getRulesPage(input: RulesPageInput, userId: number) {
-  await getOwnedProject(input.projectId, userId);
-  const db = await requireDb();
-  const hideDuplicates = input.hideDuplicates ?? true;
-  if (isInMemoryDb(db)) {
-    const ruleRows = await db.select().from(rules).where(eq(rules.projectId, input.projectId));
-    return paginateItems(
-      groupRules(
-        sortProjectRules(ruleRows).map((row) => ({
-          id: String(row.id),
-          ruleType: row.ruleType,
-          name: row.name,
-          description: row.description ?? null,
-          condition: row.condition ?? null,
-          sourceFile: row.sourceFile ?? null,
-          lineNumber: row.lineNumber ?? null,
-        })),
-        {
-          ruleType: input.ruleType,
-          search: input.search,
-          file: input.filePath,
-          hideDuplicates,
-        }
-      ),
-      input.page,
-      input.pageSize
-    );
-  }
-
-  const ruleRows = await db.select().from(rules).where(eq(rules.projectId, input.projectId));
-  return paginateItems(
-    groupRules(
-      ruleRows.map((row) => ({
-        id: String(row.id),
-        ruleType: row.ruleType,
-        name: row.name,
-        description: row.description ?? null,
-        condition: row.condition ?? null,
-        sourceFile: row.sourceFile ?? null,
-        lineNumber: row.lineNumber ?? null,
-      })),
-      {
-        ruleType: input.ruleType,
-        search: input.search,
-        file: input.filePath,
-        hideDuplicates,
-      }
-    ),
-    input.page,
-    input.pageSize
-  );
+  return getRulesPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
-export async function getDependenciesPage(
-  input: DependenciesPageInput,
-  userId: number
-) {
-  await getOwnedProject(input.projectId, userId);
-  const db = await requireDb();
-  const hideStandardLibrary = input.hideStandardLibrary ?? true;
-  if (isInMemoryDb(db)) {
-    const [dependencyRows, symbolRows] = await Promise.all([
-      db.select().from(dependencies).where(eq(dependencies.projectId, input.projectId)),
-      db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
-    ]);
-    const symbolById = new Map(symbolRows.map((row) => [row.id, row]));
-    const search = normalizeSearch(input.search);
-
-    const items = buildDependencyListItems(sortProjectDependencies(dependencyRows), symbolById)
-      .filter((row) => (input.dependencyType ? row.dependencyType === input.dependencyType : true))
-      .filter((row) => (input.targetKind ? row.targetKind === input.targetKind : true))
-      .filter((row) => (hideStandardLibrary ? !isDelphiStandardLibrary(row.targetExternalName ?? row.targetSymbolName) : true))
-      .filter((row) => {
-        if (!search) return true;
-        return (
-          normalizeSearch(row.sourceSymbolName).includes(search) ||
-          normalizeSearch(row.targetSymbolName).includes(search) ||
-          normalizeSearch(row.targetExternalName).includes(search)
-        );
-      });
-
-    return {
-      ...paginateItems(items, input.page, input.pageSize),
-      summary: buildDependencySummary(buildDependencyListItems(dependencyRows, symbolById)),
-    };
-  }
-
-  const dependencyRows = await db.select().from(dependencies).where(eq(dependencies.projectId, input.projectId));
-  const symbolIds = Array.from(
-    new Set(dependencyRows.flatMap((row) => [row.sourceSymbolId, row.targetSymbolId].filter((value): value is number => typeof value === "number")))
-  );
-  const symbolRows =
-    symbolIds.length > 0 ? await db.select({ id: symbols.id, name: symbols.name }).from(symbols).where(inArray(symbols.id, symbolIds)) : [];
-  const symbolById = new Map(symbolRows.map((row) => [row.id, row.name]));
-  const mappedItems = buildDependencyListItems(dependencyRows, symbolById);
-  const search = normalizeSearch(input.search);
-  const filteredItems = mappedItems
-    .filter((row) => (input.dependencyType ? row.dependencyType === input.dependencyType : true))
-    .filter((row) => (input.targetKind ? row.targetKind === input.targetKind : true))
-    .filter((row) => (hideStandardLibrary ? !isDelphiStandardLibrary(row.targetExternalName ?? row.targetSymbolName) : true))
-    .filter((row) => {
-      if (!search) return true;
-      return (
-        normalizeSearch(row.sourceSymbolName).includes(search) ||
-        normalizeSearch(row.targetSymbolName).includes(search) ||
-        normalizeSearch(row.targetExternalName).includes(search)
-      );
-    });
-
-  return {
-    ...paginateItems(filteredItems, input.page, input.pageSize),
-    summary: buildDependencySummary(mappedItems),
-  };
+export async function getDependenciesPage(input: DependenciesPageInput, userId: number) {
+  return getDependenciesPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
 export async function getFieldDependenciesPage(
   input: FieldDependenciesPageInput,
   userId: number
 ): Promise<PagedResult<FieldDependencyListItem>> {
-  await getOwnedProject(input.projectId, userId);
-  const db = await requireDb();
-  if (isInMemoryDb(db)) {
-    const [fieldDependencyRows, fieldRows, symbolRows] = await Promise.all([
-      db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
-      db.select().from(fields).where(eq(fields.projectId, input.projectId)),
-      db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
-    ]);
-    const fieldById = new Map(fieldRows.map((row) => [row.id, row]));
-    const symbolById = new Map(symbolRows.map((row) => [row.id, row]));
-    const search = normalizeSearch(input.search);
-
-    const items = sortFieldDependencies(fieldDependencyRows)
-      .map((row) => ({
-        id: row.id,
-        fieldId: row.fieldId,
-        tableName: fieldById.get(row.fieldId)?.tableName ?? "unknown",
-        fieldName: fieldById.get(row.fieldId)?.fieldName ?? "unknown",
-        symbolId: row.symbolId,
-        symbolName: symbolById.get(row.symbolId)?.name ?? `symbol:${row.symbolId}`,
-        operationType: row.operationType,
-        lineNumber: row.lineNumber ?? null,
-        context: row.context ?? null,
-      }))
-      .filter((row) => (input.tableName ? row.tableName === input.tableName : true))
-      .filter((row) => (input.operationType ? row.operationType === input.operationType : true))
-      .filter((row) => {
-        if (!search) return true;
-        return (
-          normalizeSearch(row.tableName).includes(search) ||
-          normalizeSearch(row.fieldName).includes(search) ||
-          normalizeSearch(row.symbolName).includes(search) ||
-          normalizeSearch(row.context).includes(search)
-        );
-      });
-
-    return paginateItems(items, input.page, input.pageSize);
-  }
-
-  const searchLike = normalizeLikeSearch(input.search);
-  const tableFieldIds = input.tableName
-    ? (
-        await db
-          .select({ id: fields.id })
-          .from(fields)
-          .where(and(eq(fields.projectId, input.projectId), eq(fields.tableName, input.tableName)))
-      ).map((row) => row.id)
-    : [];
-
-  if (input.tableName && tableFieldIds.length === 0) {
-    return paginateItems([], input.page, input.pageSize);
-  }
-
-  const [searchFieldIds, searchSymbolIds] = await Promise.all([
-    listMatchingFieldIds(input.projectId, searchLike),
-    listMatchingSymbolIds(input.projectId, searchLike),
-  ]);
-
-  const conditions = [eq(fieldDependencies.projectId, input.projectId)];
-
-  if (input.operationType) {
-    conditions.push(eq(fieldDependencies.operationType, input.operationType));
-  }
-
-  if (input.tableName) {
-    conditions.push(inArray(fieldDependencies.fieldId, tableFieldIds));
-  }
-
-  if (searchLike) {
-    const searchClauses = [likeContainsEscaped(fieldDependencies.context, searchLike)];
-    if (searchFieldIds.length > 0) {
-      searchClauses.push(inArray(fieldDependencies.fieldId, searchFieldIds));
-    }
-    if (searchSymbolIds.length > 0) {
-      searchClauses.push(inArray(fieldDependencies.symbolId, searchSymbolIds));
-    }
-    conditions.push(orAll(searchClauses));
-  }
-
-  const whereCondition = andAll(conditions);
-  const total = await countRows(fieldDependencies, whereCondition);
-  const pagination = normalizePagination(input.page, input.pageSize, total);
-  const fieldDependencyRows = await db
-    .select()
-    .from(fieldDependencies)
-    .where(whereCondition)
-    .orderBy(asc(fieldDependencies.fieldId), asc(fieldDependencies.symbolId), asc(fieldDependencies.lineNumber), asc(fieldDependencies.id))
-    .limit(pagination.pageSize)
-    .offset(pagination.offset);
-  const fieldIds = Array.from(new Set(fieldDependencyRows.map((row) => row.fieldId)));
-  const symbolIds = Array.from(new Set(fieldDependencyRows.map((row) => row.symbolId)));
-  const [fieldRows, symbolRows] = await Promise.all([
-    fieldIds.length > 0
-      ? db.select({ id: fields.id, tableName: fields.tableName, fieldName: fields.fieldName }).from(fields).where(inArray(fields.id, fieldIds))
-      : Promise.resolve([]),
-    symbolIds.length > 0 ? db.select({ id: symbols.id, name: symbols.name }).from(symbols).where(inArray(symbols.id, symbolIds)) : Promise.resolve([]),
-  ]);
-  const fieldById = new Map(fieldRows.map((row) => [row.id, row]));
-  const symbolById = new Map(symbolRows.map((row) => [row.id, row.name]));
-
-  return {
-    items: fieldDependencyRows.map((row) => ({
-      id: row.id,
-      fieldId: row.fieldId,
-      tableName: fieldById.get(row.fieldId)?.tableName ?? "unknown",
-      fieldName: fieldById.get(row.fieldId)?.fieldName ?? "unknown",
-      symbolId: row.symbolId,
-      symbolName: symbolById.get(row.symbolId) ?? `symbol:${row.symbolId}`,
-      operationType: row.operationType,
-      lineNumber: row.lineNumber ?? null,
-      context: row.context ?? null,
-    })),
-    total,
-    page: pagination.page,
-    pageSize: pagination.pageSize,
-    pageCount: pagination.pageCount,
-  };
+  return getFieldDependenciesPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
 export async function buildReportArchiveBuffer(projectId: number, userId: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
