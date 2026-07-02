@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { and, asc, count, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type {
@@ -37,16 +37,14 @@ import {
   symbols,
 } from "../../drizzle/schema";
 import { AppError, toAppError } from "../appError";
-import { Analyzer } from "../analyzer/analyzer";
 import { ImpactAnalyzer } from "../analyzer/impactAnalyzer";
 import { resolveMostSpecificSymbol } from "../analyzer/symbolOwner";
 import type { AnalyzedSymbol, ProjectAnalysisResult } from "../analyzer/types";
 import { getDb } from "../db";
 import type { DatabaseClient, InsertProjectRecord } from "../dbTypes";
-import { getProjectFiles, saveExtractedFiles } from "../utils/fileExtractor";
-import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../utils/gitHandler";
+import { getProjectFiles } from "../utils/fileExtractor";
+import { validateSafeGitUrl } from "../utils/gitHandler";
 import { extractInsertId } from "../utils/insertResult";
-import { extractFilesFromZip, extractFilesFromZipBuffer } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
 import { buildContainsLikePattern, likeContainsEscaped } from "../_core/sqlLike";
 import { getAppVersion } from "../_core/version";
@@ -72,13 +70,15 @@ import {
   sortProjectRules,
   sortProjectSymbols,
 } from "./projectWorkflow.helpers";
-import {
-  clearPreviousAnalysisData,
-  type AnalysisPersistCheckpoint,
-  writeFailedAnalysis,
-  writeSuccessfulAnalysis,
-} from "./project/projectAnalysisPersistence";
+import { clearPreviousAnalysisData } from "./project/projectAnalysisPersistence";
 import { buildProjectReportArchiveBuffer } from "./project/projectReportArchive";
+import { analyzeProjectImpl, type ProjectAnalysisRunnerDeps } from "./project/projectAnalysisRunner";
+import { importProjectGitImpl } from "./project/projectImportGit";
+import {
+  importProjectZipFromTempFileImpl,
+  importProjectZipImpl,
+  type ProjectImportDeps,
+} from "./project/projectImportZip";
 import {
   ACTIVE_PROJECT_JOB_KEY,
   DEFAULT_PROJECT_JOB_MAX_ATTEMPTS,
@@ -343,38 +343,6 @@ function buildAnalysisFailureWarning(error: AppError): AnalysisWarning {
     filePath: context?.filePath,
     heuristic: true,
   };
-}
-
-function logAnalysisEvent(
-  level: "info" | "warn" | "error",
-  event: "started" | "files.loaded" | "parser.started" | "parser.completed" | "persist.started" | "persist.completed" | "failed",
-  context: {
-    projectId: number;
-    jobId: number | null;
-    focusLanguage?: string | null;
-    fileCount?: number;
-    errorCode?: string | null;
-    errorMessage?: string | null;
-    filePath?: string;
-    stackPreview?: string[];
-    warningCount?: number;
-    resultStatus?: string;
-  }
-) {
-  logger[level](`Analysis ${event}`, {
-    action: `analysis.${event}`,
-    status: level === "error" ? "error" : "ok",
-    projectId: context.projectId,
-    jobId: context.jobId,
-    focusLanguage: context.focusLanguage ?? null,
-    fileCount: context.fileCount ?? null,
-    errorCode: context.errorCode ?? null,
-    errorMessage: context.errorMessage ?? null,
-    filePath: context.filePath ?? null,
-    stackPreview: context.stackPreview ?? null,
-    warningCount: context.warningCount ?? null,
-    resultStatus: context.resultStatus ?? null,
-  });
 }
 
 function toPublicProjectJobRecord(job: ProjectJobRow): ProjectJobRecord {
@@ -1935,130 +1903,19 @@ export async function createProjectForUser(
   return insertId;
 }
 
-async function replaceProjectFiles(
-  projectId: number,
-  extractedFiles: Awaited<ReturnType<typeof extractFilesFromZip>>,
-  sourceUrl?: string,
-  executionState?: ProjectJobExecutionState
-) {
-  const db = await requireDb();
-  await assertProjectJobExecutionActive(executionState, "import.replace_files.prepare", { refreshLease: true });
-  await updateImportExecutionProgress(projectId, 80, executionState);
-  return db.transaction(async (tx) => {
-    await assertProjectJobExecutionActive(executionState, "import.replace_files.transaction");
-    await transitionProjectState(tx, projectId, {
-      status: "importing",
-      importProgress: 80,
-      analysisProgress: 0,
-      sourceUrl: sourceUrl ?? null,
-      errorMessage: null,
-      lastErrorCode: null,
-      importWarningsJson: [],
-    });
-
-    await clearPreviousAnalysisData(tx, projectId, true);
-    const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);
-    await assertProjectJobExecutionActive(executionState, "import.replace_files.persist");
-    if (executionState?.ownership) {
-      await tx
-        .update(projectJobs)
-        .set({ progress: 90 })
-        .where(
-          and(
-            eq(projectJobs.id, executionState.ownership.jobId),
-            eq(projectJobs.status, "running"),
-            eq(projectJobs.lockedBy, executionState.ownership.lockedBy),
-            eq(projectJobs.attemptCount, executionState.ownership.attemptCount)
-          )
-        );
-    }
-
-    await transitionProjectState(tx, projectId, {
-      status: "ready",
-      importProgress: 100,
-      analysisProgress: 0,
-      errorMessage: null,
-      lastErrorCode: null,
-      importWarningsJson: extractedFiles.warnings,
-    });
-
-    return fileIds;
-  });
+function getProjectImportDeps(): ProjectImportDeps {
+  return {
+    requireDb,
+    getOwnedProject,
+    assertProjectJobExecutionActive,
+    updateImportExecutionProgress,
+    transitionProjectState,
+    clearPreviousAnalysisData,
+  };
 }
 
 export async function importProjectZip(projectId: number, userId: number, zipContent: string, executionState?: ProjectJobExecutionState) {
-  await getOwnedProject(projectId, userId);
-  await assertProjectJobExecutionActive(executionState, "import.zip.start", { refreshLease: true });
-  await updateImportExecutionProgress(projectId, 10, executionState);
-  logger.info("ZIP import started", { projectId, action: "import.zip.started", status: "running", source: "inline_payload" });
-
-  try {
-    const extractedFiles = await extractFilesFromZip(zipContent);
-    await assertProjectJobExecutionActive(executionState, "import.zip.extracted", { refreshLease: true });
-    await updateImportExecutionProgress(projectId, 60, executionState);
-    logger.info("ZIP import extracted files", {
-      projectId,
-      action: "import.zip.extracted",
-      status: "running",
-      source: "inline_payload",
-      fileCount: extractedFiles.files.length,
-      warningCount: extractedFiles.warnings.length,
-    });
-    const fileIds = await replaceProjectFiles(projectId, extractedFiles, undefined, executionState);
-
-    logger.info("ZIP import persisted files", {
-      projectId,
-      action: "import.zip.persisted",
-      status: "running",
-      source: "inline_payload",
-      fileCount: extractedFiles.files.length,
-      warningCount: extractedFiles.warnings.length,
-    });
-    logger.info("ZIP import completed", {
-      projectId,
-      action: "import.zip.completed",
-      status: "completed",
-      source: "inline_payload",
-      fileCount: extractedFiles.files.length,
-      warningCount: extractedFiles.warnings.length,
-    });
-    return {
-      fileIds,
-      files: extractedFiles.files.map((file) => ({
-        path: file.path,
-        fileName: file.fileName,
-        language: file.language,
-        size: file.size,
-      })),
-      warnings: extractedFiles.warnings,
-    };
-  } catch (error) {
-    if (error instanceof ProjectJobExecutionAbortedError) {
-      throw error;
-    }
-    const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
-    logger.error("ZIP import failed", {
-      projectId,
-      action: "import.zip.failed",
-      status: "failed",
-      source: "inline_payload",
-      code: appError.code,
-      message: appError.message,
-    });
-    if (!executionState?.ownership) {
-      const db = await requireDb();
-      await db
-        .update(projects)
-        .set({
-          status: "failed",
-          errorMessage: appError.message,
-          lastErrorCode: appError.code,
-          importWarningsJson: [],
-        })
-        .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
-    }
-    throw appError;
-  }
+  return importProjectZipImpl(getProjectImportDeps(), projectId, userId, zipContent, executionState);
 }
 
 export async function importProjectZipFromTempFile(
@@ -2067,96 +1924,7 @@ export async function importProjectZipFromTempFile(
   tempFilePath: string,
   executionState?: ProjectJobExecutionState
 ) {
-  await getOwnedProject(projectId, userId);
-  await assertProjectJobExecutionActive(executionState, "import.zip_temp.start", { refreshLease: true });
-  await updateImportExecutionProgress(projectId, 10, executionState);
-  logger.info("ZIP import started", {
-    projectId,
-    action: "import.zip.started",
-    status: "running",
-    source: "temp_file",
-    tempFilePath,
-  });
-
-  try {
-    logger.info("ZIP import reading temp file", {
-      projectId,
-      action: "import.zip.temp_file",
-      status: "running",
-      source: "temp_file",
-      tempFilePath,
-    });
-    const zipBuffer = await readFile(tempFilePath);
-    const extractedFiles = await extractFilesFromZipBuffer(zipBuffer);
-    await assertProjectJobExecutionActive(executionState, "import.zip_temp.extracted", { refreshLease: true });
-    await updateImportExecutionProgress(projectId, 60, executionState);
-    logger.info("ZIP import extracted files", {
-      projectId,
-      action: "import.zip.extracted",
-      status: "running",
-      source: "temp_file",
-      tempFilePath,
-      fileCount: extractedFiles.files.length,
-      warningCount: extractedFiles.warnings.length,
-    });
-    const fileIds = await replaceProjectFiles(projectId, extractedFiles, undefined, executionState);
-
-    logger.info("ZIP import persisted files", {
-      projectId,
-      action: "import.zip.persisted",
-      status: "running",
-      source: "temp_file",
-      tempFilePath,
-      fileCount: extractedFiles.files.length,
-      warningCount: extractedFiles.warnings.length,
-    });
-    logger.info("ZIP import completed", {
-      projectId,
-      action: "import.zip.completed",
-      status: "completed",
-      source: "temp_file",
-      tempFilePath,
-      fileCount: extractedFiles.files.length,
-      warningCount: extractedFiles.warnings.length,
-    });
-    return {
-      fileIds,
-      files: extractedFiles.files.map((file) => ({
-        path: file.path,
-        fileName: file.fileName,
-        language: file.language,
-        size: file.size,
-      })),
-      warnings: extractedFiles.warnings,
-    };
-  } catch (error) {
-    if (error instanceof ProjectJobExecutionAbortedError) {
-      throw error;
-    }
-    const appError = toAppError(error, new AppError("IMPORT_FAILED", "ZIP import failed."));
-    logger.error("ZIP import failed", {
-      projectId,
-      action: "import.zip.failed",
-      status: "failed",
-      source: "temp_file",
-      tempFilePath,
-      code: appError.code,
-      message: appError.message,
-    });
-    if (!executionState?.ownership) {
-      const db = await requireDb();
-      await db
-        .update(projects)
-        .set({
-          status: "failed",
-          errorMessage: appError.message,
-          lastErrorCode: appError.code,
-          importWarningsJson: [],
-        })
-        .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
-    }
-    throw appError;
-  }
+  return importProjectZipFromTempFileImpl(getProjectImportDeps(), projectId, userId, tempFilePath, executionState);
 }
 
 export async function queueImportProjectZip(projectId: number, userId: number, zipContent: string) {
@@ -2198,67 +1966,7 @@ export async function createProjectWithQueuedZipImport(
 }
 
 export async function importProjectGit(projectId: number, userId: number, gitUrl: string, executionState?: ProjectJobExecutionState) {
-  await getOwnedProject(projectId, userId);
-  await assertProjectJobExecutionActive(executionState, "import.git.start", { refreshLease: true });
-  const validatedGitUrl = await validateSafeGitUrl(gitUrl);
-
-  logger.info("Import started", { projectId, action: "import.git.start", status: "ok" });
-  let tempDir = "";
-  try {
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    tempDir = join(tmpdir(), `legacy-lens-${projectId}-${Date.now()}`);
-    const extractedFiles = await cloneAndExtractFiles(validatedGitUrl, tempDir);
-    await assertProjectJobExecutionActive(executionState, "import.git.extracted", { refreshLease: true });
-    const fileIds = await replaceProjectFiles(projectId, extractedFiles, gitUrl, executionState);
-
-    logger.info("Import completed", {
-      projectId,
-      action: "import.git.complete",
-      status: "ok",
-      fileCount: extractedFiles.files.length,
-      warningCount: extractedFiles.warnings.length,
-    });
-    return {
-      fileIds,
-      files: extractedFiles.files.map((file) => ({
-        path: file.path,
-        fileName: file.fileName,
-        language: file.language,
-        size: file.size,
-      })),
-      warnings: extractedFiles.warnings,
-    };
-  } catch (error) {
-    if (error instanceof ProjectJobExecutionAbortedError) {
-      throw error;
-    }
-    const appError = toAppError(error, new AppError("GIT_CLONE_FAILED", "Git import failed."));
-    logger.error("Import failed", {
-      projectId,
-      action: "import.git.complete",
-      status: "error",
-      code: appError.code,
-      message: appError.message,
-    });
-    if (!executionState?.ownership) {
-      const db = await requireDb();
-      await db
-        .update(projects)
-        .set({
-          status: "failed",
-          errorMessage: appError.message,
-          lastErrorCode: appError.code,
-          importWarningsJson: [],
-        })
-        .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
-    }
-    throw appError;
-  } finally {
-    if (tempDir) {
-      await cleanupTempDir(tempDir);
-    }
-  }
+  return importProjectGitImpl(getProjectImportDeps(), projectId, userId, gitUrl, executionState);
 }
 
 export async function queueImportProjectGit(projectId: number, userId: number, gitUrl: string) {
@@ -2316,281 +2024,34 @@ function resolveInsertedTargetSymbolId(
   return uniqueCandidate ? insertedSymbolIds.get(buildSymbolInsertKey(uniqueCandidate)) : undefined;
 }
 
-async function updateAnalysisExecutionProgress(projectId: number, progress: number, executionState?: ProjectJobExecutionState) {
-  const safeProgress = Math.min(100, Math.max(0, Math.floor(progress)));
-  const db = await requireDb();
-  await db.update(projects).set({ analysisProgress: safeProgress, updatedAt: new Date() }).where(eq(projects.id, projectId));
-
-  const ownership = executionState?.ownership;
-  if (!ownership) {
-    return;
-  }
-
-  await db
-    .update(projectJobs)
-    .set({ progress: safeProgress })
-    .where(
-      and(
-        eq(projectJobs.id, ownership.jobId),
-        eq(projectJobs.status, "running"),
-        eq(projectJobs.lockedBy, ownership.lockedBy),
-        eq(projectJobs.attemptCount, ownership.attemptCount)
-      )
-    );
+function getProjectAnalysisRunnerDeps(): ProjectAnalysisRunnerDeps {
+  return {
+    requireDb,
+    getOwnedProject,
+    assertProjectJobExecutionActive,
+    transitionProjectState,
+    writeProcessingAnalysisResultIfNoUsableSnapshot,
+    toAnalysisStageError,
+    createAnalysisStageError: (code, message, context) => new AnalysisStageError(code, message, context),
+    getAnalysisFailureContext: (error) => (error instanceof AnalysisStageError ? error.context : null),
+    buildAnalysisErrorMessage,
+    applyAdditionalAnalysisWarnings,
+    buildImportWarningSummaryWarnings,
+    makeAnalysisPartialResultPersistable,
+    recalculateAnalysisResultConfidence,
+    replaceAnalysisResult,
+    getAnalysisResultErrorMessage,
+    throwAnalysisPersistError,
+    insertInChunks,
+    resolveOwningSymbol,
+    resolveInsertedTargetSymbolId,
+    getExistingUsableAnalysisResult,
+    mergeAnalysisWarnings,
+  };
 }
 
 export async function analyzeProject(projectId: number, userId: number, executionState?: ProjectJobExecutionState) {
-  const project = await getOwnedProject(projectId, userId);
-  const jobId = executionState?.ownership?.jobId ?? null;
-  if (!["ready", "completed", "failed", "analyzing"].includes(project.status)) {
-    throw new AppError("INVALID_PROJECT_STATE", `Project is currently "${projectStatusLabels[project.status]}".`);
-  }
-
-  await assertProjectJobExecutionActive(executionState, "analysis.start", { refreshLease: true });
-  logAnalysisEvent("info", "started", {
-    projectId,
-    jobId,
-    focusLanguage: project.language,
-  });
-  const db = await requireDb();
-  await db.transaction(async (tx) => {
-    await assertProjectJobExecutionActive(executionState, "analysis.bootstrap");
-    await transitionProjectState(
-      tx,
-      projectId,
-      {
-        status: "analyzing",
-        analysisProgress: 5,
-        errorMessage: null,
-        lastErrorCode: null,
-      },
-      userId
-    );
-    await writeProcessingAnalysisResultIfNoUsableSnapshot(tx, projectId);
-  });
-
-  try {
-    let projectFiles: Awaited<ReturnType<typeof getProjectFiles>>;
-    try {
-      projectFiles = await getProjectFiles(projectId);
-    } catch (error) {
-      throw toAnalysisStageError(error, {
-        stage: "ANALYSIS_PARSE_FAILED",
-        projectId,
-        jobId,
-        focusLanguage: project.language,
-        operation: "load project files",
-      });
-    }
-
-    if (projectFiles.length === 0) {
-      throw new AnalysisStageError(
-        "ANALYSIS_SUMMARY_FAILED",
-        buildAnalysisErrorMessage({
-          stage: "ANALYSIS_SUMMARY_FAILED",
-          rawMessage: "Project does not contain any files to analyze.",
-          operation: "validate project files",
-        }),
-        {
-          stage: "ANALYSIS_SUMMARY_FAILED",
-          projectId,
-          jobId,
-          focusLanguage: project.language,
-          fileCount: 0,
-          operation: "validate project files",
-          rawMessage: "Project does not contain any files to analyze.",
-        }
-      );
-    }
-
-    await assertProjectJobExecutionActive(executionState, "analysis.files_loaded", { refreshLease: true });
-    logAnalysisEvent("info", "files.loaded", {
-      projectId,
-      jobId,
-      focusLanguage: project.language,
-      fileCount: projectFiles.length,
-    });
-    await updateAnalysisExecutionProgress(projectId, 20, executionState);
-    const analyzer = new Analyzer();
-    await updateAnalysisExecutionProgress(projectId, 45, executionState);
-    logAnalysisEvent("info", "parser.started", {
-      projectId,
-      jobId,
-      focusLanguage: project.language,
-      fileCount: projectFiles.length,
-    });
-    let result: ProjectAnalysisResult;
-    try {
-      result = await analyzer.analyzeProject(
-        projectFiles.map((file) => ({
-          path: file.filePath,
-          content: file.content ?? "",
-          language: file.fileType?.replace(/^\./, "") ?? "unknown",
-        })),
-        projectId
-      );
-    } catch (error) {
-      throw toAnalysisStageError(error, {
-        stage: "ANALYSIS_PARSE_FAILED",
-        projectId,
-        jobId,
-        focusLanguage: project.language,
-        fileCount: projectFiles.length,
-        operation: "parse project files",
-      });
-    }
-
-    const confidenceContext = {
-      importWarnings: project.importWarningsJson ?? [],
-      fileTypes: projectFiles.map((file) => file.fileType ?? file.filePath.match(/\.[^.\\/]+$/)?.[0] ?? file.fileName),
-    };
-    result = applyAdditionalAnalysisWarnings(result, buildImportWarningSummaryWarnings(projectFiles, project.importWarningsJson ?? []), confidenceContext);
-    result = makeAnalysisPartialResultPersistable(result, confidenceContext);
-    result = recalculateAnalysisResultConfidence(result, confidenceContext);
-    logAnalysisEvent("info", "parser.completed", {
-      projectId,
-      jobId,
-      focusLanguage: project.language,
-      fileCount: projectFiles.length,
-      warningCount: result.warnings.length,
-      resultStatus: result.status,
-    });
-
-    if (result.status === "failed") {
-      throw new AnalysisStageError(
-        "ANALYSIS_SUMMARY_FAILED",
-        buildAnalysisErrorMessage({
-          stage: "ANALYSIS_SUMMARY_FAILED",
-          rawMessage:
-            "No analyzable files produced persisted analysis artifacts. Review skipped-file warnings, parser errors, and import warnings.",
-          operation: "summarize analysis results",
-        }),
-        {
-          stage: "ANALYSIS_SUMMARY_FAILED",
-          projectId,
-          jobId,
-          focusLanguage: project.language,
-          fileCount: projectFiles.length,
-          operation: "summarize analysis results",
-          rawMessage:
-            "No analyzable files produced persisted analysis artifacts. Review skipped-file warnings, parser errors, and import warnings.",
-        }
-      );
-    }
-
-    await assertProjectJobExecutionActive(executionState, "analysis.result_ready", { refreshLease: true });
-    await updateAnalysisExecutionProgress(projectId, 70, executionState);
-    await updateAnalysisExecutionProgress(projectId, 85, executionState);
-    const persistCheckpoint: AnalysisPersistCheckpoint = {
-      operation: "start analysis persistence transaction",
-      table: "analysisResults,symbols,fields,fieldDependencies,dependencies,risks,rules,projects",
-    };
-    logAnalysisEvent("info", "persist.started", {
-      projectId,
-      jobId,
-      focusLanguage: project.language,
-      fileCount: projectFiles.length,
-      warningCount: result.warnings.length,
-      resultStatus: result.status,
-    });
-    try {
-      await db.transaction(async (tx) => {
-        await writeSuccessfulAnalysis(
-          {
-            tx,
-            projectId,
-            projectFiles,
-            result,
-            persistCheckpoint,
-            executionState,
-          },
-          {
-            assertProjectJobExecutionActive,
-            replaceAnalysisResult,
-            getAnalysisResultErrorMessage,
-            throwAnalysisPersistError,
-            insertInChunks,
-            resolveOwningSymbol,
-            resolveInsertedTargetSymbolId,
-            transitionProjectState,
-            getExistingUsableAnalysisResult,
-            mergeAnalysisWarnings,
-          }
-        );
-      });
-    } catch (error) {
-      throw toAnalysisStageError(error, {
-        stage: "ANALYSIS_PERSIST_FAILED",
-        projectId,
-        jobId,
-        focusLanguage: project.language,
-        fileCount: projectFiles.length,
-        operation: persistCheckpoint.operation,
-        table: persistCheckpoint.table,
-        filePath: persistCheckpoint.filePath,
-      });
-    }
-
-    logAnalysisEvent("info", "persist.completed", {
-      projectId,
-      jobId,
-      focusLanguage: project.language,
-      fileCount: projectFiles.length,
-      warningCount: result.warnings.length,
-      resultStatus: result.status,
-    });
-    return result;
-  } catch (error) {
-    if (error instanceof ProjectJobExecutionAbortedError) {
-      throw error;
-    }
-    const appError =
-      error instanceof AppError
-        ? error
-        : toAnalysisStageError(error, {
-            stage: "ANALYSIS_UNKNOWN_FAILED",
-            projectId,
-            jobId,
-            focusLanguage: project.language,
-          });
-    const errorContext = appError instanceof AnalysisStageError ? appError.context : null;
-    logAnalysisEvent("error", "failed", {
-      projectId,
-      jobId,
-      focusLanguage: project.language,
-      fileCount: errorContext?.fileCount,
-      errorCode: appError.code,
-      errorMessage: appError.message,
-      filePath: errorContext?.filePath,
-      stackPreview: errorContext?.stackPreview,
-    });
-    if (executionState?.ownership) {
-      await assertProjectJobExecutionActive(executionState, "analysis.error_finalize", { refreshLease: true });
-    }
-    await db.transaction(async (tx) => {
-      await writeFailedAnalysis(
-        {
-          tx,
-          projectId,
-          appError,
-          executionState,
-        },
-        {
-          assertProjectJobExecutionActive,
-          replaceAnalysisResult,
-          getAnalysisResultErrorMessage,
-          throwAnalysisPersistError,
-          insertInChunks,
-          resolveOwningSymbol,
-          resolveInsertedTargetSymbolId,
-          transitionProjectState,
-          getExistingUsableAnalysisResult,
-          mergeAnalysisWarnings,
-        }
-      );
-    });
-    throw appError;
-  }
+  return analyzeProjectImpl(getProjectAnalysisRunnerDeps(), projectId, userId, executionState);
 }
 
 export async function queueAnalyzeProject(projectId: number, userId: number) {
