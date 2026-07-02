@@ -1121,6 +1121,7 @@ describe("project workflow", () => {
           from: analyzedSymbols[1].stableKey,
           fromName: "Symbol1",
           toName: "ExternalApi",
+          targetKind: "external",
           type: "references",
           line: 2,
         },
@@ -1172,6 +1173,13 @@ describe("project workflow", () => {
       sourceSymbolId: fakeDb.store.symbols[0].id,
       targetSymbolId: fakeDb.store.symbols[250].id,
       targetExternalName: null,
+      targetKind: "internal",
+    });
+    expect(fakeDb.store.dependencies[1]).toMatchObject({
+      sourceSymbolId: fakeDb.store.symbols[1].id,
+      targetSymbolId: null,
+      targetExternalName: "ExternalApi",
+      targetKind: "external",
     });
 
     const dependenciesPage = await getDependenciesPage(dependencyListOptions({ projectId: 1, page: 1, pageSize: 25, search: "symbol250" }), 7);

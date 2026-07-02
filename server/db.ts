@@ -3,15 +3,15 @@ import mysql from "mysql2";
 import { drizzle } from "drizzle-orm/mysql2";
 import { users } from "../drizzle/schema";
 import type { InsertUserRecord } from "./dbTypes";
-import { ENV } from "./_core/env";
+import { ENV, parseNonNegativeIntEnv, parsePositiveIntEnv } from "./_core/env";
 import { logger } from "./_core/logger";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: mysql.Pool | null = null;
 
 const DB_CONFIG = {
-  connectionLimit: Number.parseInt(process.env.DB_CONNECTION_LIMIT || "10", 10),
-  queueLimit: Number.parseInt(process.env.DB_QUEUE_LIMIT || "0", 10),
+  connectionLimit: parsePositiveIntEnv("DB_CONNECTION_LIMIT", 10),
+  queueLimit: parseNonNegativeIntEnv("DB_QUEUE_LIMIT", 0),
   waitForConnections: process.env.DB_WAIT_FOR_CONNECTIONS !== "false",
 } as const;
 

@@ -367,6 +367,7 @@ The Docker smoke script and compose stack use a small set of env vars to keep CI
 - `PROJECT_JOB_EXECUTION_TIMEOUT_MS`: maximum wall-clock time a worker thread may spend on one claimed job before the thread is terminated and DB lease recovery retries the job
 - `UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS`: scheduled cleanup interval for expired upload temp ZIP files; active queued/running import temp paths remain protected
 - `UPLOAD_TEMP_ZIP_TTL_MS`: age threshold for orphan upload temp ZIP cleanup
+- Numeric runtime env values are strictly parsed. Positive-integer settings reject `0`, negative values, decimals, blanks, and mixed strings such as `30abc`; `DB_QUEUE_LIMIT` is the only current non-negative integer setting where `0` is valid.
 
 The CI smoke flow randomizes `COMPOSE_PROJECT_NAME`, `LEGACY_LENS_PORT`, and `LEGACY_LENS_DB_PORT` so parallel jobs do not collide on the same runner.
 
@@ -471,6 +472,11 @@ Legacy Lens provides heuristic impact analysis intended to guide code review. It
 - Go interface dispatch, reflection, and dynamic calls may not be fully traced.
 - Delphi `with`, inheritance-heavy flows, and DFM/source mismatches can reduce precision.
 - Treat the report as the start of code review and change planning, not as the only source of truth.
+
+Dependency target kind contract:
+- `internal`: a project-local symbol, file, function, component, table, or query that Legacy Lens resolved.
+- `external`: a dependency outside the project with a known source, such as a Go standard-library or third-party package import, Delphi system unit, or external `uses` unit.
+- `unresolved`: a dynamic, ambiguous, or unknown reference whose target could not be identified.
 
 ### Snapshot / Pagination Model
 

@@ -12,6 +12,11 @@ export const analysisWarningLevels = ["note", "warning", "error"] as const;
 export const symbolKinds = ["function", "procedure", "method", "query", "table", "class"] as const;
 export const dependencyKinds = ["calls", "reads", "writes", "references"] as const;
 export const dependencyTargetKinds = ["internal", "external", "unresolved"] as const;
+export const dependencyTargetKindDescriptions: Record<(typeof dependencyTargetKinds)[number], string> = {
+  internal: "Project-local symbol, file, function, component, table, or query that Legacy Lens could resolve.",
+  external: "Dependency outside the project with a known source such as a Go package, Delphi system unit, or third-party import.",
+  unresolved: "Dynamic, ambiguous, or unknown reference whose target could not be identified.",
+};
 export const fieldDependencyOperationTypes = ["read", "write", "calculate"] as const;
 export const riskSeverities = ["low", "medium", "high", "critical"] as const;
 export const riskTypes = [
@@ -451,6 +456,7 @@ export const analysisSnapshotSummarySchema = z.object({
   dependencySummary: z.object({
     internalCount: z.number().int().nonnegative(),
     externalCount: z.number().int().nonnegative(),
+    unresolvedCount: z.number().int().nonnegative(),
     standardLibraryCount: z.number().int().nonnegative(),
     hiddenByDefaultCount: z.number().int().nonnegative(),
     defaultHideStandardLibrary: z.boolean(),
@@ -628,6 +634,7 @@ export const dependenciesPageOutputSchema = pagedResultSchema(dependencyListItem
   summary: z.object({
     internalCount: z.number().int().nonnegative(),
     externalCount: z.number().int().nonnegative(),
+    unresolvedCount: z.number().int().nonnegative(),
     standardLibraryCount: z.number().int().nonnegative(),
     hiddenByDefaultCount: z.number().int().nonnegative(),
     defaultHideStandardLibrary: z.boolean(),

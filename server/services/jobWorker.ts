@@ -2,6 +2,7 @@ import { Worker } from "node:worker_threads";
 import type { AppErrorCode } from "../../shared/contracts";
 import { AppError } from "../appError";
 import { logger } from "../_core/logger";
+import { parsePositiveIntEnv } from "../_core/env";
 
 type WorkerRequest = {
   id: number;
@@ -51,12 +52,6 @@ const pendingRequests = new Map<
     timeout: NodeJS.Timeout;
   }
 >();
-
-function parsePositiveIntEnv(name: string, fallback: number) {
-  const rawValue = process.env[name];
-  const parsedValue = Number.parseInt(String(rawValue ?? ""), 10);
-  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
-}
 
 function isTestEnvironment() {
   return process.env.NODE_ENV === "test";

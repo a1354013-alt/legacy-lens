@@ -2,6 +2,13 @@
 
 This document summarizes the production-facing boundaries that matter for Legacy Lens deployments.
 
+## Runtime Configuration
+
+- Runtime numeric env values are strictly parsed before use. Invalid configured values fail fast instead of falling back silently.
+- Positive-integer settings reject `0`, negative values, decimals, blanks, and mixed strings such as `30abc`.
+- `DB_QUEUE_LIMIT` is intentionally non-negative and may be set to `0`; all job lease, timeout, polling, upload cleanup, throttle, connection-limit, and port settings must be positive integers.
+- Keep `.env.example` aligned with production runtime settings when adding new env reads.
+
 ## Worker Topology
 
 - Web replicas and worker-enabled replicas can share the same MySQL database.
@@ -10,6 +17,7 @@ This document summarizes the production-facing boundaries that matter for Legacy
 - Worker-enabled replicas poll MySQL for `queued` jobs and expired `running` leases, so a web-only replica can enqueue work without directly waking a local worker process.
 - `PROJECT_JOB_EXECUTION_TIMEOUT_MS` bounds one claimed worker-thread execution. When it expires, the stuck worker thread is terminated and the DB lease/stale recovery path is responsible for retrying the job.
 - `PROJECT_WORKER_POLL_INTERVAL_MS` defaults to `2000` ms and must be set to a positive integer when overridden.
+- `PROJECT_JOB_LEASE_MS`, `PROJECT_JOB_HEARTBEAT_MS`, `PROJECT_JOB_STALE_MS`, `PROJECT_JOB_MAX_ATTEMPTS`, and worker timeout env values are all strict positive integers when overridden.
 - If your environment cannot guarantee shared-database conditional-update semantics, run a single worker replica.
 - Set `PROJECT_WORKER_ENABLED=false` on web-only replicas.
 - Graceful shutdown clears the worker polling timer before closing shared resources.

@@ -5,6 +5,11 @@ const positiveIntegerStringSchema = z
   .trim()
   .regex(/^[1-9]\d*$/, "Must be a positive integer.");
 
+const nonNegativeIntegerStringSchema = z
+  .string()
+  .trim()
+  .regex(/^(0|[1-9]\d*)$/, "Must be a non-negative integer.");
+
 const runtimeEnvSchema = z.object({
   VITE_APP_ID: z.string().trim().min(1, "VITE_APP_ID is required."),
   VITE_OAUTH_PORTAL_URL: z.string().trim().min(1, "VITE_OAUTH_PORTAL_URL is required."),
@@ -20,13 +25,25 @@ const runtimeEnvSchema = z.object({
   DEV_AUTH_BYPASS_UNSAFE_ALLOW: z.string().trim().optional(),
   LEGACY_LENS_GIT_HOST_ALLOWLIST: z.string().trim().optional(),
   LEGACY_LENS_TRUST_PROXY: z.string().trim().optional(),
-  PROJECT_JOB_STALE_MS: z.string().trim().optional(),
-  PROJECT_JOB_LEASE_MS: z.string().trim().optional(),
-  PROJECT_JOB_HEARTBEAT_MS: z.string().trim().optional(),
-  PROJECT_JOB_MAX_ATTEMPTS: z.string().trim().optional(),
+  PROJECT_WORKER_ENABLED: z.string().trim().optional(),
+  PROJECT_WORKER_ID: z.string().trim().optional(),
+  PROJECT_JOB_STALE_MS: positiveIntegerStringSchema.optional(),
+  PROJECT_JOB_LEASE_MS: positiveIntegerStringSchema.optional(),
+  PROJECT_JOB_HEARTBEAT_MS: positiveIntegerStringSchema.optional(),
+  PROJECT_JOB_MAX_ATTEMPTS: positiveIntegerStringSchema.optional(),
+  PROJECT_JOB_EXECUTION_TIMEOUT_MS: positiveIntegerStringSchema.optional(),
+  PROJECT_JOB_WORKER_START_TIMEOUT_MS: positiveIntegerStringSchema.optional(),
   PROJECT_WORKER_POLL_INTERVAL_MS: positiveIntegerStringSchema.optional(),
-  UPLOAD_TEMP_ZIP_TTL_MS: z.string().trim().optional(),
-  LAST_SIGNED_IN_WRITE_THROTTLE_MS: z.string().trim().optional(),
+  UPLOAD_TEMP_ZIP_TTL_MS: positiveIntegerStringSchema.optional(),
+  UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS: positiveIntegerStringSchema.optional(),
+  LAST_SIGNED_IN_WRITE_THROTTLE_MS: positiveIntegerStringSchema.optional(),
+  DB_CONNECTION_LIMIT: positiveIntegerStringSchema.optional(),
+  DB_QUEUE_LIMIT: nonNegativeIntegerStringSchema.optional(),
+  DB_WAIT_FOR_CONNECTIONS: z.string().trim().optional(),
+  PORT: positiveIntegerStringSchema.optional(),
+  CSP_ALLOW_UNSAFE_EVAL: z.string().trim().optional(),
+  LOG_LEVEL: z.string().trim().optional(),
+  LOG_FORMAT: z.string().trim().optional(),
   APP_VERSION: z.string().trim().optional(),
   GIT_COMMIT: z.string().trim().optional(),
   NODE_ENV: z.string().trim().optional(),
@@ -48,16 +65,39 @@ export function validateRuntimeConfig(source: NodeJS.ProcessEnv = process.env) {
   return readRuntimeEnv(source);
 }
 
-export function parsePositiveIntEnv(name: string, fallback: number, source: NodeJS.ProcessEnv = process.env): number {
-  const raw = source[name];
-  if (!raw) return fallback;
+type StrictIntegerEnvOptions = {
+  allowZero?: boolean;
+  source?: NodeJS.ProcessEnv;
+};
 
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isFinite(value) || value <= 0) {
-    return fallback;
+export function parseStrictIntegerEnv(
+  name: string,
+  fallback: number,
+  options: StrictIntegerEnvOptions = {}
+): number {
+  const { allowZero = false, source = process.env } = options;
+  if (!Number.isInteger(fallback) || fallback < 0 || (!allowZero && fallback === 0)) {
+    throw new Error(`[Config] ${name} fallback must be ${allowZero ? "a non-negative" : "a positive"} integer.`);
   }
 
-  return value;
+  const raw = source[name];
+  if (raw === undefined) return fallback;
+
+  const trimmed = raw.trim();
+  const pattern = allowZero ? /^(0|[1-9]\d*)$/ : /^[1-9]\d*$/;
+  if (!pattern.test(trimmed)) {
+    throw new Error(`[Config] ${name} must be ${allowZero ? "a non-negative" : "a positive"} integer.`);
+  }
+
+  return Number(trimmed);
+}
+
+export function parsePositiveIntEnv(name: string, fallback: number, source: NodeJS.ProcessEnv = process.env): number {
+  return parseStrictIntegerEnv(name, fallback, { source });
+}
+
+export function parseNonNegativeIntEnv(name: string, fallback: number, source: NodeJS.ProcessEnv = process.env): number {
+  return parseStrictIntegerEnv(name, fallback, { allowZero: true, source });
 }
 
 const parsedEnv = runtimeEnvSchema.safeParse(process.env);

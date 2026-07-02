@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { and, asc, count, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { z } from "zod";
 import type {
   AnalysisWarning,
   AnalysisSnapshot,
@@ -49,7 +48,6 @@ import { cleanupTempDir, cloneAndExtractFiles, validateSafeGitUrl } from "../uti
 import { extractInsertId } from "../utils/insertResult";
 import { extractFilesFromZip, extractFilesFromZipBuffer } from "../utils/zipHandler";
 import { logger } from "../_core/logger";
-import { parsePositiveIntEnv } from "../_core/env";
 import { buildContainsLikePattern, likeContainsEscaped } from "../_core/sqlLike";
 import { getAppVersion } from "../_core/version";
 import { runProjectJob } from "./jobWorker";
@@ -81,42 +79,42 @@ import {
   writeSuccessfulAnalysis,
 } from "./project/projectAnalysisPersistence";
 import { buildProjectReportArchiveBuffer } from "./project/projectReportArchive";
-
-const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {
-  draft: ["importing", "failed"],
-  importing: ["ready", "failed"],
-  ready: ["importing", "analyzing", "failed"],
-  analyzing: ["completed", "failed"],
-  completed: ["importing", "analyzing", "failed"],
-  failed: ["importing", "analyzing"],
-};
+import {
+  ACTIVE_PROJECT_JOB_KEY,
+  DEFAULT_PROJECT_JOB_MAX_ATTEMPTS,
+  PROJECT_JOB_HEARTBEAT_MS,
+  PROJECT_WORKER_POLL_INTERVAL_MS,
+  STALE_PROJECT_JOB_MS,
+  assertProjectTransition,
+  buildProjectJobLease,
+  canRetryProjectJob,
+  getProjectJobAttemptCount,
+  getProjectJobMaxAttempts,
+  hasProjectJobLease,
+  isActiveProjectJobStatus,
+  isProjectJobLeaseExpired,
+  toDate,
+  type ProjectJobRow,
+} from "./project/projectJobState";
+import {
+  ProjectJobExecutionAbortedError,
+  buildProjectJobOwnership,
+  createProjectJobExecutionAbortedError,
+  createProjectJobExecutionState,
+  isProjectJobOwnershipActive,
+  type ProjectJobExecutionState,
+  type ProjectJobOwnership,
+} from "./project/projectJobLease";
+import {
+  getImportZipPayloadTempPath,
+  projectJobPayloadSchema,
+  serializeProjectJobPayload,
+  type ProjectJobPayload,
+} from "./project/projectJobPayload";
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
-type ProjectJobRow = typeof projectJobs.$inferSelect;
-type ProjectJobOwnership = {
-  jobId: number;
-  projectId: number;
-  type: ProjectJobRow["type"];
-  lockedBy: string;
-  attemptCount: number;
-};
-type ProjectJobExecutionState = {
-  ownership: ProjectJobOwnership | null;
-  abortedError: ProjectJobExecutionAbortedError | null;
-};
-type ProjectJobPayload =
-  | { type: "import_zip"; zipContent: string }
-  | { type: "import_zip"; tempFilePath: string; originalFileName?: string | null }
-  | { type: "import_git"; gitUrl: string }
-  | { type: "analyze" };
 
 const queuedJobPromises = new Map<number, Promise<void>>();
-const ACTIVE_PROJECT_JOB_KEY = "active";
-const STALE_PROJECT_JOB_MS = parsePositiveIntEnv("PROJECT_JOB_STALE_MS", 900000);
-const PROJECT_JOB_LEASE_MS = parsePositiveIntEnv("PROJECT_JOB_LEASE_MS", 30000);
-const PROJECT_JOB_HEARTBEAT_MS = parsePositiveIntEnv("PROJECT_JOB_HEARTBEAT_MS", 10000);
-const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = parsePositiveIntEnv("PROJECT_JOB_MAX_ATTEMPTS", 3);
-const PROJECT_WORKER_POLL_INTERVAL_MS = parsePositiveIntEnv("PROJECT_WORKER_POLL_INTERVAL_MS", 2000);
 const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
 const ANALYSIS_INSERT_CHUNK_SIZE = 250;
 const MYSQL_MEDIUMTEXT_MAX_BYTES = 16_777_215;
@@ -124,43 +122,6 @@ let projectJobWorkerLoop: Promise<void> | null = null;
 let projectJobWorkerPollTimer: NodeJS.Timeout | null = null;
 let projectJobWorkerKickCount = 0;
 let projectJobWorkerLoopStartCount = 0;
-
-const importZipInlinePayloadSchema = z
-  .object({
-    type: z.literal("import_zip"),
-    zipContent: z.string().min(1),
-    tempFilePath: z.undefined().optional(),
-    originalFileName: z.undefined().optional(),
-  })
-  .strict();
-
-const importZipTempFilePayloadSchema = z
-  .object({
-    type: z.literal("import_zip"),
-    tempFilePath: z.string().min(1),
-    originalFileName: z.string().nullable().optional(),
-    zipContent: z.undefined().optional(),
-  })
-  .strict();
-
-const projectJobPayloadSchema = z.union([
-  importZipInlinePayloadSchema,
-  importZipTempFilePayloadSchema,
-  z.object({ type: z.literal("import_git"), gitUrl: z.string().trim().min(1) }).strict(),
-  z.object({ type: z.literal("analyze") }).strict(),
-]);
-
-class ProjectJobExecutionAbortedError extends Error {
-  constructor(
-    message: string,
-    readonly reason: "ownership_lost" | "heartbeat_failed",
-    readonly ownership: ProjectJobOwnership,
-    readonly cause?: unknown
-  ) {
-    super(message);
-    this.name = "ProjectJobExecutionAbortedError";
-  }
-}
 
 type AnalysisFailureCode =
   | "ANALYSIS_PARSE_FAILED"
@@ -195,16 +156,6 @@ class AnalysisStageError extends AppError {
 
 function isProjectWorkerEnabled() {
   return process.env.PROJECT_WORKER_ENABLED !== "false";
-}
-
-function assertProjectTransition(current: ProjectStatus, next: ProjectStatus) {
-  if (current === next) {
-    return;
-  }
-
-  if (!projectStatusTransitions[current].includes(next)) {
-    throw new AppError("INVALID_PROJECT_STATE", `Invalid project transition: ${current} -> ${next}.`);
-  }
 }
 
 function buildSymbolInsertKey(symbol: AnalyzedSymbol) {
@@ -265,27 +216,6 @@ function isInMemoryDb(db: DbHandle): db is DbHandle & { store: Record<string, Ar
   return typeof db === "object" && db !== null && "store" in db;
 }
 
-function isActiveProjectJobStatus(status: ProjectJobRow["status"]) {
-  return status === "queued" || status === "running";
-}
-
-function isProjectJobLeaseExpired(job: Pick<ProjectJobRow, "status" | "leaseUntil">, now = new Date()) {
-  if (job.status !== "running") {
-    return false;
-  }
-
-  const leaseUntil = toDate(job.leaseUntil);
-  return !leaseUntil || leaseUntil.getTime() <= now.getTime();
-}
-
-function hasProjectJobLease(job: Pick<ProjectJobRow, "leaseUntil">) {
-  return toDate(job.leaseUntil) !== null;
-}
-
-function getProjectJobAttemptCount(job: Pick<ProjectJobRow, "attemptCount">) {
-  return Number(job.attemptCount ?? 0);
-}
-
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -298,42 +228,6 @@ async function insertInChunks<T extends Record<string, unknown>>(db: DbHandle, t
   for (const chunk of chunkArray(rows, ANALYSIS_INSERT_CHUNK_SIZE)) {
     await db.insert(table as typeof dependencies).values(chunk as never);
   }
-}
-
-function getProjectJobMaxAttempts(job: Pick<ProjectJobRow, "maxAttempts">) {
-  return Math.max(1, Number(job.maxAttempts ?? DEFAULT_PROJECT_JOB_MAX_ATTEMPTS));
-}
-
-function canRetryProjectJob(job: Pick<ProjectJobRow, "attemptCount" | "maxAttempts">) {
-  return getProjectJobAttemptCount(job) < getProjectJobMaxAttempts(job);
-}
-
-function buildProjectJobLease(now = new Date()) {
-  return {
-    heartbeatAt: now,
-    leaseUntil: new Date(now.getTime() + PROJECT_JOB_LEASE_MS),
-  };
-}
-
-function buildProjectJobOwnership(job: Pick<ProjectJobRow, "id" | "projectId" | "type" | "lockedBy" | "attemptCount">): ProjectJobOwnership | null {
-  if (!job.lockedBy) {
-    return null;
-  }
-
-  return {
-    jobId: job.id,
-    projectId: job.projectId,
-    type: job.type,
-    lockedBy: job.lockedBy,
-    attemptCount: getProjectJobAttemptCount(job),
-  };
-}
-
-function createProjectJobExecutionState(ownership: ProjectJobOwnership | null): ProjectJobExecutionState {
-  return {
-    ownership,
-    abortedError: null,
-  };
 }
 
 function buildDependencyListItems(
@@ -501,10 +395,6 @@ function toPublicProjectJobRecord(job: ProjectJobRow): ProjectJobRecord {
   };
 }
 
-function serializeProjectJobPayload(payload: ProjectJobPayload) {
-  return JSON.stringify(payload);
-}
-
 function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloadJson">): ProjectJobPayload {
   if (!job.payloadJson) {
     throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is missing.`);
@@ -528,18 +418,6 @@ function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloa
   }
 
   return parsed;
-}
-
-function toDate(value: Date | string | null | undefined) {
-  if (!value) {
-    return null;
-  }
-
-  return value instanceof Date ? value : new Date(value);
-}
-
-function getImportZipPayloadTempPath(payload: ProjectJobPayload) {
-  return payload.type === "import_zip" && "tempFilePath" in payload ? payload.tempFilePath : null;
 }
 
 function isUniqueConstraintError(error: unknown) {
@@ -691,41 +569,9 @@ async function transitionProjectState(
   await db.update(projects).set({ ...updates, updatedAt: new Date() }).where(condition);
 }
 
-function isProjectJobOwnershipActive(
-  job: Pick<ProjectJobRow, "id" | "status" | "lockedBy" | "attemptCount" | "leaseUntil"> | null,
-  ownership: ProjectJobOwnership,
-  now = new Date()
-) {
-  if (!job) {
-    return false;
-  }
-
-  const leaseUntil = toDate(job.leaseUntil);
-  return (
-    job.id === ownership.jobId &&
-    job.status === "running" &&
-    job.lockedBy === ownership.lockedBy &&
-    getProjectJobAttemptCount(job) === ownership.attemptCount &&
-    Boolean(leaseUntil && leaseUntil.getTime() > now.getTime())
-  );
-}
-
 async function hasProjectJobOwnership(ownership: ProjectJobOwnership, now = new Date()) {
   const job = await getProjectJobById(ownership.jobId);
   return isProjectJobOwnershipActive(job, ownership, now);
-}
-
-function createProjectJobExecutionAbortedError(
-  reason: "ownership_lost" | "heartbeat_failed",
-  ownership: ProjectJobOwnership,
-  action: string,
-  cause?: unknown
-) {
-  const message =
-    reason === "ownership_lost"
-      ? `Project job ${ownership.jobId} lost ownership before ${action}.`
-      : `Project job ${ownership.jobId} heartbeat failed before ${action}.`;
-  return new ProjectJobExecutionAbortedError(message, reason, ownership, cause);
 }
 
 function markProjectJobExecutionAborted(

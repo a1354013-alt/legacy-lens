@@ -9,6 +9,7 @@ pnpm audit --audit-level high
 pnpm lint
 pnpm check
 pnpm test
+pnpm test:migration
 pnpm build
 pnpm docker:smoke
 ```
@@ -22,6 +23,8 @@ pnpm docker:smoke
 - New-project import route contract (`POST /api/projects/import`) and existing-project re-import route contract (`POST /api/projects/:projectId/upload`)
 - ZIP/Git import safety boundaries
 - Analysis persistence and report export
+- Strict env integer parsing, including invalid production env fail-fast behavior
+- Dependency `targetKind` separation for `internal`, `external`, and `unresolved`
 
 ## Clean-Environment Expectations
 

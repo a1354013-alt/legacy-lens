@@ -1,7 +1,52 @@
 import { describe, expect, it } from "vitest";
-import { groupRisks, groupRules, summarizeWarnings } from "./analysisPresentation";
+import { buildDependencySummary, groupRisks, groupRules, summarizeWarnings } from "./analysisPresentation";
 
 describe("analysisPresentation helpers", () => {
+  it("counts external and unresolved dependencies separately", () => {
+    const summary = buildDependencySummary([
+      {
+        id: 1,
+        sourceSymbolId: 1,
+        sourceSymbolName: "main",
+        targetSymbolId: 2,
+        targetSymbolName: "run",
+        targetExternalName: null,
+        targetKind: "internal",
+        dependencyType: "calls",
+        lineNumber: 1,
+      },
+      {
+        id: 2,
+        sourceSymbolId: 1,
+        sourceSymbolName: "main",
+        targetSymbolId: null,
+        targetSymbolName: null,
+        targetExternalName: "SysUtils",
+        targetKind: "external",
+        dependencyType: "references",
+        lineNumber: 2,
+      },
+      {
+        id: 3,
+        sourceSymbolId: 1,
+        sourceSymbolName: "main",
+        targetSymbolId: null,
+        targetSymbolName: null,
+        targetExternalName: "dynamicCall",
+        targetKind: "unresolved",
+        dependencyType: "calls",
+        lineNumber: 3,
+      },
+    ]);
+
+    expect(summary).toMatchObject({
+      internalCount: 1,
+      externalCount: 1,
+      unresolvedCount: 1,
+      standardLibraryCount: 1,
+    });
+  });
+
   it("aggregates repeated warnings into localized summary buckets", () => {
     const summary = summarizeWarnings([
       { code: "IMPORT_LIMITED_ANALYSIS", message: "limited", filePath: "forms/A.dfm" },

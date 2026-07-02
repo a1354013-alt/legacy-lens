@@ -1,4 +1,4 @@
-import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
+import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning, DependencyTargetKind } from "../../shared/contracts";
 
 export interface AnalyzableFile {
   path: string;
@@ -25,6 +25,7 @@ export interface SymbolDependency {
   to?: string;
   fromName: string;
   toName: string;
+  targetKind?: DependencyTargetKind;
   type: "calls" | "reads" | "writes" | "references";
   line: number;
 }

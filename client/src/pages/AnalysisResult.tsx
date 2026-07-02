@@ -464,6 +464,7 @@ export default function AnalysisResult() {
                     ? [
                         `內部相依：${snapshot.dependencySummary.internalCount}`,
                         `外部相依：${snapshot.dependencySummary.externalCount}`,
+                        `未解析相依：${snapshot.dependencySummary.unresolvedCount}`,
                         `Delphi 標準函式庫：${snapshot.dependencySummary.standardLibraryCount}`,
                       ]
                     : []

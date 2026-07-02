@@ -89,6 +89,7 @@ function createModel(overrides: Record<string, unknown> = {}) {
         summary: {
           internalCount: 0,
           externalCount: 0,
+          unresolvedCount: 0,
           standardLibraryCount: 0,
           hiddenByDefaultCount: 0,
           defaultHideStandardLibrary: true,
@@ -133,6 +134,7 @@ function createModel(overrides: Record<string, unknown> = {}) {
       dependencySummary: {
         internalCount: 0,
         externalCount: 0,
+        unresolvedCount: 0,
         standardLibraryCount: 0,
         hiddenByDefaultCount: 0,
         defaultHideStandardLibrary: true,
@@ -206,7 +208,7 @@ describe("AnalysisResult", () => {
           topRiskGroups: [],
           topRuleGroups: [],
           topAffectedFiles: [],
-          dependencySummary: { internalCount: 1, externalCount: 1, standardLibraryCount: 1, hiddenByDefaultCount: 1, defaultHideStandardLibrary: true },
+          dependencySummary: { internalCount: 1, externalCount: 1, unresolvedCount: 0, standardLibraryCount: 1, hiddenByDefaultCount: 1, defaultHideStandardLibrary: true },
           fieldTables: [],
         },
         report: {
@@ -253,6 +255,61 @@ describe("AnalysisResult", () => {
     expect(html).toContain("IMPORT_LIMITED_ANALYSIS");
     expect(html).toContain("Imported with limited analysis.");
     expect(html).toContain("forms/MainForm.dfm");
+  });
+
+  it("renders external and unresolved dependency target kinds separately", () => {
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        activeTab: "dependencies",
+        dependenciesQuery: {
+          data: {
+            items: [
+              {
+                id: 1,
+                sourceSymbolId: 1,
+                sourceSymbolName: "main",
+                targetSymbolId: null,
+                targetSymbolName: null,
+                targetExternalName: "fmt",
+                targetKind: "external",
+                dependencyType: "references",
+                lineNumber: 3,
+              },
+              {
+                id: 2,
+                sourceSymbolId: 1,
+                sourceSymbolName: "main",
+                targetSymbolId: null,
+                targetSymbolName: null,
+                targetExternalName: "dynamicCall",
+                targetKind: "unresolved",
+                dependencyType: "calls",
+                lineNumber: 9,
+              },
+            ],
+            total: 2,
+            page: 1,
+            pageCount: 1,
+            summary: {
+              internalCount: 0,
+              externalCount: 1,
+              unresolvedCount: 1,
+              standardLibraryCount: 0,
+              hiddenByDefaultCount: 0,
+              defaultHideStandardLibrary: true,
+            },
+          },
+          isLoading: false,
+        },
+      })
+    );
+
+    const html = renderToString(<AnalysisResult />);
+
+    expect(html).toContain("fmt");
+    expect(html).toContain("dynamicCall");
+    expect(html).toContain("外部");
+    expect(html).toContain("未解析");
   });
 
   it("shows analysis confidence score, level, breakdown, and manual review prompt", () => {

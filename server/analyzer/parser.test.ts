@@ -76,11 +76,13 @@ describe("DelphiParser", () => {
         expect.objectContaining({
           fromName: "Invoice",
           toName: "System.SysUtils",
+          targetKind: "external",
           type: "references",
         }),
         expect.objectContaining({
           fromName: "Invoice",
           toName: "Data.DB",
+          targetKind: "external",
           type: "references",
         }),
       ])
@@ -402,6 +404,11 @@ describe("DelphiParser", () => {
     const dependencies = parser.parseDependencies(symbols);
 
     expect(symbols).toEqual(expect.arrayContaining([expect.objectContaining({ qualifiedName: "Service.Run", type: "method" })]));
+    expect(dependencies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fromName: "Service", toName: "example.com/service", targetKind: "external", type: "references" }),
+      ])
+    );
     expect(dependencies.some((dependency) => dependency.fromName === "execute" && dependency.toName === "Service.Run")).toBe(true);
     expect(dependencies.some((dependency) => dependency.fromName === "build" && dependency.toName.includes("Save"))).toBe(false);
   });

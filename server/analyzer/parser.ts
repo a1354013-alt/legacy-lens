@@ -1099,6 +1099,40 @@ function collectGoVariableTypes(lines: string[]) {
   return variableTypes;
 }
 
+function collectGoImports(lines: string[]) {
+  const imports: Array<{ name: string; line: number }> = [];
+  let inImportBlock = false;
+
+  for (const [index, line] of lines.entries()) {
+    const singleImport = line.match(/^\s*import\s+(?:[A-Za-z_][\w$]*\s+|[._]\s+)?["`]([^"`]+)["`]/);
+    if (singleImport) {
+      imports.push({ name: singleImport[1], line: index + 1 });
+      continue;
+    }
+
+    if (/^\s*import\s*\(\s*$/.test(line)) {
+      inImportBlock = true;
+      continue;
+    }
+
+    if (inImportBlock && /^\s*\)\s*$/.test(line)) {
+      inImportBlock = false;
+      continue;
+    }
+
+    if (!inImportBlock) {
+      continue;
+    }
+
+    const blockImport = line.match(/^\s*(?:[A-Za-z_][\w$]*\s+|[._]\s+)?["`]([^"`]+)["`]/);
+    if (blockImport) {
+      imports.push({ name: blockImport[1], line: index + 1 });
+    }
+  }
+
+  return imports;
+}
+
 export class GoParser implements FileParser {
   constructor(private readonly content: string, private readonly file: string) {}
 
@@ -1151,6 +1185,20 @@ export class GoParser implements FileParser {
     const builtins = new Set(["if", "for", "switch", "return", "go", "defer", "select", "make", "new", "append", "len", "cap", "panic", "recover", "close", "copy", "delete"]);
     const methodCallPattern = /([A-Za-z_][\w$]*)\.([A-Za-z_][\w$]*)\s*\(/g;
     const functionCallPattern = /\b([A-Za-z_][\w$]*)\s*\(/g;
+
+    const packageOwner = symbols[0];
+    if (packageOwner) {
+      for (const goImport of collectGoImports(lines)) {
+        dependencies.push({
+          from: packageOwner.stableKey,
+          fromName: packageOwner.qualifiedName ?? packageOwner.name,
+          toName: goImport.name,
+          targetKind: "external",
+          type: "references",
+          line: goImport.line,
+        });
+      }
+    }
 
     lines.forEach((line, index) => {
       const owner = findOwnerSymbol(symbols, index + 1, this.file);
@@ -1888,6 +1936,7 @@ export class DelphiParser implements FileParser {
           to: `unit::${usedUnit}`,
           fromName: this.unitInfo.unitName,
           toName: usedUnit,
+          targetKind: "external",
           type: "references",
           line: 1,
         });

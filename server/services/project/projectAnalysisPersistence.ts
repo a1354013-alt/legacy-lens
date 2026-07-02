@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { AnalysisWarning } from "../../../shared/contracts";
+import type { AnalysisWarning, ProjectStatus } from "../../../shared/contracts";
 import {
   analysisResults,
   dependencies,
@@ -13,7 +13,8 @@ import {
 import { buildFieldIdentityKey, normalizeFieldIdentity } from "../../analyzer/fieldIdentity";
 import type { AnalyzedSymbol, ProjectAnalysisResult } from "../../analyzer/types";
 import type { AppError } from "../../appError";
-import type { DatabaseClient } from "../../dbTypes";
+import type { DatabaseClient, InsertProjectRecord } from "../../dbTypes";
+import type { ProjectJobExecutionState } from "./projectJobLease";
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 type ProjectFileRecord = { id?: number | null; filePath: string };
@@ -25,14 +26,18 @@ export type AnalysisPersistCheckpoint = {
 };
 
 type PersistenceDeps = {
-  assertProjectJobExecutionActive: (...args: any[]) => Promise<void>;
+  assertProjectJobExecutionActive: (
+    executionState: ProjectJobExecutionState | undefined,
+    action: string,
+    options?: { refreshLease?: boolean }
+  ) => Promise<void>;
   replaceAnalysisResult: (
     db: DbHandle,
     projectId: number,
     values: Omit<typeof analysisResults.$inferInsert, "projectId">
   ) => Promise<void>;
   getAnalysisResultErrorMessage: (result: Pick<ProjectAnalysisResult, "status">) => string | null;
-  throwAnalysisPersistError: (error: unknown, context: any) => never;
+  throwAnalysisPersistError: (error: unknown, context: AnalysisPersistErrorContext) => never;
   insertInChunks: <T extends Record<string, unknown>>(db: DbHandle, table: object, rows: T[]) => Promise<void>;
   resolveOwningSymbol: (symbolsForProject: AnalyzedSymbol[], file: string, line: number) => AnalyzedSymbol | undefined;
   resolveInsertedTargetSymbolId: (
@@ -40,9 +45,22 @@ type PersistenceDeps = {
     symbolsForProject: AnalyzedSymbol[],
     insertedSymbolIds: Map<string, number>
   ) => number | undefined;
-  transitionProjectState: (...args: any[]) => Promise<void>;
+  transitionProjectState: (
+    db: DbHandle,
+    projectId: number,
+    updates: Partial<InsertProjectRecord> & { status: ProjectStatus },
+    userId?: number
+  ) => Promise<void>;
   getExistingUsableAnalysisResult: (db: DbHandle, projectId: number) => Promise<(typeof analysisResults.$inferSelect) | null>;
   mergeAnalysisWarnings: (base: AnalysisWarning[], additions: AnalysisWarning[]) => AnalysisWarning[];
+};
+
+export type AnalysisPersistErrorContext = {
+  projectId: number;
+  executionState?: ProjectJobExecutionState;
+  operation: string;
+  table: string;
+  filePath?: string;
 };
 
 function updatePersistCheckpoint(checkpoint: AnalysisPersistCheckpoint, next: AnalysisPersistCheckpoint) {
@@ -76,7 +94,7 @@ export async function writeSuccessfulAnalysis(
     projectFiles: ProjectFileRecord[];
     result: ProjectAnalysisResult;
     persistCheckpoint: AnalysisPersistCheckpoint;
-    executionState?: unknown;
+    executionState?: ProjectJobExecutionState;
   },
   deps: PersistenceDeps
 ) {
@@ -307,12 +325,13 @@ export async function writeSuccessfulAnalysis(
     if (!sourceSymbolId) continue;
 
     const targetSymbolId = resolveInsertedTargetSymbolId(dependency, result.symbols, insertedSymbolIds);
+    const targetKind = targetSymbolId ? "internal" : dependency.targetKind ?? "unresolved";
     dependencyRows.push({
       projectId,
       sourceSymbolId,
       targetSymbolId: targetSymbolId ?? null,
       targetExternalName: targetSymbolId ? null : dependency.toName,
-      targetKind: targetSymbolId ? "internal" : "unresolved",
+      targetKind,
       dependencyType: dependency.type,
       lineNumber: dependency.line,
     });
@@ -422,7 +441,7 @@ export async function writeFailedAnalysis(
     tx: DbHandle;
     projectId: number;
     appError: AppError;
-    executionState?: unknown;
+    executionState?: ProjectJobExecutionState;
   },
   deps: PersistenceDeps
 ) {

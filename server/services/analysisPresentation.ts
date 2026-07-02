@@ -102,6 +102,7 @@ export type AffectedFileSummary = {
 export type DependencySummary = {
   internalCount: number;
   externalCount: number;
+  unresolvedCount: number;
   standardLibraryCount: number;
   hiddenByDefaultCount: number;
   defaultHideStandardLibrary: boolean;
@@ -253,11 +254,17 @@ export function isDelphiStandardLibrary(targetName: string | null | undefined) {
 export function buildDependencySummary(rows: DependencyListItem[]) {
   let internalCount = 0;
   let externalCount = 0;
+  let unresolvedCount = 0;
   let standardLibraryCount = 0;
 
   for (const row of rows) {
     if (row.targetKind === "internal") {
       internalCount += 1;
+      continue;
+    }
+
+    if (row.targetKind === "unresolved") {
+      unresolvedCount += 1;
       continue;
     }
 
@@ -270,6 +277,7 @@ export function buildDependencySummary(rows: DependencyListItem[]) {
   return {
     internalCount,
     externalCount,
+    unresolvedCount,
     standardLibraryCount,
     hiddenByDefaultCount: standardLibraryCount,
     defaultHideStandardLibrary: true,

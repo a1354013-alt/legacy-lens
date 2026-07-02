@@ -8,15 +8,42 @@ afterEach(() => {
 });
 
 describe("dev auth bypass gating", () => {
-  it("parses positive integer env values with fallback protection", async () => {
-    const { parsePositiveIntEnv } = await import("./env");
+  it("strictly parses positive integer env values", async () => {
+    const { parsePositiveIntEnv, parseNonNegativeIntEnv } = await import("./env");
 
     expect(parsePositiveIntEnv("MISSING_TIMEOUT", 123, {})).toBe(123);
-    expect(parsePositiveIntEnv("BLANK_TIMEOUT", 123, { BLANK_TIMEOUT: "" })).toBe(123);
-    expect(parsePositiveIntEnv("BAD_TIMEOUT", 123, { BAD_TIMEOUT: "abc" })).toBe(123);
-    expect(parsePositiveIntEnv("NEGATIVE_TIMEOUT", 123, { NEGATIVE_TIMEOUT: "-1" })).toBe(123);
-    expect(parsePositiveIntEnv("ZERO_TIMEOUT", 123, { ZERO_TIMEOUT: "0" })).toBe(123);
     expect(parsePositiveIntEnv("GOOD_TIMEOUT", 123, { GOOD_TIMEOUT: "456" })).toBe(456);
+    expect(parsePositiveIntEnv("TRIMMED_TIMEOUT", 123, { TRIMMED_TIMEOUT: " 456 " })).toBe(456);
+    expect(parseNonNegativeIntEnv("ZERO_QUEUE_LIMIT", 10, { ZERO_QUEUE_LIMIT: "0" })).toBe(0);
+  });
+
+  it.each([
+    ["BLANK_TIMEOUT", ""],
+    ["BAD_TIMEOUT", "abc"],
+    ["MIXED_TIMEOUT", "30abc"],
+    ["DECIMAL_TIMEOUT", "1.5"],
+    ["NEGATIVE_TIMEOUT", "-1"],
+    ["ZERO_TIMEOUT", "0"],
+  ])("rejects invalid positive integer env %s=%s", async (name, value) => {
+    const { parsePositiveIntEnv } = await import("./env");
+
+    expect(() => parsePositiveIntEnv(name, 123, { [name]: value })).toThrow(`[Config] ${name} must be a positive integer.`);
+  });
+
+  it("rejects invalid production env instead of falling back", async () => {
+    const { validateRuntimeConfig } = await import("./env");
+
+    expect(() =>
+      validateRuntimeConfig({
+        VITE_APP_ID: "app",
+        VITE_OAUTH_PORTAL_URL: "http://localhost:3001",
+        JWT_SECRET: "12345678901234567890123456789012",
+        DATABASE_URL: "mysql://root:password@localhost:3306/legacy_lens",
+        OAUTH_SERVER_URL: "http://localhost:3001",
+        NODE_ENV: "production",
+        PROJECT_JOB_LEASE_MS: "30abc",
+      })
+    ).toThrow("Must be a positive integer.");
   });
 
   it("disables dev auth bypass in production by default", async () => {

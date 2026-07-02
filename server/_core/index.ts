@@ -7,7 +7,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { validateDbConfig, closeDb } from "../db";
 import { createContext } from "./context";
-import { validateRuntimeConfig } from "./env";
+import { parsePositiveIntEnv, validateRuntimeConfig } from "./env";
 import { registerDevAuthRoutes } from "./devAuth";
 import { registerOAuthRoutes } from "./oauth";
 import { serveStatic } from "./static";
@@ -61,7 +61,7 @@ async function startServer() {
   const recoveredJobCount = await recoverStaleProjectJobsOnStartup();
   const projectWorkerEnabled = process.env.PROJECT_WORKER_ENABLED !== "false";
   const projectWorkerPollIntervalMs = projectWorkerEnabled
-    ? Number.parseInt(process.env.PROJECT_WORKER_POLL_INTERVAL_MS ?? "2000", 10) || 2000
+    ? parsePositiveIntEnv("PROJECT_WORKER_POLL_INTERVAL_MS", 2000)
     : null;
 
   const app = express();
@@ -117,7 +117,7 @@ async function startServer() {
     serveStatic(app);
   }
 
-  const preferredPort = Number.parseInt(process.env.PORT || "3000", 10);
+  const preferredPort = parsePositiveIntEnv("PORT", 3000);
   let port = preferredPort;
 
   if (process.env.NODE_ENV === "development") {

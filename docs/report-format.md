@@ -4,6 +4,14 @@ Legacy Lens report ZIP files are outputs from heuristic static analysis. They ar
 
 Legacy Lens is not a compiler-grade parser and does not replace human code review. Treat the report as a structured review aid: it can highlight relationships, risks, limitations, and follow-up questions, but it cannot prove complete runtime behavior.
 
+## Dependency Target Kinds
+
+- `internal`: a project-local symbol, file, function, component, table, or query that Legacy Lens resolved.
+- `external`: a dependency outside the project with a known source, such as a Go standard-library or third-party package import, Delphi system unit, or external `uses` unit.
+- `unresolved`: a dynamic, ambiguous, or unknown reference whose target could not be identified.
+
+`targetSymbolId` is only required for `internal` dependencies. External dependencies should keep their known name in `targetExternalName`; missing `targetSymbolId` alone does not make a dependency unresolved.
+
 ## Report Files
 
 ### EXECUTIVE_SUMMARY.md

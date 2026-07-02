@@ -47,6 +47,7 @@ function createSnapshot(): AnalysisSnapshot {
     dependencySummary: {
       internalCount: 0,
       externalCount: 0,
+      unresolvedCount: 0,
       standardLibraryCount: 0,
       hiddenByDefaultCount: 0,
       defaultHideStandardLibrary: true,
