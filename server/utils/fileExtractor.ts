@@ -1,10 +1,10 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { files as filesTable } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { extractInsertId } from "./insertResult";
 import type { ExtractedFile } from "./zipHandler";
 
 type DbLike = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "insert" | "select" | "delete">;
+const SAVE_EXTRACTED_FILES_CHUNK_SIZE = 250;
 
 function detectFileType(filePath: string): string {
   const lastDot = filePath.lastIndexOf(".");
@@ -40,28 +40,24 @@ function detectFileLanguage(filePath: string) {
 }
 
 export async function saveExtractedFiles(projectId: number, extractedFiles: ExtractedFile[], dbOrTx?: DbLike): Promise<number[]> {
-  const db = await resolveDb(dbOrTx);
-  const fileIds: number[] = [];
-
-  for (const file of extractedFiles) {
-    const insertResult = await db.insert(filesTable).values({
-      projectId,
-      filePath: file.path,
-      fileName: file.fileName,
-      fileType: detectFileType(file.path),
-      status: "stored",
-      content: file.content,
-      lineCount: file.content.split(/\r?\n/).length,
-    });
-
-    const insertId = extractInsertId(insertResult);
-    if (insertId > 0) {
-      fileIds.push(insertId);
-    }
+  if (extractedFiles.length === 0) {
+    return [];
   }
 
-  if (fileIds.length === extractedFiles.length) {
-    return fileIds;
+  const db = await resolveDb(dbOrTx);
+
+  const insertRows = extractedFiles.map((file) => ({
+    projectId,
+    filePath: file.path,
+    fileName: file.fileName,
+    fileType: detectFileType(file.path),
+    status: "stored" as const,
+    content: file.content,
+    lineCount: file.content.split(/\r?\n/).length,
+  }));
+
+  for (let index = 0; index < insertRows.length; index += SAVE_EXTRACTED_FILES_CHUNK_SIZE) {
+    await db.insert(filesTable).values(insertRows.slice(index, index + SAVE_EXTRACTED_FILES_CHUNK_SIZE));
   }
 
   const filePaths = Array.from(new Set(extractedFiles.map((file) => file.path)));

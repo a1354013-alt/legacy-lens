@@ -16,7 +16,15 @@ describe("parseStrictPositiveIntegerEnv", () => {
     ).toBe(180000);
   });
 
-  it.each(["0", "-1", "1.5", "30abc", ""])("rejects %s", value => {
+  it("accepts strict positive integers with surrounding whitespace", () => {
+    expect(
+      parseStrictPositiveIntegerEnv("LEGACY_LENS_SMOKE_TIMEOUT_MS", 180000, {
+        LEGACY_LENS_SMOKE_TIMEOUT_MS: " 180000 ",
+      })
+    ).toBe(180000);
+  });
+
+  it.each(["0", "-1", "1.5", "30abc", "", "   "])("rejects %s", value => {
     expect(() =>
       parseStrictPositiveIntegerEnv("LEGACY_LENS_SMOKE_TIMEOUT_MS", 180000, {
         LEGACY_LENS_SMOKE_TIMEOUT_MS: value,

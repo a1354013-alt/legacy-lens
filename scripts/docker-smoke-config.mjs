@@ -8,9 +8,10 @@ export function parseStrictPositiveIntegerEnv(
     return defaultValue;
   }
 
-  if (!/^[1-9]\d*$/.test(rawValue)) {
+  const trimmedValue = rawValue.trim();
+  if (!/^[1-9]\d*$/.test(trimmedValue)) {
     throw new Error(`${name} must be a positive integer.`);
   }
 
-  return Number(rawValue);
+  return Number(trimmedValue);
 }
