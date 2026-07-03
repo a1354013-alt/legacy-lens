@@ -1312,8 +1312,8 @@ function throwAnalysisPersistError(
   });
 }
 
-export async function failProjectJobWithoutOwnership(jobId: number, error: AppError) {
-  const job = await getProjectJobById(jobId);
+export async function failClaimedProjectJobBestEffort(ownership: ProjectJobOwnership, error: AppError) {
+  const job = await getProjectJobById(ownership.jobId);
   if (!job || job.status !== "running") {
     return false;
   }
@@ -1328,7 +1328,7 @@ export async function failProjectJobWithoutOwnership(jobId: number, error: AppEr
   })();
   const tempFilePath = payload ? getImportZipPayloadTempPath(payload) : null;
   const db = await requireDb();
-  await db
+  const updateResult = await db
     .update(projectJobs)
     .set({
       status: "failed",
@@ -1341,7 +1341,29 @@ export async function failProjectJobWithoutOwnership(jobId: number, error: AppEr
       errorMessage: error.message,
       finishedAt: now,
     })
-    .where(eq(projectJobs.id, jobId));
+    .where(
+      and(
+        eq(projectJobs.id, ownership.jobId),
+        eq(projectJobs.status, "running"),
+        eq(projectJobs.lockedBy, ownership.lockedBy),
+        eq(projectJobs.attemptCount, ownership.attemptCount)
+      )
+    );
+
+  const affectedRows = extractAffectedRows(updateResult);
+  if (typeof affectedRows === "number" && affectedRows === 0) {
+    logger.warn("Project job failure skipped because ownership changed", {
+      action: "project.job.failure_skipped",
+      ...getProjectJobLogContext(job, {
+        status: job.status,
+        lockedBy: ownership.lockedBy,
+        attemptCount: ownership.attemptCount,
+        errorCode: error.code,
+        errorMessage: error.message,
+      }),
+    });
+    return false;
+  }
 
   if (job.type === "analyze") {
     await failAnalysisProjectIfStillAnalyzing(job, now, error);
@@ -1362,10 +1384,12 @@ export async function failProjectJobWithoutOwnership(jobId: number, error: AppEr
     });
   }
 
-  logger.error("Project job failed outside worker ownership", {
+  logger.error("Project job failed with fenced ownership", {
     action: "project.job.failed",
     ...getProjectJobLogContext(job, {
       status: "failed",
+      lockedBy: ownership.lockedBy,
+      attemptCount: ownership.attemptCount,
       errorCode: error.code,
       errorMessage: error.message,
       finishedAt: now,
@@ -1468,7 +1492,20 @@ async function processNextQueuedProjectJob() {
     return false;
   }
 
-  const promise = runProjectJob(claimedJob.id)
+  const ownership = buildProjectJobOwnership(claimedJob);
+  if (!ownership) {
+    logger.error("Project job dispatch failed", {
+      action: "project.job.worker.error",
+      ...getProjectJobLogContext(claimedJob, {
+        status: "failed",
+        errorCode: "PROJECT_JOB_STALE",
+        errorMessage: "Project job ownership metadata was missing after claim.",
+      }),
+    });
+    return false;
+  }
+
+  const promise = runProjectJob(claimedJob.id, ownership)
     .catch((error) => {
       const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
       logger.error("Project job dispatch failed", {

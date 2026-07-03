@@ -15,8 +15,8 @@ const {
   workerCtorErrorRef: { current: null as Error | null },
   autoReadyRef: { current: true },
 }));
-const { failProjectJobWithoutOwnershipMock } = vi.hoisted(() => ({
-  failProjectJobWithoutOwnershipMock: vi.fn(async () => true),
+const { failClaimedProjectJobBestEffortMock } = vi.hoisted(() => ({
+  failClaimedProjectJobBestEffortMock: vi.fn(async () => true),
 }));
 const { loggerWarnMock } = vi.hoisted(() => ({
   loggerWarnMock: vi.fn(),
@@ -43,7 +43,7 @@ vi.mock("node:worker_threads", () => ({
 }));
 
 vi.mock("./projectWorkflow", () => ({
-  failProjectJobWithoutOwnership: failProjectJobWithoutOwnershipMock,
+  failClaimedProjectJobBestEffort: failClaimedProjectJobBestEffortMock,
   runClaimedProjectJob: vi.fn(),
 }));
 
@@ -56,6 +56,14 @@ vi.mock("../_core/logger", () => ({
   },
 }));
 
+const claimedOwnership = {
+  jobId: 42,
+  projectId: 1,
+  type: "import_zip" as const,
+  lockedBy: "worker-a",
+  attemptCount: 1,
+};
+
 describe("runProjectJob", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -63,7 +71,7 @@ describe("runProjectJob", () => {
     workerInstances.length = 0;
     workerCtorErrorRef.current = null;
     autoReadyRef.current = true;
-    failProjectJobWithoutOwnershipMock.mockClear();
+    failClaimedProjectJobBestEffortMock.mockClear();
     loggerWarnMock.mockClear();
     delete process.env.PROJECT_JOB_EXECUTION_TIMEOUT_MS;
     delete process.env.PROJECT_JOB_WORKER_START_TIMEOUT_MS;
@@ -76,15 +84,15 @@ describe("runProjectJob", () => {
 
     const { runProjectJob } = await import("./jobWorker");
     const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
-    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
+    setProjectJobFailurePersisterForTest(failClaimedProjectJobBestEffortMock);
 
-    await expect(runProjectJob(42)).rejects.toMatchObject({
+    await expect(runProjectJob(42, claimedOwnership)).rejects.toMatchObject({
       code: "PROJECT_JOB_WORKER_EXITED",
       message: expect.stringContaining("bundle missing"),
     });
 
-    expect(failProjectJobWithoutOwnershipMock).toHaveBeenCalledWith(
-      42,
+    expect(failClaimedProjectJobBestEffortMock).toHaveBeenCalledWith(
+      claimedOwnership,
       expect.objectContaining({ code: "PROJECT_JOB_WORKER_EXITED", message: expect.stringContaining("bundle missing") })
     );
   });
@@ -97,16 +105,16 @@ describe("runProjectJob", () => {
 
     const { runProjectJob } = await import("./jobWorker");
     const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
-    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
-    const promise = runProjectJob(42);
+    setProjectJobFailurePersisterForTest(failClaimedProjectJobBestEffortMock);
+    const promise = runProjectJob(42, claimedOwnership);
     const expectation = expect(promise).rejects.toMatchObject({
       code: "PROJECT_JOB_WORKER_EXITED",
     });
     await vi.advanceTimersByTimeAsync(25);
 
     await expectation;
-    expect(failProjectJobWithoutOwnershipMock).toHaveBeenCalledWith(
-      42,
+    expect(failClaimedProjectJobBestEffortMock).toHaveBeenCalledWith(
+      claimedOwnership,
       expect.objectContaining({ code: "PROJECT_JOB_WORKER_EXITED" })
     );
   });
@@ -116,8 +124,8 @@ describe("runProjectJob", () => {
 
     const { runProjectJob } = await import("./jobWorker");
     const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
-    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
-    const promise = runProjectJob(42);
+    setProjectJobFailurePersisterForTest(failClaimedProjectJobBestEffortMock);
+    const promise = runProjectJob(42, claimedOwnership);
 
     await vi.waitFor(() => {
       expect(workerInstances).toHaveLength(1);
@@ -137,8 +145,8 @@ describe("runProjectJob", () => {
       code: "IMPORT_FAILED",
       message: "ZIP import failed.",
     });
-    expect(failProjectJobWithoutOwnershipMock).toHaveBeenCalledWith(
-      42,
+    expect(failClaimedProjectJobBestEffortMock).toHaveBeenCalledWith(
+      claimedOwnership,
       expect.objectContaining({ code: "IMPORT_FAILED", message: "ZIP import failed." })
     );
   });
@@ -150,8 +158,8 @@ describe("runProjectJob", () => {
 
     const { runProjectJob } = await import("./jobWorker");
     const { setProjectJobFailurePersisterForTest } = await import("./jobWorker");
-    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
-    const promise = runProjectJob(42);
+    setProjectJobFailurePersisterForTest(failClaimedProjectJobBestEffortMock);
+    const promise = runProjectJob(42, claimedOwnership);
     await vi.waitFor(() => {
       expect(workerInstances).toHaveLength(1);
       expect(workerInstances[0].postMessage).toHaveBeenCalledWith({ id: 1, jobId: 42 });
@@ -164,8 +172,8 @@ describe("runProjectJob", () => {
 
     await expectation;
     expect(workerInstances[0].terminate).toHaveBeenCalledTimes(1);
-    expect(failProjectJobWithoutOwnershipMock).toHaveBeenCalledWith(
-      42,
+    expect(failClaimedProjectJobBestEffortMock).toHaveBeenCalledWith(
+      claimedOwnership,
       expect.objectContaining({ code: "PROJECT_JOB_TIMEOUT" })
     );
   });
@@ -174,11 +182,11 @@ describe("runProjectJob", () => {
     vi.useFakeTimers();
     process.env.NODE_ENV = "production";
     process.env.PROJECT_JOB_EXECUTION_TIMEOUT_MS = "25";
-    failProjectJobWithoutOwnershipMock.mockRejectedValueOnce(new Error("projectJobs table missing"));
+    failClaimedProjectJobBestEffortMock.mockRejectedValueOnce(new Error("projectJobs table missing"));
 
     const { runProjectJob, setProjectJobFailurePersisterForTest } = await import("./jobWorker");
-    setProjectJobFailurePersisterForTest(failProjectJobWithoutOwnershipMock);
-    const promise = runProjectJob(42);
+    setProjectJobFailurePersisterForTest(failClaimedProjectJobBestEffortMock);
+    const promise = runProjectJob(42, claimedOwnership);
     await vi.waitFor(() => {
       expect(workerInstances).toHaveLength(1);
       expect(workerInstances[0].postMessage).toHaveBeenCalledWith({ id: 1, jobId: 42 });
@@ -190,8 +198,8 @@ describe("runProjectJob", () => {
     await vi.advanceTimersByTimeAsync(25);
 
     await expectation;
-    expect(failProjectJobWithoutOwnershipMock).toHaveBeenCalledWith(
-      42,
+    expect(failClaimedProjectJobBestEffortMock).toHaveBeenCalledWith(
+      claimedOwnership,
       expect.objectContaining({ code: "PROJECT_JOB_TIMEOUT" })
     );
     expect(loggerWarnMock).toHaveBeenCalledWith(

@@ -3,6 +3,7 @@ import type { AppErrorCode } from "../../shared/contracts";
 import { AppError } from "../appError";
 import { logger } from "../_core/logger";
 import { parsePositiveIntEnv } from "../_core/env";
+import type { ProjectJobOwnership } from "./project/projectJobLease";
 
 type WorkerRequest = {
   id: number;
@@ -36,7 +37,7 @@ type WorkerState = {
   ready: Promise<Worker>;
 };
 
-type ProjectJobFailurePersister = (jobId: number, error: AppError) => Promise<unknown>;
+type ProjectJobFailurePersister = (ownership: ProjectJobOwnership, error: AppError) => Promise<unknown>;
 
 let nextRequestId = 1;
 let workerState: WorkerState | null = null;
@@ -47,6 +48,7 @@ const pendingRequests = new Map<
   number,
   {
     jobId: number;
+    ownership: ProjectJobOwnership;
     resolve: () => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
@@ -152,7 +154,7 @@ function createWorkerState(): WorkerState {
       pendingRequests.delete(requestId);
       clearTimeout(pending.timeout);
       void failPendingJobBestEffort(
-        pending.jobId,
+        pending.ownership,
         new AppError("PROJECT_JOB_WORKER_EXITED", `Project job worker crashed while processing job ${pending.jobId}.`)
       );
       pending.reject(error);
@@ -180,7 +182,7 @@ function createWorkerState(): WorkerState {
         pendingRequests.delete(requestId);
         clearTimeout(pending.timeout);
         void failPendingJobBestEffort(
-          pending.jobId,
+          pending.ownership,
           new AppError("PROJECT_JOB_WORKER_EXITED", `Project job worker exited with code ${code} while processing job ${pending.jobId}.`)
         );
         pending.reject(error);
@@ -248,24 +250,26 @@ async function getWorker() {
   }
 }
 
-async function failPendingJob(jobId: number, error: AppError) {
+async function failPendingJob(ownership: ProjectJobOwnership, error: AppError) {
   if (projectJobFailurePersisterOverride) {
-    await projectJobFailurePersisterOverride(jobId, error);
+    await projectJobFailurePersisterOverride(ownership, error);
     return;
   }
 
-  const { failProjectJobWithoutOwnership } = await import("./projectWorkflow");
-  await failProjectJobWithoutOwnership(jobId, error);
+  const { failClaimedProjectJobBestEffort } = await import("./projectWorkflow");
+  await failClaimedProjectJobBestEffort(ownership, error);
 }
 
-async function failPendingJobBestEffort(jobId: number, error: AppError) {
+async function failPendingJobBestEffort(ownership: ProjectJobOwnership, error: AppError) {
   try {
-    await failPendingJob(jobId, error);
+    await failPendingJob(ownership, error);
   } catch (persistError) {
     logger.warn("Project job failure persistence failed", {
       action: "project.job.failure_persist_failed",
       status: "error",
-      jobId,
+      jobId: ownership.jobId,
+      lockedBy: ownership.lockedBy,
+      attemptCount: ownership.attemptCount,
       errorCode: error.code,
       errorMessage: error.message,
       persistErrorMessage: persistError instanceof Error ? persistError.message : String(persistError),
@@ -277,7 +281,7 @@ export function setProjectJobFailurePersisterForTest(persister: ProjectJobFailur
   projectJobFailurePersisterOverride = persister;
 }
 
-export async function runProjectJob(jobId: number) {
+export async function runProjectJob(jobId: number, ownership: ProjectJobOwnership) {
   if (isTestEnvironment()) {
     const { runClaimedProjectJob } = await import("./projectWorkflow");
     await runClaimedProjectJob(jobId);
@@ -305,7 +309,7 @@ export async function runProjectJob(jobId: number) {
       }, PROJECT_JOB_EXECUTION_TIMEOUT_MS);
       timeout.unref?.();
 
-      pendingRequests.set(requestId, { jobId, resolve, reject, timeout });
+      pendingRequests.set(requestId, { jobId, ownership, resolve, reject, timeout });
       logger.info("Project job worker message sent", {
         action: "project.job.worker.message.sent",
         status: "running",
@@ -335,7 +339,7 @@ export async function runProjectJob(jobId: number) {
       error instanceof AppError
         ? error
         : new AppError("PROJECT_JOB_WORKER_EXITED", error instanceof Error ? error.message : String(error));
-    await failPendingJobBestEffort(jobId, appError);
+    await failPendingJobBestEffort(ownership, appError);
     throw appError;
   }
 }

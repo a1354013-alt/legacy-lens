@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DependenciesPageInput, RisksPageInput } from "../../shared/contracts";
+import { AppError } from "../appError";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -1999,6 +2000,158 @@ describe("project workflow", () => {
       importProgress: 10,
     });
     expect(rmMock).toHaveBeenCalledWith("C:/tmp/queued-upload.zip", { force: true });
+  });
+
+  it("does not let a stale worker fail a reclaimed running job", async () => {
+    const { failClaimedProjectJobBestEffort } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/reclaimed-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership({ lockedBy: "worker-b", attemptCount: 2 }),
+    });
+
+    const failed = await failClaimedProjectJobBestEffort(
+      { jobId: 1, projectId: 1, type: "import_zip", lockedBy: "worker-a", attemptCount: 1 },
+      new AppError("PROJECT_JOB_TIMEOUT", "old attempt timed out")
+    );
+
+    expect(failed).toBe(false);
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "running",
+      lockedBy: "worker-b",
+      attemptCount: 2,
+      errorCode: null,
+      activeKey: "active",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "importing", importProgress: 10 });
+    expect(rmMock).not.toHaveBeenCalled();
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      "Project job failure skipped because ownership changed",
+      expect.objectContaining({
+        action: "project.job.failure_skipped",
+        jobId: 1,
+        lockedBy: "worker-a",
+        attemptCount: 1,
+      })
+    );
+  });
+
+  it("allows the current owner to fail its own running job", async () => {
+    const { failClaimedProjectJobBestEffort } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/current-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership(),
+    });
+
+    const failed = await failClaimedProjectJobBestEffort(
+      { jobId: 1, projectId: 1, type: "import_zip", lockedBy: "worker-a", attemptCount: 1 },
+      new AppError("IMPORT_FAILED", "current attempt failed")
+    );
+
+    expect(failed).toBe(true);
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "failed",
+      lockedBy: null,
+      attemptCount: 1,
+      errorCode: "IMPORT_FAILED",
+      errorMessage: "current attempt failed",
+      activeKey: null,
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "IMPORT_FAILED" });
+    expect(rmMock).toHaveBeenCalledWith("C:/tmp/current-upload.zip", { force: true });
+  });
+
+  it("logs and skips safely when ownership changes before failure persistence", async () => {
+    const { failClaimedProjectJobBestEffort } = await import("./projectWorkflow");
+    seedProject(1, { status: "importing", importProgress: 10 });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 10,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/race-upload.zip" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership(),
+    });
+    const originalUpdate = fakeDb.update.bind(fakeDb);
+    fakeDb.update = (table: object) => {
+      const baseUpdate = originalUpdate(table);
+      return {
+        set: (updates: Row) => ({
+          where: async (condition: Condition) => {
+            if (getTableName(table) === "projectJobs" && updates.status === "failed") {
+              fakeDb.store.projectJobs[0] = {
+                ...fakeDb.store.projectJobs[0],
+                lockedBy: "worker-b",
+                attemptCount: 2,
+                heartbeatAt: new Date("2026-01-01T00:02:00.000Z"),
+                leaseUntil: new Date("2099-01-01T00:05:00.000Z"),
+              };
+            }
+
+            return baseUpdate.set(updates).where(condition);
+          },
+        }),
+      };
+    };
+
+    const failed = await failClaimedProjectJobBestEffort(
+      { jobId: 1, projectId: 1, type: "import_zip", lockedBy: "worker-a", attemptCount: 1 },
+      new AppError("PROJECT_JOB_TIMEOUT", "attempt timed out")
+    );
+
+    expect(failed).toBe(false);
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({
+      status: "running",
+      lockedBy: "worker-b",
+      attemptCount: 2,
+      errorCode: null,
+      activeKey: "active",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({ status: "importing", importProgress: 10 });
+    expect(rmMock).not.toHaveBeenCalled();
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      "Project job failure skipped because ownership changed",
+      expect.objectContaining({
+        action: "project.job.failure_skipped",
+        jobId: 1,
+        lockedBy: "worker-a",
+        attemptCount: 1,
+        errorCode: "PROJECT_JOB_TIMEOUT",
+      })
+    );
   });
 
   it("does not let a stale worker finalize a reclaimed job as completed or overwrite project state", async () => {
