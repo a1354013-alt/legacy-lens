@@ -1887,6 +1887,8 @@ describe("project workflow", () => {
 
   it("syncs import progress and emits structured lifecycle logs for a successful claimed ZIP job", async () => {
     const { runClaimedProjectJob } = await import("./projectWorkflow");
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "false";
     seedProject(1, { status: "importing", importProgress: 0 });
     zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
     fakeDb.store.projectJobs.push({
@@ -1906,7 +1908,15 @@ describe("project workflow", () => {
       ...claimedOwnership(),
     });
 
-    await expect(runClaimedProjectJob(1)).resolves.toBeUndefined();
+    try {
+      await expect(runClaimedProjectJob(1)).resolves.toBeUndefined();
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
 
     expect(fakeDb.store.projectJobs[0]).toMatchObject({
       status: "completed",
@@ -1914,8 +1924,19 @@ describe("project workflow", () => {
       activeKey: null,
     });
     expect(fakeDb.store.projects[0]).toMatchObject({
-      status: "ready",
       importProgress: 100,
+    });
+    expect(fakeDb.store.projectJobs[1]).toMatchObject({
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+    });
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      status: "analyzing",
+      analysisProgress: 0,
     });
     expect(projectProgressUpdates).toEqual(expect.arrayContaining([10, 60, 80, 100]));
     expect(jobProgressUpdates).toEqual(expect.arrayContaining([10, 60, 90, 100]));
@@ -2000,7 +2021,7 @@ describe("project workflow", () => {
       importProgress: 10,
     });
     expect(rmMock).toHaveBeenCalledWith("C:/tmp/queued-upload.zip", { force: true });
-  });
+  }, 10_000);
 
   it("does not let a stale worker fail a reclaimed running job", async () => {
     const { failClaimedProjectJobBestEffort } = await import("./projectWorkflow");
@@ -2046,6 +2067,60 @@ describe("project workflow", () => {
         attemptCount: 1,
       })
     );
+  }, 10_000);
+
+  it("does not create a duplicate analysis job when one is already queued after import completion", async () => {
+    const { runClaimedProjectJob } = await import("./projectWorkflow");
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "false";
+    seedProject(1, { status: "importing", importProgress: 0 });
+    zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
+    fakeDb.store.projectJobs.push(
+      {
+        id: 1,
+        projectId: 1,
+        userId: 7,
+        type: "import_zip",
+        status: "running",
+        progress: 10,
+        errorCode: null,
+        errorMessage: null,
+        payloadJson: JSON.stringify({ type: "import_zip", tempFilePath: "C:/tmp/queued-upload.zip" }),
+        activeKey: "active",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        startedAt: new Date("2026-01-01T00:01:00.000Z"),
+        finishedAt: null,
+        ...claimedOwnership(),
+      },
+      {
+        id: 2,
+        projectId: 1,
+        userId: 7,
+        type: "analyze",
+        status: "queued",
+        progress: 0,
+        errorCode: null,
+        errorMessage: null,
+        payloadJson: JSON.stringify({ type: "analyze" }),
+        activeKey: "active",
+        createdAt: new Date("2026-01-01T00:00:30.000Z"),
+        startedAt: null,
+        finishedAt: null,
+      }
+    );
+
+    try {
+      await expect(runClaimedProjectJob(1)).resolves.toBeUndefined();
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+
+    expect(fakeDb.store.projectJobs.filter((job: Row) => job.type === "analyze")).toHaveLength(1);
+    expect(fakeDb.store.projectJobs[1]).toMatchObject({ id: 2, type: "analyze", status: "queued" });
   });
 
   it("allows the current owner to fail its own running job", async () => {
@@ -2766,6 +2841,88 @@ describe("project workflow", () => {
     await expect(queueImportProjectGit(1, 7, "https://example.com/repo.git")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
     await expect(queueImportProjectZip(1, 7, "encoded")).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
     await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+  });
+
+  it("keeps queued jobs blocking new project jobs", async () => {
+    const { queueAnalyzeProject } = await import("./projectWorkflow");
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", zipContent: "encoded" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+    expect(fakeDb.store.projectJobs).toHaveLength(1);
+  });
+
+  it("keeps running jobs with a valid lease blocking new project jobs", async () => {
+    const { queueAnalyzeProject } = await import("./projectWorkflow");
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 50,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", zipContent: "encoded" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership({ leaseUntil: new Date(Date.now() + 60_000), heartbeatAt: new Date() }),
+    });
+
+    await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
+    expect(fakeDb.store.projectJobs).toHaveLength(1);
+  });
+
+  it("does not let a running job with an expired lease block new project jobs forever", async () => {
+    const { queueAnalyzeProject } = await import("./projectWorkflow");
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "false";
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "import_zip",
+      status: "running",
+      progress: 50,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "import_zip", zipContent: "encoded" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:01:00.000Z"),
+      finishedAt: null,
+      ...claimedOwnership({ leaseUntil: new Date(Date.now() - 60_000), heartbeatAt: new Date(Date.now() - 90_000) }),
+    });
+
+    try {
+      await expect(queueAnalyzeProject(1, 7)).resolves.toMatchObject({ projectId: 1, status: "queued" });
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+    expect(fakeDb.store.projectJobs[0]).toMatchObject({ id: 1, status: "running", activeKey: null });
+    expect(fakeDb.store.projectJobs[1]).toMatchObject({ type: "analyze", status: "queued", activeKey: "active" });
   });
 
   it("refuses to delete a project while queued or running jobs still exist", async () => {

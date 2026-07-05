@@ -187,6 +187,62 @@ describe("projectUploadRoute", () => {
     });
   });
 
+  it("preserves AppError responses from atomic import job creation", async () => {
+    const { createProjectWithQueuedGitImport } = await import("./projectWorkflow");
+    vi.mocked(createProjectWithQueuedGitImport).mockRejectedValueOnce(
+      new AppError("INVALID_GIT_URL", "Git URL is not allowed.")
+    );
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("name", "git-demo");
+      formData.append("focusLanguage", "sql");
+      formData.append("sourceType", "git");
+      formData.append("gitUrl", "ssh://127.0.0.1/private.git");
+
+      const response = await fetch(`${baseUrl}/api/projects/import`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "INVALID_GIT_URL",
+        error: "Git URL is not allowed.",
+        message: "Git URL is not allowed.",
+      });
+    });
+  });
+
+  it("returns a generic 500 response for unknown atomic import errors", async () => {
+    const { createProjectWithQueuedZipImport } = await import("./projectWorkflow");
+    vi.mocked(createProjectWithQueuedZipImport).mockRejectedValueOnce(
+      new Error("SQL connection failed for mysql://internal.example.local")
+    );
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("name", "delphi-demo");
+      formData.append("focusLanguage", "delphi");
+      formData.append("sourceType", "upload");
+      formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+      const response = await fetch(`${baseUrl}/api/projects/import`, {
+        method: "POST",
+        body: formData,
+      });
+      const body = await response.json();
+
+      expect(response.status).toBe(500);
+      expect(body).toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Import failed unexpectedly. Please try again later.",
+      });
+      expect(JSON.stringify(body)).not.toContain("mysql://internal.example.local");
+      expect(JSON.stringify(body)).not.toContain("SQL connection failed");
+    });
+  });
+
   it("stores uploads under a generated safe .zip temp file name", async () => {
     await withUploadServer(async (baseUrl) => {
       const formData = new FormData();

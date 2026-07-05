@@ -3,7 +3,7 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_ZIP_RAW_BYTES, UNAUTHED_ERR_MSG } from "@shared/const";
-import { focusLanguageSchema, projectSourceTypeSchema } from "@shared/contracts";
+import { focusLanguageSchema, importUploadResponseSchema, projectSourceTypeSchema } from "@shared/contracts";
 import type { Express, NextFunction, Request, Response } from "express";
 import multer from "multer";
 import { AppError } from "../appError";
@@ -240,12 +240,12 @@ export function registerProjectUploadRoute(app: Express) {
           file.path,
           file.originalname
         );
-        res.json({ projectId: job.projectId, jobId: job.jobId, jobType: "import_zip" as const });
+        res.json(importUploadResponseSchema.parse({ projectId: job.projectId, jobId: job.jobId, jobType: "import_zip" }));
         return;
       }
 
       const job = await createProjectWithQueuedGitImport(user.id, { name, description, focusLanguage, sourceType: "git" }, gitUrl);
-      res.json({ projectId: job.projectId, jobId: job.jobId, jobType: "import_git" as const });
+      res.json(importUploadResponseSchema.parse({ projectId: job.projectId, jobId: job.jobId, jobType: "import_git" }));
     } catch (caughtError) {
       await cleanupUploadedFile(file);
       const errorToSend =
@@ -259,7 +259,7 @@ export function registerProjectUploadRoute(app: Express) {
         sendAppErrorResponse(res, caughtError);
         return;
       }
-      sendHttpErrorResponse(res, 400, "BAD_REQUEST", errorToSend);
+      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", "Import failed unexpectedly. Please try again later.");
     }
   });
 

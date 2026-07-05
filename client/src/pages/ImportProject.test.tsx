@@ -22,11 +22,6 @@ vi.mock("@/lib/trpc", () => ({
         useQuery: () => ({ data: null }),
       },
     },
-    analysis: {
-      trigger: {
-        useMutation: () => ({ isPending: false, mutateAsync: vi.fn() }),
-      },
-    },
   },
 }));
 
@@ -43,6 +38,10 @@ describe("ImportProject", () => {
     expect(html).toContain("accept=\".zip\"");
     expect(html).toContain("h-40");
     expect(html).toContain("type=\"submit\"");
+  });
+
+  it("does not require the analysis trigger mutation while rendering the import flow", () => {
+    expect(() => renderToString(<ImportProject />)).not.toThrow();
   });
 
   it("keeps creating phase visible until the import API returns a job", async () => {

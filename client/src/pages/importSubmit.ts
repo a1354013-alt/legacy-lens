@@ -1,6 +1,9 @@
-import type { FocusLanguage, ProjectSourceType } from "@shared/contracts";
-
-export type ImportUploadResponse = { projectId: number; jobId: number; jobType: "import_zip" | "import_git" };
+import {
+  importUploadResponseSchema,
+  type FocusLanguage,
+  type ProjectSourceType,
+} from "@shared/contracts";
+export type { ImportUploadResponse } from "@shared/contracts";
 
 export type ImportProjectSubmitInput = {
   projectName: string;
@@ -69,7 +72,7 @@ export async function submitImportProject(
     throw new Error(await readErrorMessage(response));
   }
 
-  return (await response.json()) as ImportUploadResponse;
+  return importUploadResponseSchema.parse(await response.json());
 }
 
 export async function invalidateProjectsListAfterImportSuccess(utils: ProjectsListUtils) {

@@ -90,6 +90,7 @@ import {
   getProjectJobAttemptCount,
   getProjectJobMaxAttempts,
   hasProjectJobLease,
+  isBlockingActiveProjectJob,
   isActiveProjectJobStatus,
   isProjectJobLeaseExpired,
   toDate,
@@ -500,8 +501,13 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
     return await db.transaction(async (tx) => {
       const project = await getOwnedProjectWithHandle(tx, projectId, userId);
       const existingJobs = await tx.select().from(projectJobs).where(and(eq(projectJobs.projectId, projectId), eq(projectJobs.userId, userId)));
-      if (existingJobs.some((job) => isActiveProjectJobStatus(job.status))) {
+      const now = new Date();
+      if (existingJobs.some((job) => isBlockingActiveProjectJob(job, now))) {
         throw new AppError("PROJECT_JOB_ACTIVE", "Project already has an active job.");
+      }
+      const staleActiveJobs = existingJobs.filter((job) => isActiveProjectJobStatus(job.status) && !isBlockingActiveProjectJob(job, now));
+      for (const staleJob of staleActiveJobs) {
+        await tx.update(projectJobs).set({ activeKey: null }).where(eq(projectJobs.id, staleJob.id));
       }
 
       if (!allowedStatuses.has(project.status)) {
@@ -1064,6 +1070,10 @@ async function finalizeProjectJob(
     }
   }
 
+  if (status === "completed" && (job.type === "import_zip" || job.type === "import_git")) {
+    await queueAnalyzeProjectAfterImport(job.projectId, job.userId);
+  }
+
   logger.info(`Project job ${status}`, {
     action: `project.job.${status}`,
     ...getProjectJobLogContext(job, {
@@ -1075,6 +1085,25 @@ async function finalizeProjectJob(
       errorMessage: error?.message ?? null,
     }),
   });
+}
+
+async function queueAnalyzeProjectAfterImport(projectId: number, userId: number) {
+  try {
+    await enqueueProjectJob(projectId, userId, { type: "analyze" });
+  } catch (error) {
+    if (error instanceof AppError && error.code === "PROJECT_JOB_ACTIVE") {
+      logger.info("Analysis job already active after import completion", {
+        action: "project.job.analysis_queue_skipped",
+        status: "skipped",
+        projectId,
+        userId,
+        reason: error.code,
+      });
+      return;
+    }
+
+    throw error;
+  }
 }
 
 function buildImportWarningSummaryWarnings(

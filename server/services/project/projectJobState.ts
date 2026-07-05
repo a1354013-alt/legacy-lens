@@ -36,6 +36,17 @@ export function isActiveProjectJobStatus(status: ProjectJobRow["status"]) {
   return status === "queued" || status === "running";
 }
 
+export function isBlockingActiveProjectJob(
+  job: Pick<ProjectJobRow, "status" | "leaseUntil">,
+  now = new Date()
+) {
+  if (job.status === "queued") {
+    return true;
+  }
+
+  return job.status === "running" && !isProjectJobLeaseExpired(job, now);
+}
+
 export function toDate(value: Date | string | null | undefined) {
   if (!value) {
     return null;

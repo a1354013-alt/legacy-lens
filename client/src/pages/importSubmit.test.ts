@@ -60,6 +60,25 @@ describe("import submit helpers", () => {
     );
   });
 
+  it("rejects invalid import API success payloads", async () => {
+    const fetchImport = vi.fn(async () => Response.json({ projectId: 7, jobType: "import_zip" }));
+
+    await expect(
+      submitImportProject(
+        {
+          projectName: "demo",
+          description: "",
+          focusLanguage: "go",
+          sourceType: "upload",
+          uploadedFile: new File(["zip"], "demo.zip", { type: "application/zip" }),
+          gitUrl: "",
+        },
+        async () => "failed",
+        fetchImport
+      )
+    ).rejects.toThrow();
+  });
+
   it("does not invalidate the project list on failed import", async () => {
     const invalidate = vi.fn();
     const fetchImport = vi.fn(async () => new Response("nope", { status: 500 }));

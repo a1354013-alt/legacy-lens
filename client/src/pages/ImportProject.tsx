@@ -89,7 +89,6 @@ export default function ImportProject() {
   const [error, setError] = useState<string | null>(null);
   const [errorJobType, setErrorJobType] = useState<ProjectJobType | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const analysisQueuedRef = useRef(false);
   const submittingRef = useRef(false);
   const utils = trpc.useUtils();
 
@@ -125,8 +124,21 @@ export default function ImportProject() {
     refetchOnWindowFocus: false,
   });
 
-  const analyzeMutation = trpc.analysis.trigger.useMutation();
-  const isBusy = phase !== "idle" || analyzeMutation.isPending;
+  const latestProjectJob = projectQuery.data?.latestJob ?? null;
+  const isBusy = phase !== "idle";
+
+  useEffect(() => {
+    if (!projectId || latestProjectJob?.type !== "analyze") {
+      return;
+    }
+
+    if (activeJobId === latestProjectJob.id && activeJobType === "analyze") {
+      return;
+    }
+
+    setActiveJobId(latestProjectJob.id);
+    setActiveJobType("analyze");
+  }, [activeJobId, activeJobType, latestProjectJob, projectId]);
 
   useEffect(() => {
     const job = activeJobQuery.data;
@@ -152,32 +164,7 @@ export default function ImportProject() {
     }
 
     if (activeJobType === "import_zip" || activeJobType === "import_git") {
-      if (analysisQueuedRef.current) {
-        return;
-      }
-
-      analysisQueuedRef.current = true;
       setPhase("waiting-analysis");
-      void analyzeMutation
-        .mutateAsync(projectId)
-        .then((result) => {
-          setActiveJobId(result.jobId);
-          setActiveJobType("analyze");
-        })
-        .catch((caughtError) => {
-          const message =
-            caughtError instanceof Error
-              ? localizeProjectJobErrorMessage("analyze", caughtError.message)
-              : t("importProject.alerts.analysisQueueFailed");
-          setError(message);
-          setErrorJobType("analyze");
-          setPhase("idle");
-          setActiveJobId(null);
-          setActiveJobType(null);
-          analysisQueuedRef.current = false;
-          releaseSubmitLock(submittingRef);
-          toast.error(message);
-        });
       return;
     }
 
@@ -186,7 +173,7 @@ export default function ImportProject() {
       toast.success(t("importProject.alerts.analysisComplete"));
       setLocation(`/projects/${projectId}/analysis`);
     }
-  }, [activeJobQuery.data, activeJobType, analyzeMutation, projectId, setLocation]);
+  }, [activeJobQuery.data, activeJobType, projectId, setLocation]);
 
   const validateForm = () => {
     if (!projectName.trim()) {
@@ -210,7 +197,6 @@ export default function ImportProject() {
 
     setError(null);
     setErrorJobType(null);
-    analysisQueuedRef.current = false;
 
     try {
       await runImportProjectSubmitFlow<ImportUploadResponse>({
@@ -252,7 +238,7 @@ export default function ImportProject() {
   };
 
   const activeJob = activeJobQuery.data;
-  const latestJob = projectQuery.data?.latestJob ?? activeJob ?? null;
+  const latestJob = latestProjectJob ?? activeJob ?? null;
 
   return (
     <div className="flex min-h-dvh flex-col bg-slate-50">

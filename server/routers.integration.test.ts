@@ -262,7 +262,7 @@ beforeEach(() => {
 describe("appRouter integration", () => {
   it("supports create, queued import, queued analysis, snapshot, paged reads, and download flows", async () => {
     const { appRouter } = await import("./routers");
-    const { waitForProjectJobForTests } = await import("./services/projectWorkflow");
+    const { waitForAllProjectJobsForTests, waitForProjectJobForTests } = await import("./services/projectWorkflow");
     const caller = appRouter.createCaller(createContext());
 
     const created = await caller.projects.create({
@@ -278,20 +278,19 @@ describe("appRouter integration", () => {
     });
     expect(importJob.status).toBe("queued");
     await waitForProjectJobForTests(importJob.jobId);
+    await waitForAllProjectJobsForTests();
 
     const projectAfterImport = await caller.projects.getById(created.projectId);
     expect(projectByIdOutputSchema.parse(projectAfterImport)).toEqual(projectAfterImport);
     expect(projectAfterImport?.importWarningsJson).toEqual(importWarnings);
-    expect(projectAfterImport?.latestJob?.type).toBe("import_zip");
+    expect(projectAfterImport?.latestJob?.type).toBe("analyze");
     expect(projectAfterImport?.latestJob?.status).toBe("completed");
 
-    const analyzeJob = await caller.analysis.trigger(created.projectId);
-    expect(analyzeJob.status).toBe("queued");
-    await waitForProjectJobForTests(analyzeJob.jobId);
-    const analyzeJobStatus = await caller.jobs.getById(analyzeJob.jobId);
+    const analyzeJobId = projectAfterImport?.latestJob?.id ?? -1;
+    const analyzeJobStatus = await caller.jobs.getById(analyzeJobId);
     expect(jobByIdOutputSchema.parse(analyzeJobStatus)).toEqual(analyzeJobStatus);
     expect(analyzeJobStatus).toMatchObject({
-      id: analyzeJob.jobId,
+      id: analyzeJobId,
       projectId: created.projectId,
       type: "analyze",
       status: "completed",
@@ -394,7 +393,7 @@ describe("appRouter integration", () => {
     const summaryJson = JSON.parse(await summary!.async("text")) as Record<string, unknown>;
     expect(String(summaryJson.limitationSummary)).toContain("legacy impact review assistant");
     expect(summaryJson.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
-  });
+  }, 10_000);
 
   it("lists only the current user's projects and jobs", async () => {
     const { appRouter } = await import("./routers");

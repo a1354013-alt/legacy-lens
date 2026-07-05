@@ -66,6 +66,14 @@ export type RiskSeverity = z.infer<typeof riskSeveritySchema>;
 export type RiskType = z.infer<typeof riskTypeSchema>;
 export type RuleType = z.infer<typeof ruleTypeSchema>;
 
+export const importUploadResponseSchema = z.object({
+  projectId: z.number().int().positive(),
+  jobId: z.number().int().positive(),
+  jobType: z.enum(["import_zip", "import_git"]),
+});
+
+export type ImportUploadResponse = z.infer<typeof importUploadResponseSchema>;
+
 export const importWarningSchema = z.object({
   code: z.string(),
   message: z.string(),
