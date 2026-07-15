@@ -12,7 +12,8 @@ This document captures the operational boundaries that matter for real deploymen
 - Running jobs are leased with `lockedBy`, `leaseUntil`, `heartbeatAt`, `attemptCount`, and `maxAttempts`.
 - Multiple web replicas are supported, and multiple worker replicas are supported when they share the same MySQL database.
 - Claiming is distributed-safe through a DB-filtered candidate query plus an atomic conditional update. Competing workers may read the same candidate row, but only one claim update is allowed to win.
-- Workers heartbeat the lease while processing. Heartbeats, retry decisions, and finalization are fenced with `lockedBy + attemptCount`, so stale workers cannot overwrite a reclaimed job or its project state.
+- The parent worker dispatcher owns the periodic lease heartbeat while the worker thread performs analysis/import work. The heartbeat does not depend on the worker thread event loop, and heartbeat, retry, and finalization writes are fenced with `lockedBy + attemptCount`, so stale workers cannot overwrite a reclaimed job or its project state.
+- Scheduler-level claim, queue lookup, and dispatch failures are caught in one loop wrapper, logged, and retried with bounded backoff. Stopping worker polling also cancels pending scheduler retries.
 - If the heartbeat stops and the lease expires, the job can be retried safely until `maxAttempts` is reached. Stale worker finalization is rejected and logged.
 - Startup recovery re-queues stale `running` jobs, resumes `queued` jobs, and marks `projects.status in (importing, analyzing)` as failed when no active job remains.
 - Startup recovery is still a one-time boot pass; steady-state pickup is handled by the worker polling loop plus the existing local `kickProjectJobWorker()` wake-up path.
@@ -55,6 +56,7 @@ This document captures the operational boundaries that matter for real deploymen
 - Multiple worker-enabled replicas are supported when they share the same MySQL database.
 - Project job claiming relies on `lockedBy`, `leaseUntil`, `heartbeatAt`, and an atomic conditional update so only one worker can own a lease at a time.
 - `PROJECT_WORKER_POLL_INTERVAL_MS` defaults to `2000` ms and must be a positive integer.
+- `PROJECT_JOB_HEARTBEAT_MS` must be lower than `PROJECT_JOB_LEASE_MS` and no more than one third of the lease duration.
 - Polling only schedules `kickProjectJobWorker()`; it does not bypass the existing loop guard, so one process will not start overlapping worker loops for the same interval ticks.
 - If a worker dies and its lease expires, another worker may reclaim the job within the configured retry budget.
 - If your deployment cannot rely on shared-database conditional updates and transactions, run a single worker replica.

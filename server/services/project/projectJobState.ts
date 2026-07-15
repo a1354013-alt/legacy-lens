@@ -11,6 +11,14 @@ export const PROJECT_JOB_HEARTBEAT_MS = parsePositiveIntEnv("PROJECT_JOB_HEARTBE
 export const DEFAULT_PROJECT_JOB_MAX_ATTEMPTS = parsePositiveIntEnv("PROJECT_JOB_MAX_ATTEMPTS", 3);
 export const PROJECT_WORKER_POLL_INTERVAL_MS = parsePositiveIntEnv("PROJECT_WORKER_POLL_INTERVAL_MS", 2000);
 
+if (PROJECT_JOB_HEARTBEAT_MS >= PROJECT_JOB_LEASE_MS) {
+  throw new Error("[Config] PROJECT_JOB_HEARTBEAT_MS must be lower than PROJECT_JOB_LEASE_MS.");
+}
+
+if (PROJECT_JOB_HEARTBEAT_MS > Math.floor(PROJECT_JOB_LEASE_MS / 3)) {
+  throw new Error("[Config] PROJECT_JOB_HEARTBEAT_MS must be no more than one third of PROJECT_JOB_LEASE_MS.");
+}
+
 export type ProjectJobRow = typeof projectJobs.$inferSelect;
 
 const projectStatusTransitions: Record<ProjectStatus, ProjectStatus[]> = {

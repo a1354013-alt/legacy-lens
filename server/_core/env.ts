@@ -62,7 +62,16 @@ function readRuntimeEnv(source: NodeJS.ProcessEnv): RuntimeEnv {
 }
 
 export function validateRuntimeConfig(source: NodeJS.ProcessEnv = process.env) {
-  return readRuntimeEnv(source);
+  const env = readRuntimeEnv(source);
+  const leaseMs = parseStrictIntegerEnv("PROJECT_JOB_LEASE_MS", 30000, { source });
+  const heartbeatMs = parseStrictIntegerEnv("PROJECT_JOB_HEARTBEAT_MS", 10000, { source });
+  if (heartbeatMs >= leaseMs) {
+    throw new Error("[Config] PROJECT_JOB_HEARTBEAT_MS must be lower than PROJECT_JOB_LEASE_MS.");
+  }
+  if (heartbeatMs > Math.floor(leaseMs / 3)) {
+    throw new Error("[Config] PROJECT_JOB_HEARTBEAT_MS must be no more than one third of PROJECT_JOB_LEASE_MS.");
+  }
+  return env;
 }
 
 type StrictIntegerEnvOptions = {

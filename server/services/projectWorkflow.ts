@@ -81,7 +81,6 @@ import {
 import {
   ACTIVE_PROJECT_JOB_KEY,
   DEFAULT_PROJECT_JOB_MAX_ATTEMPTS,
-  PROJECT_JOB_HEARTBEAT_MS,
   PROJECT_WORKER_POLL_INTERVAL_MS,
   STALE_PROJECT_JOB_MS,
   assertProjectTransition,
@@ -105,6 +104,7 @@ import {
   type ProjectJobExecutionState,
   type ProjectJobOwnership,
 } from "./project/projectJobLease";
+import { heartbeatProjectJobLease, startProjectJobLeaseGuardian } from "./project/projectJobHeartbeat";
 import {
   getImportZipPayloadTempPath,
   projectJobPayloadSchema,
@@ -120,6 +120,9 @@ const ANALYSIS_INSERT_CHUNK_SIZE = 250;
 const MYSQL_MEDIUMTEXT_MAX_BYTES = 16_777_215;
 let projectJobWorkerLoop: Promise<void> | null = null;
 let projectJobWorkerPollTimer: NodeJS.Timeout | null = null;
+let projectJobWorkerRetryTimer: NodeJS.Timeout | null = null;
+let projectJobWorkerSchedulerShutdown = false;
+let projectJobWorkerSchedulerFailureCount = 0;
 let projectJobWorkerKickCount = 0;
 let projectJobWorkerLoopStartCount = 0;
 
@@ -572,7 +575,7 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
 function kickProjectJobWorker() {
   projectJobWorkerKickCount += 1;
 
-  if (!isProjectWorkerEnabled()) {
+  if (!isProjectWorkerEnabled() || projectJobWorkerSchedulerShutdown) {
     return null;
   }
 
@@ -586,6 +589,21 @@ function kickProjectJobWorker() {
       while (await processNextQueuedProjectJob()) {
         // Keep draining queued jobs until none remain for this worker cycle.
       }
+      projectJobWorkerSchedulerFailureCount = 0;
+    } catch (error) {
+      const appError = toAppError(
+        error,
+        new AppError("PROJECT_JOB_STALE", error instanceof Error ? error.message : "Project job scheduler failed.")
+      );
+      projectJobWorkerSchedulerFailureCount += 1;
+      logger.error("Project job scheduler failed", {
+        action: "project.job.scheduler.error",
+        status: "error",
+        errorCode: appError.code,
+        errorMessage: appError.message,
+        failureCount: projectJobWorkerSchedulerFailureCount,
+      });
+      scheduleProjectJobWorkerRetry();
     } finally {
       projectJobWorkerLoop = null;
     }
@@ -594,11 +612,25 @@ function kickProjectJobWorker() {
   return projectJobWorkerLoop;
 }
 
+function scheduleProjectJobWorkerRetry() {
+  if (projectJobWorkerSchedulerShutdown || projectJobWorkerRetryTimer) {
+    return;
+  }
+
+  const delayMs = Math.min(30_000, 500 * 2 ** Math.min(projectJobWorkerSchedulerFailureCount - 1, 6));
+  projectJobWorkerRetryTimer = setTimeout(() => {
+    projectJobWorkerRetryTimer = null;
+    void kickProjectJobWorker();
+  }, delayMs);
+  projectJobWorkerRetryTimer.unref?.();
+}
+
 export function startProjectJobWorkerPolling(intervalMs = PROJECT_WORKER_POLL_INTERVAL_MS) {
   if (!isProjectWorkerEnabled()) {
     return null;
   }
 
+  projectJobWorkerSchedulerShutdown = false;
   if (projectJobWorkerPollTimer) {
     return projectJobWorkerPollTimer;
   }
@@ -612,6 +644,12 @@ export function startProjectJobWorkerPolling(intervalMs = PROJECT_WORKER_POLL_IN
 }
 
 export function stopProjectJobWorkerPolling() {
+  projectJobWorkerSchedulerShutdown = true;
+  if (projectJobWorkerRetryTimer) {
+    clearTimeout(projectJobWorkerRetryTimer);
+    projectJobWorkerRetryTimer = null;
+  }
+
   if (!projectJobWorkerPollTimer) {
     return;
   }
@@ -847,11 +885,16 @@ export function getProjectJobWorkerSchedulerStateForTests() {
     kickCount: projectJobWorkerKickCount,
     loopStartCount: projectJobWorkerLoopStartCount,
     pollingActive: projectJobWorkerPollTimer !== null,
+    retryActive: projectJobWorkerRetryTimer !== null,
+    shutdown: projectJobWorkerSchedulerShutdown,
+    failureCount: projectJobWorkerSchedulerFailureCount,
   };
 }
 
 export function resetProjectJobWorkerSchedulerStateForTests() {
   stopProjectJobWorkerPolling();
+  projectJobWorkerSchedulerShutdown = false;
+  projectJobWorkerSchedulerFailureCount = 0;
   projectJobWorkerKickCount = 0;
   projectJobWorkerLoopStartCount = 0;
 }
@@ -977,28 +1020,6 @@ function buildProjectJobFailureFallback(job: Pick<ProjectJobRow, "type">) {
   }
 
   return new AppError("IMPORT_FAILED", "Project job failed.");
-}
-
-async function heartbeatProjectJobLease(ownership: ProjectJobOwnership) {
-  const db = await requireDb();
-  const lease = buildProjectJobLease();
-  const updateResult = await db
-    .update(projectJobs)
-    .set({
-      heartbeatAt: lease.heartbeatAt,
-      leaseUntil: lease.leaseUntil,
-    })
-    .where(
-      and(
-        eq(projectJobs.id, ownership.jobId),
-        eq(projectJobs.status, "running"),
-        eq(projectJobs.lockedBy, ownership.lockedBy),
-        eq(projectJobs.attemptCount, ownership.attemptCount)
-      )
-    );
-
-  const affectedRows = extractAffectedRows(updateResult);
-  return typeof affectedRows === "number" ? affectedRows > 0 : true;
 }
 
 async function assertProjectJobProjectExists(projectId: number) {
@@ -1435,7 +1456,6 @@ export async function runClaimedProjectJob(jobId: number) {
   }
   const executionState = createProjectJobExecutionState(buildProjectJobOwnership(claimedJob));
   let tempFilePath: string | null = null;
-  let heartbeatTimer: NodeJS.Timeout | null = null;
 
   try {
     const payload = parseProjectJobPayload(claimedJob);
@@ -1451,41 +1471,6 @@ export async function runClaimedProjectJob(jobId: number) {
         tempFilePath,
       }),
     });
-    const heartbeatOwnership = executionState.ownership;
-    if (heartbeatOwnership) {
-      heartbeatTimer = setInterval(() => {
-        void heartbeatProjectJobLease(heartbeatOwnership)
-          .then((stillOwned) => {
-            logger.info("Project job heartbeat renewed", {
-              action: "project.job.heartbeat",
-              ...getProjectJobLogContext(claimedJob, {
-                status: stillOwned ? "running" : "failed",
-                lockedBy: heartbeatOwnership.lockedBy,
-                attemptCount: heartbeatOwnership.attemptCount,
-              }),
-            });
-            if (!stillOwned) {
-              markProjectJobExecutionAborted(
-                executionState,
-                createProjectJobExecutionAbortedError("ownership_lost", heartbeatOwnership, "job.heartbeat"),
-                "project.job.execution.aborted",
-                { checkpoint: "job.heartbeat" }
-              );
-            }
-          })
-          .catch((error) => {
-            markProjectJobExecutionAborted(
-              executionState,
-              createProjectJobExecutionAbortedError("heartbeat_failed", heartbeatOwnership, "job.heartbeat", error),
-              "project.job.execution.aborted",
-              {
-                checkpoint: "job.heartbeat",
-                cause: error instanceof Error ? error.message : String(error),
-              }
-            );
-          });
-      }, Math.max(1_000, PROJECT_JOB_HEARTBEAT_MS));
-    }
     await executeProjectJob(claimedJob, executionState);
     await assertProjectJobExecutionActive(executionState, "job.pre_finalize");
     await assertProjectJobProjectExists(claimedJob.projectId);
@@ -1506,9 +1491,6 @@ export async function runClaimedProjectJob(jobId: number) {
     }
     throw appError;
   } finally {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-    }
     if (tempFilePath) {
       await rm(tempFilePath, { force: true }).catch(() => undefined);
     }
@@ -1534,6 +1516,30 @@ async function processNextQueuedProjectJob() {
     return false;
   }
 
+  const guardian = startProjectJobLeaseGuardian(claimedJob, ownership, {
+    onOwnershipLost: () => {
+      logger.warn("Project job worker lease guardian stopped after ownership loss", {
+        action: "project.job.heartbeat.stopped",
+        ...getProjectJobLogContext(claimedJob, {
+          status: "stale",
+          lockedBy: ownership.lockedBy,
+          attemptCount: ownership.attemptCount,
+        }),
+      });
+    },
+    onHeartbeatFailed: (error) => {
+      logger.warn("Project job worker lease guardian stopped after heartbeat failure", {
+        action: "project.job.heartbeat.failed",
+        ...getProjectJobLogContext(claimedJob, {
+          status: "error",
+          lockedBy: ownership.lockedBy,
+          attemptCount: ownership.attemptCount,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    },
+  });
+
   const promise = runProjectJob(claimedJob.id, ownership)
     .catch((error) => {
       const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
@@ -1547,6 +1553,7 @@ async function processNextQueuedProjectJob() {
       });
     })
     .finally(() => {
+      guardian.stop();
       queuedJobPromises.delete(claimedJob.id);
     });
 

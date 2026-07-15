@@ -1673,6 +1673,151 @@ describe("project workflow", () => {
     }
   });
 
+  it("catches scheduler-level claim failures and retries with backoff", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "true";
+    vi.useFakeTimers();
+
+    const {
+      getProjectJobWorkerSchedulerStateForTests,
+      resetProjectJobWorkerSchedulerStateForTests,
+      startProjectJobWorkerPolling,
+    } = await import("./projectWorkflow");
+
+    seedProject(1, { status: "ready" });
+    fakeDb.store.files.push({
+      id: 1,
+      projectId: 1,
+      filePath: "main.go",
+      fileName: "main.go",
+      fileType: ".go",
+      content: "package main",
+      lineCount: 1,
+      status: "stored",
+    });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+    analyzerResult = createPersistenceAnalysisResult();
+
+    const originalSelect = fakeDb.select.bind(fakeDb);
+    let failClaimSelect = true;
+    fakeDb.select = (selection?: Row) => {
+      if (failClaimSelect) {
+        failClaimSelect = false;
+        throw new Error("claim query failed");
+      }
+      return originalSelect(selection);
+    };
+
+    try {
+      resetProjectJobWorkerSchedulerStateForTests();
+      startProjectJobWorkerPolling(20);
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(getProjectJobWorkerSchedulerStateForTests()).toMatchObject({
+        retryActive: true,
+        failureCount: 1,
+      });
+      expect(loggerMock.error).toHaveBeenCalledWith(
+        "Project job scheduler failed",
+        expect.objectContaining({
+          action: "project.job.scheduler.error",
+          errorMessage: "claim query failed",
+        })
+      );
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(fakeDb.store.projectJobs[0]).toMatchObject({
+        status: "completed",
+        progress: 100,
+      });
+      expect(getProjectJobWorkerSchedulerStateForTests()).toMatchObject({
+        retryActive: false,
+        failureCount: 0,
+      });
+    } finally {
+      fakeDb.select = originalSelect;
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
+  it("cancels scheduler retry timers when polling stops", async () => {
+    const originalValue = process.env.PROJECT_WORKER_ENABLED;
+    process.env.PROJECT_WORKER_ENABLED = "true";
+    vi.useFakeTimers();
+
+    const {
+      getProjectJobWorkerSchedulerStateForTests,
+      resetProjectJobWorkerSchedulerStateForTests,
+      startProjectJobWorkerPolling,
+      stopProjectJobWorkerPolling,
+    } = await import("./projectWorkflow");
+
+    seedProject(1, { status: "ready" });
+    fakeDb.store.projectJobs.push({
+      id: 1,
+      projectId: 1,
+      userId: 7,
+      type: "analyze",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      payloadJson: JSON.stringify({ type: "analyze" }),
+      activeKey: "active",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    const originalSelect = fakeDb.select.bind(fakeDb);
+    fakeDb.select = () => {
+      throw new Error("queue lookup failed");
+    };
+
+    try {
+      resetProjectJobWorkerSchedulerStateForTests();
+      startProjectJobWorkerPolling(20);
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(getProjectJobWorkerSchedulerStateForTests().retryActive).toBe(true);
+      stopProjectJobWorkerPolling();
+      expect(getProjectJobWorkerSchedulerStateForTests()).toMatchObject({
+        pollingActive: false,
+        retryActive: false,
+        shutdown: true,
+      });
+
+      const loopStartCount = getProjectJobWorkerSchedulerStateForTests().loopStartCount;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(getProjectJobWorkerSchedulerStateForTests().loopStartCount).toBe(loopStartCount);
+    } finally {
+      fakeDb.select = originalSelect;
+      if (originalValue === undefined) {
+        delete process.env.PROJECT_WORKER_ENABLED;
+      } else {
+        process.env.PROJECT_WORKER_ENABLED = originalValue;
+      }
+    }
+  });
+
   it("lets a worker-enabled process pick up a queued job via polling after a web-only enqueue", async () => {
     const originalValue = process.env.PROJECT_WORKER_ENABLED;
     process.env.PROJECT_WORKER_ENABLED = "false";

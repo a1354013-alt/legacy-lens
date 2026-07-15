@@ -14,13 +14,15 @@ This document summarizes the production-facing boundaries that matter for Legacy
 - Web replicas and worker-enabled replicas can share the same MySQL database.
 - Job claiming is lease-based and ownership-fenced with `lockedBy + attemptCount`.
 - Heartbeat, retry, and finalization writes are conditional; stale workers are rejected and logged instead of overwriting a reclaimed job.
+- Lease renewal is owned by the parent worker dispatcher, not by the CPU-bound worker thread, and stops when the dispatched job resolves, rejects, loses ownership, or worker polling is stopped.
 - Worker-enabled replicas poll MySQL for `queued` jobs and expired `running` leases, so a web-only replica can enqueue work without directly waking a local worker process.
 - `PROJECT_JOB_EXECUTION_TIMEOUT_MS` bounds one claimed worker-thread execution. When it expires, the stuck worker thread is terminated and the DB lease/stale recovery path is responsible for retrying the job.
 - `PROJECT_WORKER_POLL_INTERVAL_MS` defaults to `2000` ms and must be set to a positive integer when overridden.
 - `PROJECT_JOB_LEASE_MS`, `PROJECT_JOB_HEARTBEAT_MS`, `PROJECT_JOB_STALE_MS`, `PROJECT_JOB_MAX_ATTEMPTS`, and worker timeout env values are all strict positive integers when overridden.
+- `PROJECT_JOB_HEARTBEAT_MS` must be lower than `PROJECT_JOB_LEASE_MS` and no more than one third of the lease duration; invalid production values fail fast.
 - If your environment cannot guarantee shared-database conditional-update semantics, run a single worker replica.
 - Set `PROJECT_WORKER_ENABLED=false` on web-only replicas.
-- Graceful shutdown clears the worker polling timer before closing shared resources.
+- Graceful shutdown clears the worker polling timer and any pending scheduler retry timer before closing shared resources.
 
 ## Rate Limiting
 

@@ -46,6 +46,38 @@ describe("dev auth bypass gating", () => {
     ).toThrow("Must be a positive integer.");
   });
 
+  it("rejects heartbeat intervals that are not lower than the lease", async () => {
+    const { validateRuntimeConfig } = await import("./env");
+
+    expect(() =>
+      validateRuntimeConfig({
+        VITE_APP_ID: "app",
+        VITE_OAUTH_PORTAL_URL: "http://localhost:3001",
+        JWT_SECRET: "12345678901234567890123456789012",
+        DATABASE_URL: "mysql://root:password@localhost:3306/legacy_lens",
+        OAUTH_SERVER_URL: "http://localhost:3001",
+        PROJECT_JOB_LEASE_MS: "30000",
+        PROJECT_JOB_HEARTBEAT_MS: "30000",
+      })
+    ).toThrow("PROJECT_JOB_HEARTBEAT_MS must be lower than PROJECT_JOB_LEASE_MS.");
+  });
+
+  it("rejects heartbeat intervals greater than one third of the lease", async () => {
+    const { validateRuntimeConfig } = await import("./env");
+
+    expect(() =>
+      validateRuntimeConfig({
+        VITE_APP_ID: "app",
+        VITE_OAUTH_PORTAL_URL: "http://localhost:3001",
+        JWT_SECRET: "12345678901234567890123456789012",
+        DATABASE_URL: "mysql://root:password@localhost:3306/legacy_lens",
+        OAUTH_SERVER_URL: "http://localhost:3001",
+        PROJECT_JOB_LEASE_MS: "30000",
+        PROJECT_JOB_HEARTBEAT_MS: "10001",
+      })
+    ).toThrow("PROJECT_JOB_HEARTBEAT_MS must be no more than one third of PROJECT_JOB_LEASE_MS.");
+  });
+
   it("disables dev auth bypass in production by default", async () => {
     process.env.NODE_ENV = "production";
     process.env.DEV_AUTH_BYPASS = "1";
