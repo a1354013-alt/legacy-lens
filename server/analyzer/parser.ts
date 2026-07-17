@@ -1,5 +1,5 @@
 import type { AnalysisWarning } from "../../shared/contracts";
-import { getNormalizedFileExtension, isDelphiLikeLanguage, normalizeLanguageTag } from "./delphiLanguage";
+import { getNormalizedFileExtension, isDelphiBuildMetadataFile, isDelphiLikeLanguage, normalizeLanguageTag } from "./delphiLanguage";
 import { resolveMostSpecificSymbol } from "./symbolOwner";
 import type { AnalyzedSymbol, DelphiDataBinding, DelphiEventBinding, FieldReference, SchemaField, SymbolDependency, SymbolType } from "./types";
 import { buildSymbolStableKey } from "./types";
@@ -2069,10 +2069,42 @@ export class UnsupportedParser implements FileParser {
   }
 }
 
+export class DelphiBuildMetadataParser implements FileParser {
+  constructor(private readonly file: string) {}
+
+  parseSymbols(): AnalyzedSymbol[] {
+    return [];
+  }
+
+  parseDependencies(): SymbolDependency[] {
+    return [];
+  }
+
+  parseFieldReferences(): FieldReference[] {
+    return [];
+  }
+
+  parseSchemaFields(): SchemaField[] {
+    return [];
+  }
+
+  collectWarnings(): AnalysisWarning[] {
+    return [
+      {
+        code: "IMPORT_BUILD_METADATA",
+        message: "Imported Delphi build metadata for Build Doctor; it is not parsed as Pascal source.",
+        level: "note",
+        filePath: this.file,
+        heuristic: true,
+      },
+    ];
+  }
+}
+
 export class ParserFactory {
   static isLanguageSupported(language: string) {
     const normalized = normalizeLanguageTag(language);
-    return ["go", "sql", "pas", "dpr", "delphi", "dfm", "inc", "dpk", "fmx"].includes(normalized);
+    return ["go", "sql", "pas", "dpr", "delphi", "dfm", "inc", "dpk", "fmx", "dproj", "groupproj", "bdsproj", "cfg", "dof", "rc"].includes(normalized);
   }
 
   static createParser(language: string, content: string, file: string): FileParser {
@@ -2089,6 +2121,10 @@ export class ParserFactory {
 
     if (extension === ".dfm" || extension === ".fmx") {
       return new DfmParser(content, file);
+    }
+
+    if (isDelphiBuildMetadataFile(file)) {
+      return new DelphiBuildMetadataParser(file);
     }
 
     if (isDelphiLikeLanguage(normalized, file) && extension !== ".dfm" && extension !== ".fmx") {

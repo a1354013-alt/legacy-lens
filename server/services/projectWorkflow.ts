@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type {
   AnalysisWarning,
@@ -111,6 +111,17 @@ import {
   serializeProjectJobPayload,
   type ProjectJobPayload,
 } from "./project/projectJobPayload";
+import {
+  clearAnalysisBaseline,
+  filterFlowTraces,
+  getAnalysisDiff,
+  getAnalysisRunDetail,
+  getFlowTracesFromRun,
+  getLatestUsableAnalysisRun,
+  listAnalysisRuns,
+  parseAnalysisSnapshot,
+  setAnalysisBaseline,
+} from "./analysisHistory";
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 
@@ -361,13 +372,7 @@ async function replaceAnalysisResult(db: DbHandle, projectId: number, values: Om
 }
 
 async function getExistingUsableAnalysisResult(db: DbHandle, projectId: number) {
-  const [report] = await db
-    .select()
-    .from(analysisResults)
-    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["completed", "completed_with_warnings", "partial"])))
-    .limit(1);
-
-  return report ?? null;
+  return getLatestUsableAnalysisRun(db, projectId);
 }
 
 async function writeProcessingAnalysisResultIfNoUsableSnapshot(db: DbHandle, projectId: number) {
@@ -1856,7 +1861,14 @@ export async function queueAnalyzeProject(projectId: number, userId: number) {
 }
 
 async function getProjectAnalysisRecord(db: DbHandle, projectId: number) {
-  const [report] = await db.select().from(analysisResults).where(eq(analysisResults.projectId, projectId)).limit(1);
+  const latestUsable = await getLatestUsableAnalysisRun(db, projectId);
+  if (latestUsable) return latestUsable;
+  const [report] = await db
+    .select()
+    .from(analysisResults)
+    .where(eq(analysisResults.projectId, projectId))
+    .orderBy(desc(analysisResults.runNumber), desc(analysisResults.createdAt), desc(analysisResults.id))
+    .limit(1);
   return report ?? null;
 }
 
@@ -2587,6 +2599,118 @@ export async function getFieldDependenciesPage(
   return getFieldDependenciesPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
+function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalysisSnapshot>["snapshot"]) {
+  const doctor = snapshot?.buildDoctor;
+  if (!doctor) {
+    return "# DELPHI_BUILD_DOCTOR\n\nNo Build Doctor snapshot is available for this run.\n";
+  }
+  const lines = [
+    "# DELPHI_BUILD_DOCTOR",
+    "",
+    `- Status: ${doctor.status}`,
+    `- Readiness score: ${doctor.score}/100`,
+    `- Compiler family: ${doctor.compilerFamily.value ?? "unknown"} (${doctor.compilerFamily.confidence})`,
+    "",
+    "## Project Entries",
+    doctor.projectEntries.length === 0 ? "- No Delphi project entry metadata was found." : renderMarkdownTable(["Path", "Kind", "Evidence"], doctor.projectEntries.map((entry) => [entry.path, entry.kind, entry.evidence])),
+    "",
+    "## Configuration",
+    `- Configurations: ${doctor.configurations.join(", ") || "none detected"}`,
+    `- Platforms: ${doctor.platforms.join(", ") || "none detected"}`,
+    `- Defines: ${doctor.defines.join(", ") || "none detected"}`,
+    `- Search paths: ${doctor.searchPaths.join(", ") || "none detected"}`,
+    `- Runtime packages: ${doctor.runtimePackages.join(", ") || "none detected"}`,
+    "",
+    "## Units And Packages",
+    `- Required units: ${doctor.requiredUnits.join(", ") || "none detected"}`,
+    `- Missing explicit units: ${doctor.missingUnits.join(", ") || "none detected"}`,
+    `- Unresolved units: ${doctor.unresolvedUnits.join(", ") || "none detected"}`,
+    `- Required packages: ${doctor.requiredPackages.join(", ") || "none detected"}`,
+    "",
+    "## Findings",
+    doctor.findings.length === 0
+      ? "- No Build Doctor findings were recorded."
+      : renderMarkdownTable(
+          ["Severity", "Code", "Title", "Confidence", "Evidence", "Recommendation"],
+          doctor.findings.slice(0, 200).map((finding) => [
+            finding.severity,
+            finding.code,
+            finding.title,
+            finding.confidence,
+            finding.evidence ?? `${finding.sourceFile ?? ""}${finding.lineNumber ? `:${finding.lineNumber}` : ""}`,
+            finding.recommendation,
+          ])
+        ),
+    doctor.findings.length > 200 ? `\n\n${doctor.findings.length - 200} additional findings omitted from Markdown; see delphi-build-doctor.json.` : "",
+    "",
+    "## Limitations",
+    ...doctor.limitations.map((limitation) => `- ${limitation}`),
+    "",
+  ];
+  return lines.join("\n");
+}
+
+function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisSnapshot>["snapshot"]) {
+  const traces = snapshot?.flowTraces ?? [];
+  const complete = traces.filter((trace) => trace.status === "complete").length;
+  const partial = traces.filter((trace) => trace.status === "partial").length;
+  const unresolved = traces.filter((trace) => trace.status === "unresolved").length;
+  const affectedTables = new Map<string, number>();
+  const affectedFields = new Map<string, number>();
+  for (const trace of traces) {
+    for (const table of trace.affectedTables) affectedTables.set(table, (affectedTables.get(table) ?? 0) + 1);
+    for (const field of trace.affectedFields) {
+      const key = `${field.table}.${field.field} [${field.operation}]`;
+      affectedFields.set(key, (affectedFields.get(key) ?? 0) + 1);
+    }
+  }
+  const top = (values: Map<string, number>) =>
+    Array.from(values.entries())
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 20)
+      .map(([label, count]) => [label, count]);
+  const representative = traces.slice(0, 50).flatMap((trace, index) => [
+    `### Trace ${index + 1}: ${trace.componentClass}.${trace.componentName}${trace.eventName ? ` ${trace.eventName}` : ""}`,
+    "",
+    `- Status: ${trace.status}`,
+    `- Confidence: ${trace.confidence}`,
+    `- Handler: ${trace.resolvedHandler ?? trace.handlerName ?? "none"}`,
+    `- Affected tables: ${trace.affectedTables.join(", ") || "none detected"}`,
+    trace.warnings.length > 0 ? `- Warnings: ${trace.warnings.join(" ")}` : "- Warnings: none",
+    "",
+    ...trace.steps.slice(0, 40).map((step) => `- ${step.type}: ${step.label}${step.operation ? ` [${step.operation}]` : ""}${step.filePath ? ` (${step.filePath}${step.lineNumber ? `:${step.lineNumber}` : ""})` : ""}`),
+    trace.steps.length > 40 ? `- ${trace.steps.length - 40} additional steps omitted from Markdown.` : "",
+    "",
+  ]);
+
+  return [
+    "# UI_DATABASE_FLOW",
+    "",
+    `- Total traces: ${traces.length}`,
+    `- Complete: ${complete}`,
+    `- Partial: ${partial}`,
+    `- Unresolved: ${unresolved}`,
+    `- Read paths: ${traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "read")).length}`,
+    `- Write paths: ${traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "write")).length}`,
+    `- Affected tables: ${affectedTables.size}`,
+    "",
+    "## Top Affected Tables",
+    affectedTables.size === 0 ? "- No affected tables were detected." : renderMarkdownTable(["Table", "Trace count"], top(affectedTables)),
+    "",
+    "## Top Affected Fields",
+    affectedFields.size === 0 ? "- No affected fields were detected." : renderMarkdownTable(["Field", "Trace count"], top(affectedFields)),
+    "",
+    "## Representative Traces",
+    traces.length === 0 ? "- No UI-to-database flow traces were recorded." : representative.join("\n"),
+    traces.length > 50 ? `\n${traces.length - 50} additional traces omitted from Markdown; see ui-database-flow.json.` : "",
+    "",
+    "## Limitations",
+    "- Flow tracing uses persisted static-analysis evidence only. Runtime-created handlers, dynamic SQL, and runtime data bindings may be incomplete.",
+    "- No compiler, executable, script, MSBuild file, or Delphi project command is executed.",
+    "",
+  ].join("\n");
+}
+
 export async function buildReportArchiveBuffer(projectId: number, userId: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
   await getOwnedProject(projectId, userId);
   logger.info("Export started", { projectId, action: "export.zip.start", status: "ok" });
@@ -2601,6 +2725,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     throw new AppError("REPORT_NOT_READY", "Analysis report is not ready for download.");
   }
   const readyReport = report;
+  const selectedSnapshot = parseAnalysisSnapshot(readyReport.snapshotJson).snapshot;
 
   const version = getAppVersion();
   const metrics = readyReport.summaryJson ?? null;
@@ -2639,6 +2764,10 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     { path: "DELPHI_FIELD_ACCESS.md", content: reportCompletenessArtifacts.delphiFieldAccessMarkdown },
     { path: "DELPHI_EVENT_MAP.md", content: reportCompletenessArtifacts.delphiEventMapMarkdown },
     { path: "DELPHI_DATA_BINDINGS.md", content: reportCompletenessArtifacts.delphiDataBindingsMarkdown },
+    { path: "DELPHI_BUILD_DOCTOR.md", content: renderDelphiBuildDoctorMarkdown(selectedSnapshot) },
+    { path: "delphi-build-doctor.json", content: JSON.stringify(selectedSnapshot?.buildDoctor ?? null, null, 2) },
+    { path: "UI_DATABASE_FLOW.md", content: renderUiDatabaseFlowMarkdown(selectedSnapshot) },
+    { path: "ui-database-flow.json", content: JSON.stringify(selectedSnapshot?.flowTraces ?? [], null, 2) },
     { path: "LIMITATIONS.md", content: reportCompletenessArtifacts.limitationsMarkdown },
     { path: "FULL_FINDINGS.json", content: reportCompletenessArtifacts.fullFindingsJson },
     { path: "impact-analysis.json", content: JSON.stringify(impactSummary, null, 2) },
@@ -2680,6 +2809,88 @@ export async function getAnalysisResult(projectId: number, userId: number) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
   return getProjectAnalysisRecord(db, projectId);
+}
+
+export async function listAnalysisRunsForProject(projectId: number, userId: number, page: number, pageSize: number) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  return listAnalysisRuns(db, projectId, page, pageSize);
+}
+
+export async function getAnalysisRunForProject(projectId: number, userId: number, runId: number) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  return getAnalysisRunDetail(db, projectId, runId);
+}
+
+export async function setAnalysisBaselineForProject(projectId: number, userId: number, runId: number) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  return setAnalysisBaseline(db, projectId, runId);
+}
+
+export async function clearAnalysisBaselineForProject(projectId: number, userId: number) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  return clearAnalysisBaseline(db, projectId);
+}
+
+export async function getAnalysisDiffForProject(projectId: number, userId: number, baseRunId: number, compareRunId: number) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  return getAnalysisDiff(db, projectId, baseRunId, compareRunId);
+}
+
+export async function getFlowTracesPageForProject(
+  projectId: number,
+  userId: number,
+  input: {
+    runId?: number;
+    search?: string;
+    form?: string;
+    component?: string;
+    event?: string;
+    status?: "complete" | "partial" | "unresolved";
+    table?: string;
+    operation?: "read" | "write" | "calculate" | "unknown";
+    confidence?: "high" | "medium" | "low";
+    page: number;
+    pageSize: number;
+  }
+) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  const traces = filterFlowTraces(await getFlowTracesFromRun(db, projectId, input.runId), input);
+  const offset = (input.page - 1) * input.pageSize;
+  return {
+    items: traces.slice(offset, offset + input.pageSize),
+    total: traces.length,
+    page: input.page,
+    pageSize: input.pageSize,
+    pageCount: Math.ceil(traces.length / input.pageSize),
+  };
+}
+
+export async function getFlowTraceForProject(projectId: number, userId: number, stableKey: string, runId?: number) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  return (await getFlowTracesFromRun(db, projectId, runId)).find((trace) => trace.stableKey === stableKey) ?? null;
+}
+
+export async function getFlowTraceSummaryForProject(projectId: number, userId: number, runId?: number) {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  const traces = await getFlowTracesFromRun(db, projectId, runId);
+  const affectedTables = new Set(traces.flatMap((trace) => trace.affectedTables));
+  return {
+    total: traces.length,
+    complete: traces.filter((trace) => trace.status === "complete").length,
+    partial: traces.filter((trace) => trace.status === "partial").length,
+    unresolved: traces.filter((trace) => trace.status === "unresolved").length,
+    readPaths: traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "read")).length,
+    writePaths: traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "write")).length,
+    affectedTables: affectedTables.size,
+  };
 }
 
 export async function getProjectJob(jobId: number, userId: number): Promise<ProjectJobRecord> {

@@ -49,8 +49,8 @@ Highlights (why this repo is portfolio-worthy):
 |---|---|---|
 | Go | `.go` | heuristic symbol/dependency extraction |
 | SQL | `.sql` | heuristic query/table/field extraction |
-| Delphi | `.pas`, `.dpr`, `.delphi` | heuristic unit analysis |
-| Delphi related | `.dfm`, `.inc`, `.dpk`, `.fmx` | imported with **limited analysis** warnings |
+| Delphi | `.pas`, `.dpr`, `.delphi`, `.dfm`, `.fmx`, `.inc`, `.dpk` | heuristic unit, form, event, binding, and field-access analysis |
+| Delphi build metadata | `.dproj`, `.groupproj`, `.bdsproj`, `.cfg`, `.dof`, `.rc` | imported as untrusted text for Build Doctor only |
 
 Unsupported languages are skipped with explicit import warnings.
 
@@ -69,7 +69,7 @@ Browser (React/Vite)
        -> Express + tRPC (Node)
             -> Import (ZIP/Git) -> files table
             -> Analyze -> symbols/dependencies/fields/risks/rules tables
-            -> Export ZIP -> generated from persisted analysisResults snapshot
+            -> Export ZIP -> generated from the selected persisted analysis run snapshot
 
 MySQL (Drizzle ORM)
   -> projects (status + import warnings)
@@ -77,7 +77,8 @@ MySQL (Drizzle ORM)
   -> symbols / dependencies
   -> fields / fieldDependencies
   -> risks / rules
-  -> analysisResults (documents + metrics + warnings)
+  -> analysisResults (immutable analysis runs + documents + metrics + warnings + versioned snapshots)
+  -> analysisBaselines (per-project comparison baseline pointer)
   -> projectJobs (DB-backed import/analyze queue + recovery state)
 ```
 
@@ -123,9 +124,13 @@ Files at the ZIP root:
 - `DELPHI_FIELD_ACCESS.md`
 - `DELPHI_EVENT_MAP.md`
 - `DELPHI_DATA_BINDINGS.md`
+- `DELPHI_BUILD_DOCTOR.md`
+- `UI_DATABASE_FLOW.md`
 - `LIMITATIONS.md`
 - `FULL_FINDINGS.json`
 - `impact-analysis.json`
+- `delphi-build-doctor.json`
+- `ui-database-flow.json`
 - `import-warnings.json`
 - `metadata.json` (audit/replay metadata)
 - `analysis-summary.json` (metrics + warnings summary)
@@ -138,6 +143,12 @@ Files at the ZIP root:
 - top dependencies
 - high-risk items
 - business rules summary
+
+Analysis runs are immutable in v1.1. The normalized project-scoped tables (`symbols`, `dependencies`, `fields`, `fieldDependencies`, `risks`, and `rules`) remain the latest usable projection for pagination and impact analysis, while every usable run is preserved in `analysisResults.snapshotJson` with a deterministic source fingerprint. Failed reanalysis does not erase or rewrite the previous usable run.
+
+Build Doctor is static and heuristic. It imports Delphi project metadata and reports missing explicit unit paths, unresolved units/packages, absolute or escaping search paths, resources, duplicated unit names, and configuration signals, but it does not compile the project or execute project files, scripts, binaries, MSBuild, or commands.
+
+UI-to-database flow tracing uses persisted static evidence only: DFM/FMX event bindings, resolved Pascal handlers, call dependencies, SQL evidence, field references, and static data bindings. Dynamic SQL, runtime-created components, runtime event assignment, inherited forms, and runtime data binding can remain incomplete and are reported with lower confidence or warnings.
 
 Minimal excerpt (shape) of `metadata.json`:
 

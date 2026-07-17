@@ -213,6 +213,19 @@ export default function AnalysisResult() {
     setFieldDependencyOperationType,
     fieldDependencyPage,
     setFieldDependencyPage,
+    runPage,
+    setRunPage,
+    setSelectedRunId,
+    compareBaseRunId,
+    setCompareBaseRunId,
+    compareRunId,
+    setCompareRunId,
+    flowTraceSearch,
+    setFlowTraceSearch,
+    flowTraceStatus,
+    setFlowTraceStatus,
+    flowTracePage,
+    setFlowTracePage,
     isReportDownloading,
     projectQuery,
     snapshotQuery,
@@ -222,6 +235,13 @@ export default function AnalysisResult() {
     rulesQuery,
     dependenciesQuery,
     fieldDependenciesQuery,
+    analysisRunsQuery,
+    selectedRunQuery,
+    diffQuery,
+    buildDoctorRunQuery,
+    flowTraceSummaryQuery,
+    flowTracesQuery,
+    setBaselineMutation,
     triggerAnalysisMutation,
     isLoading,
     project,
@@ -407,6 +427,9 @@ export default function AnalysisResult() {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="overview">{t("analysis.tabs.overview")}</TabsTrigger>
+            <TabsTrigger value="history">Analysis History</TabsTrigger>
+            <TabsTrigger value="buildDoctor">Build Doctor</TabsTrigger>
+            <TabsTrigger value="flow">UI to DB Flow</TabsTrigger>
             <TabsTrigger value="impact">{t("analysis.tabs.impact")}</TabsTrigger>
             <TabsTrigger value="symbols">{t("analysis.tabs.symbols")}</TabsTrigger>
             <TabsTrigger value="fields">{t("analysis.tabs.fields")}</TabsTrigger>
@@ -474,6 +497,192 @@ export default function AnalysisResult() {
             </div>
 
             <FileTable rows={snapshot?.fieldTables ?? []} />
+          </TabsContent>
+
+          <TabsContent value="history" className="space-y-4">
+            <PaginationControls
+              total={analysisRunsQuery?.data?.total ?? 0}
+              page={analysisRunsQuery?.data?.page ?? runPage}
+              pageCount={analysisRunsQuery?.data?.pageCount ?? 0}
+              onPrev={() => setRunPage((value) => Math.max(1, value - 1))}
+              onNext={() => setRunPage((value) => value + 1)}
+            />
+            <div className="space-y-3">
+              {(analysisRunsQuery?.data?.items ?? []).map((run) => (
+                <Card key={run.id}>
+                  <CardHeader>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <CardTitle>Run {run.runNumber}</CardTitle>
+                        <CardDescription>
+                          {run.createdAt.toLocaleString()} / {run.sourceFingerprint?.slice(0, 12) ?? "no fingerprint"}
+                        </CardDescription>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={run.status === "partial" ? "secondary" : "outline"}>{analysisStatusLabel(run.status)}</Badge>
+                        {run.isLatestUsable ? <Badge>latest</Badge> : null}
+                        {run.isBaseline ? <Badge variant="secondary">baseline</Badge> : null}
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    <div className="grid gap-2 md:grid-cols-4">
+                      <span>Files: {run.metricsSummary.files}</span>
+                      <span>Symbols: {run.metricsSummary.symbols}</span>
+                      <span>Risks: {run.riskCount}</span>
+                      <span>Confidence: {run.confidence ? `${run.confidence.score}/100 ${run.confidence.level}` : "unknown"}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setSelectedRunId(run.id)}>View run</Button>
+                      <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })}>Set baseline</Button>
+                      <Button size="sm" variant="outline" onClick={() => setCompareBaseRunId(run.id)}>Use as base</Button>
+                      <Button size="sm" variant="outline" onClick={() => setCompareRunId(run.id)}>Compare to</Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              {!analysisRunsQuery?.isLoading && (analysisRunsQuery?.data?.items.length ?? 0) === 0 ? (
+                <Card><CardContent className="py-8 text-center text-sm text-slate-600">No analysis history is available yet.</CardContent></Card>
+              ) : null}
+            </div>
+            {selectedRunQuery?.data ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Run {selectedRunQuery.data.runNumber} Details</CardTitle>
+                  <CardDescription>{selectedRunQuery.data.snapshotWarning ?? "Snapshot is available for historical report, Build Doctor, and flow tracing."}</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-3 text-sm md:grid-cols-3">
+                  <span>Analyzer: {selectedRunQuery.data.analyzerVersion}</span>
+                  <span>Warnings: {selectedRunQuery.data.warningCount}</span>
+                  <span>Job: {selectedRunQuery.data.jobId ?? "none"}</span>
+                </CardContent>
+              </Card>
+            ) : null}
+            {compareBaseRunId && compareRunId ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Comparison</CardTitle>
+                  <CardDescription>
+                    Base run ID {compareBaseRunId} compared with run ID {compareRunId}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  {diffQuery?.isLoading ? <p className="text-slate-600">Calculating diff...</p> : null}
+                  {diffQuery?.data ? (
+                    <>
+                      <div className="grid gap-2 md:grid-cols-4">
+                        <span>Files +{diffQuery.data.files.added.total} / -{diffQuery.data.files.removed.total} / changed {diffQuery.data.files.changed.total}</span>
+                        <span>Risks introduced {diffQuery.data.risks.introduced.total}</span>
+                        <span>Risks resolved {diffQuery.data.risks.resolved.total}</span>
+                        <span>Build score delta {diffQuery.data.buildDoctor.scoreDelta}</span>
+                      </div>
+                      {diffQuery.data.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Diff truncated</AlertTitle><AlertDescription>Large diff groups were capped. Totals are still shown.</AlertDescription></Alert> : null}
+                    </>
+                  ) : null}
+                </CardContent>
+              </Card>
+            ) : null}
+          </TabsContent>
+
+          <TabsContent value="buildDoctor" className="space-y-4">
+            {buildDoctorRunQuery?.isLoading ? <div className="flex justify-center py-10"><Loader2 className="size-6 animate-spin text-slate-600" /></div> : null}
+            {buildDoctorRunQuery?.data?.snapshot?.buildDoctor ? (
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <CardTitle>Delphi Build Doctor</CardTitle>
+                      <CardDescription>Static build-readiness audit. No compiler or project command is executed.</CardDescription>
+                    </div>
+                    <Badge variant={buildDoctorRunQuery.data.snapshot.buildDoctor.status === "blocked" ? "destructive" : "secondary"}>
+                      {buildDoctorRunQuery.data.snapshot.buildDoctor.status} / {buildDoctorRunQuery.data.snapshot.buildDoctor.score}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4 text-sm">
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <span>Compiler family: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.value ?? "unknown"}</span>
+                    <span>Confidence: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.confidence}</span>
+                    <span>Defines: {buildDoctorRunQuery.data.snapshot.buildDoctor.defines.join(", ") || "none"}</span>
+                    <span>Platforms: {buildDoctorRunQuery.data.snapshot.buildDoctor.platforms.join(", ") || "none"}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {buildDoctorRunQuery.data.snapshot.buildDoctor.findings.slice(0, 50).map((finding) => (
+                      <div key={`${finding.code}:${finding.title}:${finding.evidence ?? ""}`} className="rounded-lg border px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={finding.severity === "blocker" ? "destructive" : "outline"}>{finding.severity}</Badge>
+                          <span className="font-medium text-slate-950">{finding.title}</span>
+                          <span className="text-slate-500">{finding.confidence}</span>
+                        </div>
+                        <p className="mt-1 text-slate-700">{finding.description}</p>
+                        <p className="mt-1 text-slate-600">{finding.recommendation}</p>
+                        {finding.evidence ? <p className="mt-1 text-slate-500">Evidence: {finding.evidence}</p> : null}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card><CardContent className="py-8 text-center text-sm text-slate-600">Build Doctor data is not available for this run.</CardContent></Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="flow" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-4">
+              <MetricCard title="Traces" value={flowTraceSummaryQuery?.data?.total ?? 0} />
+              <MetricCard title="Complete" value={flowTraceSummaryQuery?.data?.complete ?? 0} />
+              <MetricCard title="Partial" value={flowTraceSummaryQuery?.data?.partial ?? 0} />
+              <MetricCard title="Tables" value={flowTraceSummaryQuery?.data?.affectedTables ?? 0} />
+            </div>
+            <FilterCard title="Flow trace filters" description="Filter static UI event and data-binding paths.">
+              <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
+                <Input value={flowTraceSearch} onChange={(event) => { setFlowTraceSearch(event.target.value); setFlowTracePage(1); }} placeholder="Search form, component, SQL, table, or field" />
+                <Select value={flowTraceStatus} onValueChange={(value) => { setFlowTraceStatus(value); setFlowTracePage(1); }}>
+                  <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All statuses</SelectItem>
+                    <SelectItem value="complete">Complete</SelectItem>
+                    <SelectItem value="partial">Partial</SelectItem>
+                    <SelectItem value="unresolved">Unresolved</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </FilterCard>
+            <PaginationControls total={flowTracesQuery?.data?.total ?? 0} page={flowTracesQuery?.data?.page ?? flowTracePage} pageCount={flowTracesQuery?.data?.pageCount ?? 0} onPrev={() => setFlowTracePage((value) => Math.max(1, value - 1))} onNext={() => setFlowTracePage((value) => value + 1)} />
+            <div className="space-y-3">
+              {(flowTracesQuery?.data?.items ?? []).map((trace) => (
+                <Card key={trace.stableKey}>
+                  <CardHeader>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <CardTitle>{trace.componentClass}.{trace.componentName}</CardTitle>
+                        <CardDescription>{trace.formName}{trace.eventName ? ` / ${trace.eventName}` : ""} / {trace.resolvedHandler ?? trace.handlerName ?? "data binding"}</CardDescription>
+                      </div>
+                      <div className="flex gap-2">
+                        <Badge variant={trace.status === "unresolved" ? "destructive" : "outline"}>{trace.status}</Badge>
+                        <Badge variant="secondary">{trace.confidence}</Badge>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    {trace.warnings.length > 0 ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Trace warnings</AlertTitle><AlertDescription>{trace.warnings.join(" ")}</AlertDescription></Alert> : null}
+                    <div className="space-y-2">
+                      {trace.steps.slice(0, 30).map((step) => (
+                        <div key={step.id} className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
+                          <Badge variant="outline">{step.type}</Badge>
+                          <span className="font-medium text-slate-950">{step.label}</span>
+                          {step.operation ? <Badge variant="secondary">{step.operation}</Badge> : null}
+                          {step.filePath ? <span className="text-slate-500">{step.filePath}{step.lineNumber ? `:${step.lineNumber}` : ""}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              {!flowTracesQuery?.isLoading && (flowTracesQuery?.data?.items.length ?? 0) === 0 ? (
+                <Card><CardContent className="py-8 text-center text-sm text-slate-600">No flow traces match the current filters.</CardContent></Card>
+              ) : null}
+            </div>
           </TabsContent>
 
           <TabsContent value="impact">

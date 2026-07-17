@@ -1,4 +1,12 @@
-import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning, DependencyTargetKind } from "../../shared/contracts";
+import type {
+  AnalysisMetrics,
+  AnalysisStatus,
+  AnalysisWarning,
+  DelphiBuildDoctorResult,
+  DelphiFlowTrace,
+  DependencyTargetKind,
+  SqlStatementEvidence,
+} from "../../shared/contracts";
 
 export interface AnalyzableFile {
   path: string;
@@ -138,6 +146,9 @@ export interface ProjectAnalysisResult {
   rulesYaml: string;
   delphiEventMap: DelphiEventMapEntry[];
   delphiDataBindings: DelphiDataBinding[];
+  sqlStatements: SqlStatementEvidence[];
+  buildDoctor: DelphiBuildDoctorResult;
+  flowTraces: DelphiFlowTrace[];
   riskScore: number;
   metrics: AnalysisMetrics;
 }

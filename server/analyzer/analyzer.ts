@@ -1,10 +1,13 @@
 import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
 import { calculateAnalysisConfidence } from "../../shared/analysisConfidence";
+import { analyzeDelphiBuild } from "./buildDoctor";
 import { getNormalizedFileExtension, isDelphiLikeLanguage } from "./delphiLanguage";
 import { DocumentGenerator } from "./documentGenerator";
 import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
+import { buildDelphiFlowTraces } from "./flowTracer";
 import { collectSqlStatements, parseDfmContent, ParserFactory } from "./parser";
 import { RiskDetector } from "./riskDetector";
+import { collectSqlEvidence } from "./sqlEvidence";
 import type {
   AnalyzableFile,
   AnalyzedSymbol,
@@ -409,6 +412,15 @@ export class Analyzer {
     const combinedDependencies = dedupeDependencies(dependencies);
     const dfmMetadata = collectDfmProjectMetadata(files);
     const delphiEventMap = resolveDelphiEventMap(dfmMetadata.eventBindings, symbols);
+    const sqlStatements = collectSqlEvidence(files, symbols, fieldReferences);
+    const buildDoctor = analyzeDelphiBuild(files);
+    const flowTraces = buildDelphiFlowTraces({
+      delphiEventMap,
+      delphiDataBindings: dfmMetadata.dataBindings,
+      symbols,
+      dependencies: combinedDependencies,
+      sqlStatements,
+    });
     warnings.push(...dfmMetadata.warnings);
     for (const eventEntry of delphiEventMap) {
       if (eventEntry.status === "unresolved") {
@@ -498,6 +510,9 @@ export class Analyzer {
       rulesYaml: this.documentGenerator.generateRulesYaml(rules),
       delphiEventMap,
       delphiDataBindings: dfmMetadata.dataBindings,
+      sqlStatements,
+      buildDoctor,
+      flowTraces,
       riskScore: this.riskDetector.calculateRiskScore(combinedRisks),
       metrics,
     };

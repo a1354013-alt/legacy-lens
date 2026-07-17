@@ -5,6 +5,14 @@ This document captures the operational boundaries that matter for real deploymen
 ## Project Job Workflow
 
 - `projectJobs` is the single source of truth for import/analyze work.
+
+## Analysis Runs
+
+Legacy Lens v1.1 stores every usable analysis result as an immutable `analysisResults` run. Each new successful or partial analysis allocates the next project-local `runNumber`, stores a deterministic source fingerprint, and persists a strict versioned snapshot in `snapshotJson`.
+
+The project-scoped normalized tables (`symbols`, `dependencies`, `fields`, `fieldDependencies`, `risks`, and `rules`) are still the latest usable materialized projection. They power pagination, current impact analysis, and current report summaries. Historical APIs read the selected run snapshot rather than reconstructing history from the current projection.
+
+`analysisBaselines` stores one movable baseline pointer per project for comparison. Baseline ownership is enforced by checking that both the project and run belong to the current user.
 - Enqueue writes the job row and project status in the same transaction.
 - Only one active job per project is allowed through the `(projectId, activeKey)` unique index and transaction-time conflict checks.
 - The worker claims queued jobs from MySQL instead of relying on process-local promises.

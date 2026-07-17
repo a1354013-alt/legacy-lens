@@ -158,6 +158,188 @@ export const analysisMetricsSchema = z.object({
 
 export type AnalysisMetrics = z.infer<typeof analysisMetricsSchema>;
 
+export const confidenceLevelSchema = z.enum(["high", "medium", "low"]);
+export const flowOperationSchema = z.enum(["read", "write", "calculate", "unknown"]);
+
+export const sqlStatementEvidenceSchema = z.object({
+  stableKey: z.string(),
+  ownerSymbolStableKey: z.string().nullable(),
+  ownerSymbolName: z.string().nullable(),
+  filePath: z.string(),
+  startLine: z.number().int().nonnegative(),
+  endLine: z.number().int().nonnegative(),
+  operation: z.enum(["select", "insert", "update", "delete", "execute", "unknown"]),
+  normalizedSql: z.string(),
+  tables: z.array(z.object({ name: z.string(), operation: z.enum(["read", "write", "unknown"]) })),
+  fields: z.array(z.object({ table: z.string(), field: z.string(), operation: flowOperationSchema })),
+  dynamic: z.boolean(),
+  confidence: confidenceLevelSchema,
+  warnings: z.array(z.string()),
+});
+export type SqlStatementEvidence = z.infer<typeof sqlStatementEvidenceSchema>;
+
+export const delphiBuildFindingSchema = z.object({
+  code: z.string(),
+  severity: z.enum(["blocker", "error", "warning", "info"]),
+  title: z.string(),
+  description: z.string(),
+  recommendation: z.string(),
+  confidence: confidenceLevelSchema,
+  sourceFile: z.string().optional(),
+  lineNumber: z.number().int().positive().optional(),
+  evidence: z.string().optional(),
+  relatedFiles: z.array(z.string()).optional(),
+});
+export type DelphiBuildFinding = z.infer<typeof delphiBuildFindingSchema>;
+
+export const delphiBuildDoctorResultSchema = z.object({
+  status: z.enum(["not_applicable", "ready", "ready_with_warnings", "blocked"]),
+  score: z.number().int().min(0).max(100),
+  compilerFamily: z.object({
+    value: z.string().nullable(),
+    confidence: confidenceLevelSchema,
+    evidence: z.array(z.string()),
+  }),
+  projectEntries: z.array(z.object({ path: z.string(), kind: z.string(), lineNumber: z.number().int().positive().nullable(), evidence: z.string() })),
+  configurations: z.array(z.string()),
+  platforms: z.array(z.string()),
+  defines: z.array(z.string()),
+  searchPaths: z.array(z.string()),
+  runtimePackages: z.array(z.string()),
+  requiredPackages: z.array(z.string()),
+  requiredUnits: z.array(z.string()),
+  missingUnits: z.array(z.string()),
+  unresolvedUnits: z.array(z.string()),
+  missingPackages: z.array(z.string()),
+  externalDependencies: z.array(z.string()),
+  findings: z.array(delphiBuildFindingSchema),
+  limitations: z.array(z.string()),
+});
+export type DelphiBuildDoctorResult = z.infer<typeof delphiBuildDoctorResultSchema>;
+
+export const delphiFlowStepSchema = z.object({
+  id: z.string(),
+  type: z.enum(["ui_component", "data_binding", "event", "handler", "method", "call", "sql", "table", "field", "warning"]),
+  label: z.string(),
+  filePath: z.string().optional(),
+  lineNumber: z.number().int().positive().optional(),
+  operation: flowOperationSchema.optional(),
+  confidence: confidenceLevelSchema,
+  evidence: z.string().optional(),
+});
+export type DelphiFlowStep = z.infer<typeof delphiFlowStepSchema>;
+
+export const delphiFlowTraceSchema = z.object({
+  stableKey: z.string(),
+  formName: z.string(),
+  formClass: z.string().optional(),
+  componentName: z.string(),
+  componentClass: z.string(),
+  eventName: z.string().optional(),
+  handlerName: z.string().optional(),
+  resolvedHandler: z.string().optional(),
+  status: z.enum(["complete", "partial", "unresolved"]),
+  confidence: confidenceLevelSchema,
+  steps: z.array(delphiFlowStepSchema),
+  affectedTables: z.array(z.string()),
+  affectedFields: z.array(z.object({ table: z.string(), field: z.string(), operation: flowOperationSchema })),
+  warnings: z.array(z.string()),
+  truncated: z.boolean(),
+});
+export type DelphiFlowTrace = z.infer<typeof delphiFlowTraceSchema>;
+
+const snapshotSymbolSchema = z.object({
+  stableKey: z.string(),
+  name: z.string(),
+  qualifiedName: z.string().optional(),
+  type: symbolKindSchema,
+  file: z.string(),
+  startLine: z.number().int().nonnegative(),
+  endLine: z.number().int().nonnegative(),
+  signature: z.string().optional(),
+  description: z.string().optional(),
+});
+
+const snapshotDependencySchema = z.object({
+  from: z.string(),
+  to: z.string().optional(),
+  fromName: z.string(),
+  toName: z.string(),
+  targetKind: dependencyTargetKindSchema.optional(),
+  type: dependencyKindSchema,
+  line: z.number().int().nonnegative(),
+});
+
+const snapshotFieldReferenceSchema = z.object({
+  table: z.string(),
+  field: z.string(),
+  type: fieldDependencyOperationTypeSchema,
+  file: z.string(),
+  line: z.number().int().nonnegative(),
+  symbolStableKey: z.string().optional(),
+  symbolName: z.string().optional(),
+  context: z.string().optional(),
+});
+
+const snapshotSchemaFieldSchema = z.object({
+  table: z.string(),
+  field: z.string(),
+  fieldType: z.string().optional(),
+  nullable: z.boolean().optional(),
+  primaryKey: z.boolean().optional(),
+  defaultValue: z.string().optional(),
+  comment: z.string().optional(),
+  file: z.string(),
+  line: z.number().int().nonnegative(),
+});
+
+const snapshotRiskSchema = z.object({
+  title: z.string(),
+  description: z.string(),
+  severity: riskSeveritySchema,
+  category: riskTypeSchema,
+  sourceFile: z.string(),
+  lineNumber: z.number().int().nonnegative(),
+  suggestion: z.string().optional(),
+  codeSnippet: z.string().optional(),
+});
+
+const snapshotRuleSchema = z.object({
+  ruleType: ruleTypeSchema,
+  name: z.string(),
+  description: z.string(),
+  condition: z.string().optional(),
+  sourceFile: z.string().optional(),
+  lineNumber: z.number().int().optional(),
+});
+
+export const analysisRunSnapshotV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  sourceManifest: z.array(z.object({
+    path: z.string(),
+    fileType: z.string().nullable(),
+    lineCount: z.number().int().nonnegative().nullable(),
+    sha256: z.string().length(64),
+  })),
+  metrics: analysisMetricsSchema,
+  warnings: z.array(analysisWarningSchema),
+  symbols: z.array(snapshotSymbolSchema),
+  dependencies: z.array(snapshotDependencySchema),
+  fields: z.array(snapshotSchemaFieldSchema),
+  fieldDependencies: z.array(snapshotFieldReferenceSchema),
+  risks: z.array(snapshotRiskSchema),
+  rules: z.array(snapshotRuleSchema),
+  delphiEventMap: z.array(delphiEventMapEntrySchema),
+  delphiDataBindings: z.array(delphiDataBindingSchema),
+  sqlStatements: z.array(sqlStatementEvidenceSchema).default([]),
+  buildDoctor: delphiBuildDoctorResultSchema,
+  flowTraces: z.array(delphiFlowTraceSchema),
+});
+export type AnalysisRunSnapshotV1 = z.infer<typeof analysisRunSnapshotV1Schema>;
+
+export const analysisRunSnapshotSchema = z.discriminatedUnion("schemaVersion", [analysisRunSnapshotV1Schema]);
+export type AnalysisRunSnapshot = z.infer<typeof analysisRunSnapshotSchema>;
+
 const basePagedQuerySchema = z.object({
   projectId: z.number().int().positive(),
   page: z.number().int().min(1).default(1),
@@ -335,6 +517,12 @@ export type ProjectRecordSummary = z.infer<typeof projectRecordSummarySchema>;
 export const analysisSnapshotReportSchema = z.object({
   id: z.number().int().positive(),
   projectId: z.number().int().positive(),
+  runNumber: z.number().int().positive().optional(),
+  jobId: z.number().int().positive().nullable().optional(),
+  analyzerVersion: z.string().optional(),
+  sourceFingerprint: z.string().nullable().optional(),
+  snapshotSchemaVersion: z.number().int().positive().optional(),
+  completedAt: z.date().nullable().optional(),
   status: analysisStatusSchema,
   flowMarkdown: z.string().nullable(),
   dataDependencyMarkdown: z.string().nullable(),
@@ -348,6 +536,114 @@ export const analysisSnapshotReportSchema = z.object({
 });
 
 export type AnalysisSnapshotReport = z.infer<typeof analysisSnapshotReportSchema>;
+
+export const analysisRunListInputSchema = z.object({
+  projectId: z.number().int().positive(),
+  page: z.number().int().min(1).default(1),
+  pageSize: z.number().int().min(1).max(50).default(10),
+});
+
+export const analysisRunInputSchema = z.object({
+  projectId: z.number().int().positive(),
+  runId: z.number().int().positive(),
+});
+
+export const analysisDiffInputSchema = z.object({
+  projectId: z.number().int().positive(),
+  baseRunId: z.number().int().positive(),
+  compareRunId: z.number().int().positive(),
+});
+
+export const analysisRunSummarySchema = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  runNumber: z.number().int().positive(),
+  status: analysisStatusSchema,
+  createdAt: z.date(),
+  completedAt: z.date().nullable(),
+  jobId: z.number().int().positive().nullable(),
+  sourceFingerprint: z.string().nullable(),
+  analyzerVersion: z.string(),
+  metricsSummary: z.object({
+    files: z.number().int().nonnegative(),
+    symbols: z.number().int().nonnegative(),
+    risks: z.number().int().nonnegative(),
+    rules: z.number().int().nonnegative(),
+  }),
+  confidence: analysisConfidenceSchema.nullable(),
+  warningCount: z.number().int().nonnegative(),
+  riskCount: z.number().int().nonnegative(),
+  isBaseline: z.boolean(),
+  isLatestUsable: z.boolean(),
+});
+export type AnalysisRunSummary = z.infer<typeof analysisRunSummarySchema>;
+
+export const analysisRunDetailSchema = analysisRunSummarySchema.extend({
+  report: analysisSnapshotReportSchema,
+  snapshot: analysisRunSnapshotV1Schema.nullable(),
+  snapshotWarning: z.string().nullable(),
+});
+export type AnalysisRunDetail = z.infer<typeof analysisRunDetailSchema>;
+
+const diffBucketSchema = <T extends z.ZodTypeAny>(item: T) =>
+  z.object({
+    items: z.array(item),
+    total: z.number().int().nonnegative(),
+    displayed: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  });
+
+const diffStringBucketSchema = diffBucketSchema(z.string());
+const diffUnknownBucketSchema = diffBucketSchema(z.unknown());
+
+export const analysisDiffSchema = z.object({
+  baseRun: analysisRunSummarySchema,
+  compareRun: analysisRunSummarySchema,
+  metricsDelta: z.record(z.string(), z.number()),
+  files: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema, changed: diffStringBucketSchema }),
+  symbols: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema }),
+  dependencies: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema }),
+  fields: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema, changed: diffStringBucketSchema }),
+  risks: z.object({ introduced: diffUnknownBucketSchema, resolved: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
+  rules: z.object({ introduced: diffUnknownBucketSchema, resolved: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
+  delphiEvents: z.object({ introduced: diffUnknownBucketSchema, removed: diffUnknownBucketSchema, resolutionChanged: diffUnknownBucketSchema }),
+  dataBindings: z.object({ introduced: diffUnknownBucketSchema, removed: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
+  buildDoctor: z.object({ introduced: diffUnknownBucketSchema, resolved: diffUnknownBucketSchema, changed: diffUnknownBucketSchema, scoreDelta: z.number() }),
+  flowTraces: z.object({ introduced: diffUnknownBucketSchema, removed: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
+  truncated: z.boolean(),
+});
+export type AnalysisDiff = z.infer<typeof analysisDiffSchema>;
+
+export const flowTracesPageInputSchema = z.object({
+  projectId: z.number().int().positive(),
+  page: z.number().int().min(1).default(1),
+  pageSize: z.number().int().min(1).max(100).default(25),
+  search: z.string().trim().max(200).optional(),
+  runId: z.number().int().positive().optional(),
+  form: z.string().trim().max(255).optional(),
+  component: z.string().trim().max(255).optional(),
+  event: z.string().trim().max(255).optional(),
+  status: z.enum(["complete", "partial", "unresolved"]).optional(),
+  table: z.string().trim().max(255).optional(),
+  operation: flowOperationSchema.optional(),
+  confidence: confidenceLevelSchema.optional(),
+});
+
+export const flowTraceInputSchema = z.object({
+  projectId: z.number().int().positive(),
+  runId: z.number().int().positive().optional(),
+  stableKey: z.string().min(1),
+});
+
+export const flowTraceSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  complete: z.number().int().nonnegative(),
+  partial: z.number().int().nonnegative(),
+  unresolved: z.number().int().nonnegative(),
+  readPaths: z.number().int().nonnegative(),
+  writePaths: z.number().int().nonnegative(),
+  affectedTables: z.number().int().nonnegative(),
+});
 
 export const summarySymbolSchema = z.object({
   id: z.number().int().positive(),
@@ -634,6 +930,12 @@ export const projectsListOutputSchema = z.array(projectRecordSummarySchema);
 export const projectByIdOutputSchema = projectRecordSummarySchema.nullable();
 export const analysisResultOutputSchema = analysisSnapshotReportSchema.nullable();
 export const analysisSnapshotOutputSchema = analysisSnapshotSummarySchema;
+export const analysisRunsPageOutputSchema = pagedResultSchema(analysisRunSummarySchema);
+export const analysisRunDetailOutputSchema = analysisRunDetailSchema;
+export const analysisDiffOutputSchema = analysisDiffSchema;
+export const flowTracesPageOutputSchema = pagedResultSchema(delphiFlowTraceSchema);
+export const flowTraceOutputSchema = delphiFlowTraceSchema.nullable();
+export const flowTraceSummaryOutputSchema = flowTraceSummarySchema;
 export const symbolsPageOutputSchema = pagedResultSchema(symbolListItemSchema);
 export const fieldsPageOutputSchema = pagedResultSchema(fieldListItemSchema);
 export const risksPageOutputSchema = pagedResultSchema(riskListItemSchema);

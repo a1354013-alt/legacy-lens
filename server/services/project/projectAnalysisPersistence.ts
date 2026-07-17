@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { AnalysisWarning, ProjectStatus } from "../../../shared/contracts";
 import {
   analysisResults,
@@ -14,6 +14,12 @@ import { buildFieldIdentityKey, normalizeFieldIdentity } from "../../analyzer/fi
 import type { AnalyzedSymbol, ProjectAnalysisResult } from "../../analyzer/types";
 import type { AppError } from "../../appError";
 import type { DatabaseClient, InsertProjectRecord } from "../../dbTypes";
+import {
+  ANALYZER_VERSION,
+  allocateNextRunNumber,
+  buildAnalysisRunSnapshot,
+  materializeLegacySnapshotIfMissing,
+} from "../analysisHistory";
 import type { ProjectJobExecutionState } from "./projectJobLease";
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
@@ -75,7 +81,9 @@ function getSymbolStableKey(row: Pick<typeof symbols.$inferSelect, "metadata">) 
 }
 
 export async function clearPreviousAnalysisData(db: DbHandle, projectId: number, includeFiles = false) {
-  await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
+  if (includeFiles) {
+    await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
+  }
   await db.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
   await db.delete(dependencies).where(eq(dependencies.projectId, projectId));
   await db.delete(risks).where(eq(risks.projectId, projectId));
@@ -103,7 +111,6 @@ export async function writeSuccessfulAnalysis(
     assertProjectJobExecutionActive,
     getAnalysisResultErrorMessage,
     insertInChunks,
-    replaceAnalysisResult,
     resolveInsertedTargetSymbolId,
     resolveOwningSymbol,
     throwAnalysisPersistError,
@@ -112,17 +119,37 @@ export async function writeSuccessfulAnalysis(
 
   await assertProjectJobExecutionActive(executionState, "analysis.write_success.prepare", { refreshLease: true });
   updatePersistCheckpoint(persistCheckpoint, {
+    operation: "backfill legacy analysis snapshot",
+    table: "analysisResults",
+  });
+  await materializeLegacySnapshotIfMissing(tx, projectId);
+
+  const runNumber = await allocateNextRunNumber(tx, projectId);
+  const snapshot = buildAnalysisRunSnapshot(projectFiles, result);
+  await tx
+    .delete(analysisResults)
+    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["pending", "processing"])));
+
+  updatePersistCheckpoint(persistCheckpoint, {
     operation: "delete previous analysis data",
-    table: "analysisResults,fieldDependencies,dependencies,risks,rules,fields,symbols",
+    table: "fieldDependencies,dependencies,risks,rules,fields,symbols",
   });
   await clearPreviousAnalysisData(tx, projectId);
 
   updatePersistCheckpoint(persistCheckpoint, {
-    operation: "insert analysis result",
+    operation: "insert immutable analysis run",
     table: "analysisResults",
   });
   try {
-    await replaceAnalysisResult(tx, projectId, {
+    await tx.insert(analysisResults).values({
+      projectId,
+      runNumber,
+      jobId: executionState?.ownership?.jobId ?? null,
+      analyzerVersion: ANALYZER_VERSION,
+      sourceFingerprint: snapshot.sourceFingerprint,
+      snapshotSchemaVersion: 1,
+      snapshotJson: snapshot.snapshotJson,
+      completedAt: new Date(),
       status: result.status,
       flowMarkdown: result.flowDocument,
       dataDependencyMarkdown: result.dataDependencyDocument,
@@ -136,7 +163,7 @@ export async function writeSuccessfulAnalysis(
     throwAnalysisPersistError(error, {
       projectId,
       executionState,
-      operation: "insert analysis result",
+      operation: "insert immutable analysis run",
       table: "analysisResults",
     });
   }
@@ -456,25 +483,25 @@ export async function writeFailedAnalysis(
 
   await assertProjectJobExecutionActive(executionState, "analysis.write_failed.prepare", { refreshLease: true });
   const existingReport = await getExistingUsableAnalysisResult(tx, projectId);
-  const failureWarning: AnalysisWarning = {
-    code: appError.code,
-    message: appError.message,
-    level: "error",
-    heuristic: true,
-  };
-
   if (existingReport) {
-    await replaceAnalysisResult(tx, projectId, {
-      status: existingReport.status,
-      flowMarkdown: existingReport.flowMarkdown ?? null,
-      dataDependencyMarkdown: existingReport.dataDependencyMarkdown ?? null,
-      risksMarkdown: existingReport.risksMarkdown ?? null,
-      rulesYaml: existingReport.rulesYaml ?? null,
-      summaryJson: existingReport.summaryJson ?? null,
-      warningsJson: mergeAnalysisWarnings(existingReport.warningsJson ?? [], [failureWarning]),
-      errorMessage: appError.message,
-    });
+    await materializeLegacySnapshotIfMissing(tx, projectId, existingReport.id);
+    const failureWarning: AnalysisWarning = {
+      code: appError.code,
+      message: appError.message,
+      level: "error",
+      heuristic: true,
+    };
+    await tx
+      .update(analysisResults)
+      .set({ errorMessage: appError.message, warningsJson: mergeAnalysisWarnings(existingReport.warningsJson ?? [], [failureWarning]) })
+      .where(eq(analysisResults.id, existingReport.id));
   } else {
+    const failureWarning: AnalysisWarning = {
+      code: appError.code,
+      message: appError.message,
+      level: "error",
+      heuristic: true,
+    };
     await clearPreviousAnalysisData(tx, projectId);
     await replaceAnalysisResult(tx, projectId, {
       status: "failed",

@@ -26,7 +26,7 @@ const IGNORED_DIRECTORIES = new Set([
   ".vscode",
 ]);
 
-const LIMITED_ANALYSIS_EXTENSIONS = new Set([".dfm", ".inc", ".dpk", ".fmx"]);
+const LIMITED_ANALYSIS_EXTENSIONS = new Set([".dfm", ".inc", ".dpk", ".fmx", ".dproj", ".groupproj", ".bdsproj", ".cfg", ".dof", ".rc"]);
 
 const GIT_CLONE_TIMEOUT_MS = 120_000;
 const DEFAULT_PRODUCTION_GIT_HOST_ALLOWLIST = ["github.com", "gitlab.com"] as const;
@@ -90,6 +90,12 @@ function detectLanguage(extension: string): FocusLanguage | null {
     ".inc": "delphi",
     ".dpk": "delphi",
     ".fmx": "delphi",
+    ".dproj": "delphi",
+    ".groupproj": "delphi",
+    ".bdsproj": "delphi",
+    ".cfg": "delphi",
+    ".dof": "delphi",
+    ".rc": "delphi",
   };
   return languageMap[extension] ?? null;
 }

@@ -33,6 +33,12 @@ function detectFileLanguage(filePath: string) {
     case ".inc":
     case ".dpk":
     case ".fmx":
+    case ".dproj":
+    case ".groupproj":
+    case ".bdsproj":
+    case ".cfg":
+    case ".dof":
+    case ".rc":
       return "delphi";
     default:
       return "unknown";

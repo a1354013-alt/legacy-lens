@@ -177,6 +177,26 @@ Contents:
 - Confidence
 - Warnings
 
+### DELPHI_BUILD_DOCTOR.md
+
+Purpose: Shows a heuristic Delphi build-readiness audit for the selected immutable analysis run.
+
+Audience: Delphi engineers, release owners, and migration teams checking whether imported Delphi sources appear buildable.
+
+Data sources: Persisted run snapshot only. The report uses imported `.dpr`, `.dpk`, `.dproj`, `.groupproj`, `.bdsproj`, `.cfg`, `.dof`, `.rc`, and Pascal/form evidence. It does not invoke Delphi, MSBuild, scripts, binaries, or project commands.
+
+Companion JSON: `delphi-build-doctor.json` contains the full persisted Build Doctor result, including readiness score, status, compiler-family evidence, project entries, configurations, platforms, defines, search paths, packages, missing/unresolved units, findings, confidence, evidence, recommendations, and limitations.
+
+### UI_DATABASE_FLOW.md
+
+Purpose: Summarizes deterministic UI event/data-binding to SQL/table/field traces for the selected immutable analysis run.
+
+Audience: Delphi engineers, database migration reviewers, QA leads, and analysts tracing UI behavior to database impact.
+
+Data sources: Persisted static-analysis evidence only: DFM/FMX event bindings, resolved handlers, call dependencies, SQL statement evidence, field references, and data bindings. The Markdown caps representative traces and discloses omitted counts. The companion `ui-database-flow.json` contains the persisted trace set subject to the configured analysis-size guard.
+
+Limitations: Runtime-created controls, inherited event wiring, dynamic SQL, runtime DataSource/DataSet assignment, and unresolved calls can make traces partial or unresolved. Legacy Lens does not use an LLM to invent missing flow steps.
+
 ### LIMITATIONS.md
 
 Purpose: Explains analysis limits and manual review requirements.

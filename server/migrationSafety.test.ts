@@ -111,6 +111,11 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
       const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
       const analysisStatusType = await getColumnType(connection, "analysisResults", "status");
+      const [runNumberColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'runNumber'");
+      const [snapshotColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'snapshotJson'");
+      const [oldProjectUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_unique'");
+      const [runNumberUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_runNumber_unique'");
+      const [latestIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_createdAt_id_idx'");
 
       expect(projectColumns).toHaveLength(1);
       expect(jobColumns).toHaveLength(1);
@@ -123,6 +128,12 @@ maybeDescribe("Drizzle migration smoke", () => {
       expect(maxAttemptsColumns).toHaveLength(1);
       expect(claimIndexes).toHaveLength(4);
       expect(analysisStatusType).toContain("completed_with_warnings");
+      expect(runNumberColumns).toHaveLength(1);
+      expect(snapshotColumns).toHaveLength(1);
+      expect(oldProjectUnique).toHaveLength(0);
+      expect(runNumberUnique.length).toBeGreaterThan(0);
+      expect(latestIndexes.length).toBeGreaterThan(0);
+      await expect(tableExists(connection, dbName, "analysisBaselines")).resolves.toBe(true);
     } finally {
       await connection.end();
       await dropDatabase(DATABASE_URL as string, dbName);
@@ -176,6 +187,10 @@ maybeDescribe("Drizzle migration smoke", () => {
       const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
       const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
       const analysisStatusType = await getColumnType(connection, "analysisResults", "status");
+      const [runNumberColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'runNumber'");
+      const [snapshotColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'snapshotJson'");
+      const [oldProjectUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_unique'");
+      const [runNumberUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_runNumber_unique'");
 
       expect(projectRows[0]?.status).toBe("completed");
       expect(projectRows[0]?.importWarningsJson).toBeDefined();
@@ -203,6 +218,11 @@ maybeDescribe("Drizzle migration smoke", () => {
       expect(claimIndexes).toHaveLength(4);
       expect(projectColumns).toHaveLength(1);
       expect(analysisStatusType).toContain("completed_with_warnings");
+      expect(runNumberColumns).toHaveLength(1);
+      expect(snapshotColumns).toHaveLength(1);
+      expect(oldProjectUnique).toHaveLength(0);
+      expect(runNumberUnique.length).toBeGreaterThan(0);
+      await expect(tableExists(connection, dbName, "analysisBaselines")).resolves.toBe(true);
 
       await connection.query(
         "UPDATE `analysisResults` SET `status` = 'completed_with_warnings' WHERE `id` = 1"

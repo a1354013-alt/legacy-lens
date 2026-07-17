@@ -42,3 +42,12 @@ This document records intentionally unfinished or bounded behavior so deployment
 
 - Report ZIP generation is capped by `MAX_REPORT_ARCHIVE_BYTES`.
 - Very large projects may need to be imported and reviewed in smaller slices, or the limit must be raised deliberately with matching infrastructure review.
+
+## v1.1 Delphi History, Build Doctor, and Flow Tracing
+
+- Analysis history stores immutable JSON snapshots for usable runs. The normalized project tables remain only the latest usable projection.
+- Failed reanalysis is recorded through project/job failure state and does not erase the previous usable run or its projection.
+- Build Doctor is a static heuristic audit. It never compiles Delphi projects and never executes imported project files, scripts, binaries, MSBuild files, or commands.
+- Build Doctor cannot prove third-party package availability when a dependency is supplied by an IDE library path that was not imported.
+- UI-to-database flow tracing follows persisted static evidence only. Dynamic SQL, runtime event assignment, runtime-created components, inherited form behavior, and runtime data binding can be incomplete.
+- Diff reports do not perform fuzzy file rename detection in v1.1.

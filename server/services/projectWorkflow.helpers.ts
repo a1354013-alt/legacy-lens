@@ -112,6 +112,12 @@ export function sortFieldDependencies<
 export function mapSnapshotReport<T extends {
   id: number;
   projectId: number;
+  runNumber?: number;
+  jobId?: number | null;
+  analyzerVersion?: string | null;
+  sourceFingerprint?: string | null;
+  snapshotSchemaVersion?: number | null;
+  completedAt?: Date | string | null;
   status: AnalysisStatus;
   flowMarkdown: string | null;
   dataDependencyMarkdown: string | null;
@@ -131,6 +137,12 @@ export function mapSnapshotReport<T extends {
   return {
     id: report.id,
     projectId: report.projectId,
+    runNumber: report.runNumber,
+    jobId: report.jobId ?? null,
+    analyzerVersion: report.analyzerVersion ?? undefined,
+    sourceFingerprint: report.sourceFingerprint ?? null,
+    snapshotSchemaVersion: report.snapshotSchemaVersion ?? undefined,
+    completedAt: report.completedAt ? (report.completedAt instanceof Date ? report.completedAt : new Date(String(report.completedAt))) : null,
     status: report.status,
     flowMarkdown: report.flowMarkdown,
     dataDependencyMarkdown: report.dataDependencyMarkdown,

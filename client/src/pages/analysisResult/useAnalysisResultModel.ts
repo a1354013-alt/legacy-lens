@@ -74,6 +74,13 @@ export function useAnalysisResultModel(projectId: number) {
   const [fieldDependencyTable, setFieldDependencyTable] = useState<string>("all");
   const [fieldDependencyOperationType, setFieldDependencyOperationType] = useState<string>("all");
   const [fieldDependencyPage, setFieldDependencyPage] = useState(1);
+  const [runPage, setRunPage] = useState(1);
+  const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const [compareBaseRunId, setCompareBaseRunId] = useState<number | null>(null);
+  const [compareRunId, setCompareRunId] = useState<number | null>(null);
+  const [flowTraceSearch, setFlowTraceSearch] = useState("");
+  const [flowTraceStatus, setFlowTraceStatus] = useState<string>("all");
+  const [flowTracePage, setFlowTracePage] = useState(1);
   const [isReportDownloading, setIsReportDownloading] = useState(false);
 
   const utils = trpc.useUtils();
@@ -173,6 +180,64 @@ export function useAnalysisResultModel(projectId: number) {
     },
     { enabled: Number.isFinite(projectId) && activeTab === "fieldDependencies" }
   );
+
+  const analysisRunsQuery = trpc.analysis.listRuns.useQuery(
+    {
+      projectId,
+      page: runPage,
+      pageSize: 10,
+    },
+    { enabled: Number.isFinite(projectId) && activeTab === "history" }
+  );
+
+  const selectedRunQuery = trpc.analysis.getRun.useQuery(
+    {
+      projectId,
+      runId: selectedRunId ?? 0,
+    },
+    { enabled: Number.isFinite(projectId) && activeTab === "history" && Boolean(selectedRunId) }
+  );
+
+  const diffQuery = trpc.analysis.getDiff.useQuery(
+    {
+      projectId,
+      baseRunId: compareBaseRunId ?? 0,
+      compareRunId: compareRunId ?? 0,
+    },
+    { enabled: Number.isFinite(projectId) && activeTab === "history" && Boolean(compareBaseRunId && compareRunId) }
+  );
+
+  const currentReportId = snapshotQuery.data?.report?.id;
+  const buildDoctorRunQuery = trpc.analysis.getRun.useQuery(
+    {
+      projectId,
+      runId: currentReportId ?? 0,
+    },
+    { enabled: Number.isFinite(projectId) && activeTab === "buildDoctor" && Boolean(currentReportId) }
+  );
+
+  const flowTraceSummaryQuery = trpc.analysis.getFlowTraceSummary.useQuery(
+    { projectId },
+    { enabled: Number.isFinite(projectId) && activeTab === "flow" }
+  );
+
+  const flowTracesQuery = trpc.analysis.getFlowTracesPage.useQuery(
+    {
+      projectId,
+      page: flowTracePage,
+      pageSize: RESULT_LIST_PAGE_SIZE,
+      search: flowTraceSearch || undefined,
+      status: flowTraceStatus === "all" ? undefined : (flowTraceStatus as "complete" | "partial" | "unresolved"),
+    },
+    { enabled: Number.isFinite(projectId) && activeTab === "flow" }
+  );
+
+  const setBaselineMutation = trpc.analysis.setBaseline.useMutation({
+    onSuccess: async () => {
+      await utils.analysis.listRuns.invalidate({ projectId });
+      toast.success("Baseline updated.");
+    },
+  });
 
   const triggerAnalysisMutation = trpc.analysis.trigger.useMutation({
     onSuccess: async () => {
@@ -279,6 +344,20 @@ export function useAnalysisResultModel(projectId: number) {
     setFieldDependencyOperationType,
     fieldDependencyPage,
     setFieldDependencyPage,
+    runPage,
+    setRunPage,
+    selectedRunId,
+    setSelectedRunId,
+    compareBaseRunId,
+    setCompareBaseRunId,
+    compareRunId,
+    setCompareRunId,
+    flowTraceSearch,
+    setFlowTraceSearch,
+    flowTraceStatus,
+    setFlowTraceStatus,
+    flowTracePage,
+    setFlowTracePage,
     isReportDownloading,
     projectQuery,
     snapshotQuery,
@@ -288,6 +367,13 @@ export function useAnalysisResultModel(projectId: number) {
     rulesQuery,
     dependenciesQuery,
     fieldDependenciesQuery,
+    analysisRunsQuery,
+    selectedRunQuery,
+    diffQuery,
+    buildDoctorRunQuery,
+    flowTraceSummaryQuery,
+    flowTracesQuery,
+    setBaselineMutation,
     triggerAnalysisMutation,
     isLoading,
     project,

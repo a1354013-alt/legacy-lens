@@ -275,6 +275,13 @@ export const analysisResults = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    runNumber: int("runNumber").default(1).notNull(),
+    jobId: int("jobId").references(() => projectJobs.id, { onDelete: "set null", onUpdate: "cascade" }),
+    analyzerVersion: varchar("analyzerVersion", { length: 64 }).default("legacy").notNull(),
+    sourceFingerprint: varchar("sourceFingerprint", { length: 64 }),
+    snapshotSchemaVersion: int("snapshotSchemaVersion").default(1).notNull(),
+    snapshotJson: longtext("snapshotJson"),
+    completedAt: timestamp("completedAt"),
     status: mysqlEnum("status", analysisStatuses).default("pending").notNull(),
     flowMarkdown: mediumtext("flowMarkdown"),
     dataDependencyMarkdown: mediumtext("dataDependencyMarkdown"),
@@ -288,9 +295,26 @@ export const analysisResults = mysqlTable(
   },
   (table) => ({
     projectIdIdx: index("analysisResults_projectId_idx").on(table.projectId),
-    projectIdUniqueIdx: uniqueIndex("analysisResults_projectId_unique").on(table.projectId),
+    projectRunUniqueIdx: uniqueIndex("analysisResults_projectId_runNumber_unique").on(table.projectId, table.runNumber),
+    projectCreatedIdx: index("analysisResults_projectId_createdAt_id_idx").on(table.projectId, table.createdAt, table.id),
   })
 );
 
 export type AnalysisResult = typeof analysisResults.$inferSelect;
 export type InsertAnalysisResult = typeof analysisResults.$inferInsert;
+
+export const analysisBaselines = mysqlTable(
+  "analysisBaselines",
+  {
+    projectId: int("projectId").primaryKey().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    analysisResultId: int("analysisResultId").notNull().references(() => analysisResults.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    analysisResultIdx: index("analysisBaselines_analysisResultId_idx").on(table.analysisResultId),
+  })
+);
+
+export type AnalysisBaseline = typeof analysisBaselines.$inferSelect;
+export type InsertAnalysisBaseline = typeof analysisBaselines.$inferInsert;

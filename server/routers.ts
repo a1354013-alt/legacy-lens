@@ -1,12 +1,23 @@
 import { COOKIE_NAME, MAX_LEGACY_BASE64_ZIP_BYTES, formatBytes } from "@shared/const";
 import {
   analysisResultOutputSchema,
+  analysisDiffInputSchema,
+  analysisDiffOutputSchema,
+  analysisRunDetailOutputSchema,
+  analysisRunInputSchema,
+  analysisRunsPageOutputSchema,
+  analysisRunListInputSchema,
   analysisSnapshotOutputSchema,
   dependenciesPageOutputSchema,
   fieldDependenciesPageOutputSchema,
   dependenciesPageInputSchema,
   fieldsPageOutputSchema,
   fieldDependenciesPageInputSchema,
+  flowTraceInputSchema,
+  flowTraceOutputSchema,
+  flowTraceSummaryOutputSchema,
+  flowTracesPageInputSchema,
+  flowTracesPageOutputSchema,
   fieldsPageInputSchema,
   focusLanguageSchema,
   impactTargetTypeSchema,
@@ -42,11 +53,17 @@ import {
   createProjectForUser,
   deleteProjectCascade,
   getAnalysisResult,
+  getAnalysisDiffForProject,
+  getAnalysisRunForProject,
   getAnalysisSnapshot,
   getDependenciesPage,
   getFieldDependenciesPage,
   getFieldsPage,
   getLatestJobsByProjectIds,
+  getFlowTraceForProject,
+  getFlowTraceSummaryForProject,
+  getFlowTracesPageForProject,
+  listAnalysisRunsForProject,
   getOwnedProject,
   getProjectJob,
   getRisksPage,
@@ -55,7 +72,9 @@ import {
   queueAnalyzeProject,
   queueImportProjectGit,
   queueImportProjectZip,
+  clearAnalysisBaselineForProject,
   runImpactAnalysis,
+  setAnalysisBaselineForProject,
 } from "./services/projectWorkflow";
 
 const projectIdSchema = z.number().int().positive();
@@ -320,6 +339,73 @@ export const appRouter = router({
         raiseAsTrpc(error);
       }
     }),
+
+    listRuns: protectedProcedure.input(analysisRunListInputSchema).output(analysisRunsPageOutputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await listAnalysisRunsForProject(input.projectId, ctx.user.id, input.page, input.pageSize);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getRun: protectedProcedure.input(analysisRunInputSchema).output(analysisRunDetailOutputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getAnalysisRunForProject(input.projectId, ctx.user.id, input.runId);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    setBaseline: protectedProcedure.input(analysisRunInputSchema).mutation(async ({ ctx, input }) => {
+      try {
+        return await setAnalysisBaselineForProject(input.projectId, ctx.user.id, input.runId);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    clearBaseline: protectedProcedure.input(projectIdSchema).mutation(async ({ ctx, input }) => {
+      try {
+        return await clearAnalysisBaselineForProject(input, ctx.user.id);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getDiff: protectedProcedure.input(analysisDiffInputSchema).output(analysisDiffOutputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getAnalysisDiffForProject(input.projectId, ctx.user.id, input.baseRunId, input.compareRunId);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getFlowTracesPage: protectedProcedure.input(flowTracesPageInputSchema).output(flowTracesPageOutputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getFlowTracesPageForProject(input.projectId, ctx.user.id, input);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getFlowTrace: protectedProcedure.input(flowTraceInputSchema).output(flowTraceOutputSchema).query(async ({ ctx, input }) => {
+      try {
+        return await getFlowTraceForProject(input.projectId, ctx.user.id, input.stableKey, input.runId);
+      } catch (error) {
+        raiseAsTrpc(error);
+      }
+    }),
+
+    getFlowTraceSummary: protectedProcedure
+      .input(z.object({ projectId: projectIdSchema, runId: z.number().int().positive().optional() }))
+      .output(flowTraceSummaryOutputSchema)
+      .query(async ({ ctx, input }) => {
+        try {
+          return await getFlowTraceSummaryForProject(input.projectId, ctx.user.id, input.runId);
+        } catch (error) {
+          raiseAsTrpc(error);
+        }
+      }),
 
     getSymbolsPage: protectedProcedure.input(symbolsPageInputSchema).output(symbolsPageOutputSchema).query(async ({ ctx, input }) => {
       try {

@@ -12,7 +12,7 @@ import { AppError } from "../appError";
 import iconvLite from "iconv-lite";
 import jschardet from "jschardet";
 
-export const SUPPORTED_SOURCE_EXTENSIONS = [".go", ".sql", ".pas", ".dpr", ".delphi", ".dfm", ".inc", ".dpk", ".fmx"] as const;
+export const SUPPORTED_SOURCE_EXTENSIONS = [".go", ".sql", ".pas", ".dpr", ".delphi", ".dfm", ".inc", ".dpk", ".fmx", ".dproj", ".groupproj", ".bdsproj", ".cfg", ".dof", ".rc"] as const;
 export const UNSUPPORTED_CODE_EXTENSIONS = [
   ".ts",
   ".js",
@@ -35,7 +35,7 @@ export const UNSUPPORTED_CODE_EXTENSIONS = [
  * Extensions that are supported for import but have limited analysis capabilities.
  * These files will be imported and counted, but may not produce full symbol/dependency data.
  */
-export const LIMITED_ANALYSIS_EXTENSIONS = [".dfm", ".inc", ".dpk", ".fmx"] as const;
+export const LIMITED_ANALYSIS_EXTENSIONS = [".dfm", ".inc", ".dpk", ".fmx", ".dproj", ".groupproj", ".bdsproj", ".cfg", ".dof", ".rc"] as const;
 
 const IGNORED_PATTERNS = [
   /^__MACOSX\//,
@@ -157,6 +157,12 @@ function detectLanguage(filePath: string): FocusLanguage | null {
     ".inc": "delphi",
     ".dpk": "delphi",
     ".fmx": "delphi",
+    ".dproj": "delphi",
+    ".groupproj": "delphi",
+    ".bdsproj": "delphi",
+    ".cfg": "delphi",
+    ".dof": "delphi",
+    ".rc": "delphi",
   };
   return languageMap[ext] ?? null;
 }
@@ -325,7 +331,7 @@ export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<Extract
     if (extractedFiles.length === 0) {
       throw new AppError(
         "EMPTY_SOURCE",
-        "No supported Go, SQL, or Delphi source files were found in the uploaded archive. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx"
+        "No supported Go, SQL, or Delphi source files were found in the uploaded archive. Supported extensions: .go, .sql, .pas, .dpr, .dfm, .inc, .dpk, .fmx, .dproj, .groupproj, .bdsproj, .cfg, .dof, .rc"
       );
     }
 
