@@ -31,7 +31,12 @@ jobs:
       - name: Verify Drizzle metadata
         run: |
           pnpm db:generate
-          git diff --exit-code drizzle
+          if [ -n "$(git status --porcelain -- drizzle)" ]; then
+            echo "Drizzle schema or migration metadata is out of sync."
+            git status --short -- drizzle
+            git diff -- drizzle
+            exit 1
+          fi
 
   test:
     runs-on: ubuntu-latest
