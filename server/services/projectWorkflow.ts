@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type {
   AnalysisWarning,
@@ -58,7 +58,11 @@ import {
   sortProjectRules,
   sortProjectSymbols,
 } from "./projectWorkflow.helpers";
-import { clearPreviousAnalysisData } from "./project/projectAnalysisPersistence";
+import {
+  clearLatestAnalysisProjection,
+  deleteProjectFiles,
+  deleteProjectHistory,
+} from "./project/projectAnalysisPersistence";
 import { buildProjectReportArchiveBuffer } from "./project/projectReportArchive";
 import { recoverStaleProjectJobsOnStartupImpl } from "./project/projectJobRecovery";
 import {
@@ -117,7 +121,7 @@ import {
   getAnalysisDiff,
   getAnalysisRunDetail,
   getFlowTracesFromRun,
-  getLatestUsableAnalysisRun,
+  getLatestUsableCurrentSourceRun,
   listAnalysisRuns,
   parseAnalysisSnapshot,
   setAnalysisBaseline,
@@ -277,18 +281,6 @@ function toAnalysisStageError(
   );
 }
 
-function buildAnalysisFailureWarning(error: AppError): AnalysisWarning {
-  const context = error instanceof AnalysisStageError ? error.context : null;
-
-  return {
-    code: error.code,
-    message: error.message,
-    level: "error",
-    filePath: context?.filePath,
-    heuristic: true,
-  };
-}
-
 function toPublicProjectJobRecord(job: ProjectJobRow): ProjectJobRecord {
   return {
     id: job.id,
@@ -372,25 +364,13 @@ async function replaceAnalysisResult(db: DbHandle, projectId: number, values: Om
 }
 
 async function getExistingUsableAnalysisResult(db: DbHandle, projectId: number) {
-  return getLatestUsableAnalysisRun(db, projectId);
+  return getLatestUsableCurrentSourceRun(db, projectId);
 }
 
 async function writeProcessingAnalysisResultIfNoUsableSnapshot(db: DbHandle, projectId: number) {
-  const existingReport = await getExistingUsableAnalysisResult(db, projectId);
-  if (existingReport) {
-    return;
-  }
-
-  await replaceAnalysisResult(db, projectId, {
-    status: "processing",
-    flowMarkdown: null,
-    dataDependencyMarkdown: null,
-    risksMarkdown: null,
-    rulesYaml: null,
-    summaryJson: null,
-    warningsJson: [],
-    errorMessage: null,
-  });
+  await db
+    .delete(analysisResults)
+    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["pending", "processing"])));
 }
 
 async function transitionProjectState(
@@ -838,6 +818,7 @@ async function createProjectAndQueuedImportJob(
       errorMessage: null,
       lastErrorCode: null,
       importWarningsJson: [],
+      sourceFingerprint: null,
     });
 
     const projectId = extractInsertId(projectInsert);
@@ -933,8 +914,6 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
     stage: "ANALYSIS_UNKNOWN_FAILED",
     rawMessage: "Analysis job ended without a captured error.",
   });
-  const failureWarning = error ? [buildAnalysisFailureWarning(error)] : [];
-
   await db.transaction(async (tx) => {
     await tx
       .update(projects)
@@ -947,25 +926,9 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
       })
       .where(eq(projects.id, job.projectId));
 
-    const existingResult = await tx.select().from(analysisResults).where(eq(analysisResults.projectId, job.projectId)).limit(1);
-    const existingUsableResult =
-      existingResult[0]?.status === "completed" ||
-      existingResult[0]?.status === "completed_with_warnings" ||
-      existingResult[0]?.status === "partial";
-    if (existingUsableResult) {
-      return;
-    }
-
-    await replaceAnalysisResult(tx, job.projectId, {
-      status: "failed",
-      flowMarkdown: null,
-      dataDependencyMarkdown: null,
-      risksMarkdown: null,
-      rulesYaml: null,
-      summaryJson: null,
-      warningsJson: failureWarning,
-      errorMessage: error?.message ?? fallbackMessage,
-    });
+    await tx
+      .delete(analysisResults)
+      .where(and(eq(analysisResults.projectId, job.projectId), inArray(analysisResults.status, ["pending", "processing"])));
   });
 }
 
@@ -1635,21 +1598,9 @@ async function markProjectAsRecoveryFailed(projectId: number, status: ProjectSta
   await db.update(projects).set(updates).where(eq(projects.id, projectId));
 
   if (status === "analyzing") {
-    const existingReport = await getExistingUsableAnalysisResult(db, projectId);
-    if (existingReport) {
-      return;
-    }
-
-    await replaceAnalysisResult(db, projectId, {
-      status: "failed",
-      flowMarkdown: null,
-      dataDependencyMarkdown: null,
-      risksMarkdown: null,
-      rulesYaml: null,
-      summaryJson: null,
-      warningsJson: [],
-      errorMessage: message,
-    });
+    await db
+      .delete(analysisResults)
+      .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["pending", "processing"])));
   }
 }
 
@@ -1710,7 +1661,8 @@ function getProjectImportDeps(): ProjectImportDeps {
     assertProjectJobExecutionActive,
     updateImportExecutionProgress,
     transitionProjectState,
-    clearPreviousAnalysisData,
+    clearLatestAnalysisProjection,
+    deleteProjectFiles,
   };
 }
 
@@ -1860,16 +1812,16 @@ export async function queueAnalyzeProject(projectId: number, userId: number) {
   });
 }
 
-async function getProjectAnalysisRecord(db: DbHandle, projectId: number) {
-  const latestUsable = await getLatestUsableAnalysisRun(db, projectId);
-  if (latestUsable) return latestUsable;
-  const [report] = await db
-    .select()
-    .from(analysisResults)
-    .where(eq(analysisResults.projectId, projectId))
-    .orderBy(desc(analysisResults.runNumber), desc(analysisResults.createdAt), desc(analysisResults.id))
-    .limit(1);
-  return report ?? null;
+async function getProjectAnalysisRecord(db: DbHandle, projectId: number, runId?: number) {
+  if (typeof runId === "number") {
+    const [run] = await db
+      .select()
+      .from(analysisResults)
+      .where(and(eq(analysisResults.projectId, projectId), eq(analysisResults.id, runId)))
+      .limit(1);
+    return run ?? null;
+  }
+  return getLatestUsableCurrentSourceRun(db, projectId);
 }
 
 function isReportReadyForExport(
@@ -2711,17 +2663,17 @@ function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisS
   ].join("\n");
 }
 
-export async function buildReportArchiveBuffer(projectId: number, userId: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
+export async function buildReportArchiveBuffer(projectId: number, userId: number, runId?: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
   await getOwnedProject(projectId, userId);
-  logger.info("Export started", { projectId, action: "export.zip.start", status: "ok" });
+  logger.info("Export started", { projectId, runId: runId ?? null, action: "export.zip.start", status: "ok" });
   const db = await requireDb();
   const [project, report] = await Promise.all([
     db.select().from(projects).where(eq(projects.id, projectId)).limit(1).then((rows) => rows[0] ?? null),
-    getProjectAnalysisRecord(db, projectId),
+    getProjectAnalysisRecord(db, projectId, runId),
   ]);
 
   if (!isReportReadyForExport(report)) {
-    logger.warn("Export not ready", { projectId, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
+    logger.warn("Export not ready", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
     throw new AppError("REPORT_NOT_READY", "Analysis report is not ready for download.");
   }
   const readyReport = report;
@@ -2792,12 +2744,12 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     },
   ] as const;
 
-  logger.info("Export completed", { projectId, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
+  logger.info("Export completed", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
   return buildProjectReportArchiveBuffer(projectId, [...archiveEntries]);
 }
 
-export async function buildReportArchive(projectId: number, userId: number): Promise<ReportArchivePayload> {
-  const archive = await buildReportArchiveBuffer(projectId, userId);
+export async function buildReportArchive(projectId: number, userId: number, runId?: number): Promise<ReportArchivePayload> {
+  const archive = await buildReportArchiveBuffer(projectId, userId, runId);
   return {
     fileName: archive.fileName,
     mimeType: archive.mimeType,
@@ -2990,7 +2942,9 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
       );
     }
 
-    await clearPreviousAnalysisData(tx, projectId, true);
+    await clearLatestAnalysisProjection(tx, projectId);
+    await deleteProjectFiles(tx, projectId);
+    await deleteProjectHistory(tx, projectId);
     await tx.delete(projectJobs).where(eq(projectJobs.projectId, projectId));
     await tx.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
   });

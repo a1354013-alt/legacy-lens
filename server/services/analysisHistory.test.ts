@@ -72,6 +72,15 @@ describe("analysis run snapshots", () => {
     expect(left.snapshotJson).toBe(right.snapshotJson);
   });
 
+  it("uses source paths and content, not derived metadata, for source fingerprints", () => {
+    const base = buildAnalysisRunSnapshot([{ filePath: "a.pas", fileType: ".pas", lineCount: 1, content: "unit A;" }], baseResult);
+    const metadataOnlyChange = buildAnalysisRunSnapshot([{ filePath: "a.pas", fileType: "pascal", lineCount: 9, content: "unit A;" }], baseResult);
+    const contentChange = buildAnalysisRunSnapshot([{ filePath: "a.pas", fileType: ".pas", lineCount: 1, content: "unit B;" }], baseResult);
+
+    expect(metadataOnlyChange.sourceFingerprint).toBe(base.sourceFingerprint);
+    expect(contentChange.sourceFingerprint).not.toBe(base.sourceFingerprint);
+  });
+
   it("returns a controlled warning for unsupported future snapshot versions", () => {
     const parsed = parseAnalysisSnapshot(JSON.stringify({ schemaVersion: 99 }));
 

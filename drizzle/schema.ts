@@ -60,6 +60,7 @@ export const projects = mysqlTable(
     errorMessage: text("errorMessage"),
     lastErrorCode: varchar("lastErrorCode", { length: 64 }),
     importWarningsJson: json("importWarningsJson").$type<ImportWarning[]>().default([]).notNull(),
+    sourceFingerprint: varchar("sourceFingerprint", { length: 64 }),
     lastAnalyzedAt: timestamp("lastAnalyzedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

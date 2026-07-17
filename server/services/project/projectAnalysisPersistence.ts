@@ -1,7 +1,8 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { AnalysisWarning, ProjectStatus } from "../../../shared/contracts";
+import type { ProjectStatus } from "../../../shared/contracts";
 import {
   analysisResults,
+  analysisBaselines,
   dependencies,
   fieldDependencies,
   fields,
@@ -37,11 +38,6 @@ type PersistenceDeps = {
     action: string,
     options?: { refreshLease?: boolean }
   ) => Promise<void>;
-  replaceAnalysisResult: (
-    db: DbHandle,
-    projectId: number,
-    values: Omit<typeof analysisResults.$inferInsert, "projectId">
-  ) => Promise<void>;
   getAnalysisResultErrorMessage: (result: Pick<ProjectAnalysisResult, "status">) => string | null;
   throwAnalysisPersistError: (error: unknown, context: AnalysisPersistErrorContext) => never;
   insertInChunks: <T extends Record<string, unknown>>(db: DbHandle, table: object, rows: T[]) => Promise<void>;
@@ -57,8 +53,6 @@ type PersistenceDeps = {
     updates: Partial<InsertProjectRecord> & { status: ProjectStatus },
     userId?: number
   ) => Promise<void>;
-  getExistingUsableAnalysisResult: (db: DbHandle, projectId: number) => Promise<(typeof analysisResults.$inferSelect) | null>;
-  mergeAnalysisWarnings: (base: AnalysisWarning[], additions: AnalysisWarning[]) => AnalysisWarning[];
 };
 
 export type AnalysisPersistErrorContext = {
@@ -80,19 +74,22 @@ function getSymbolStableKey(row: Pick<typeof symbols.$inferSelect, "metadata">) 
   return typeof metadata?.stableKey === "string" ? metadata.stableKey : null;
 }
 
-export async function clearPreviousAnalysisData(db: DbHandle, projectId: number, includeFiles = false) {
-  if (includeFiles) {
-    await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
-  }
+export async function clearLatestAnalysisProjection(db: DbHandle, projectId: number) {
   await db.delete(fieldDependencies).where(eq(fieldDependencies.projectId, projectId));
   await db.delete(dependencies).where(eq(dependencies.projectId, projectId));
   await db.delete(risks).where(eq(risks.projectId, projectId));
   await db.delete(rules).where(eq(rules.projectId, projectId));
   await db.delete(fields).where(eq(fields.projectId, projectId));
   await db.delete(symbols).where(eq(symbols.projectId, projectId));
-  if (includeFiles) {
-    await db.delete(files).where(eq(files.projectId, projectId));
-  }
+}
+
+export async function deleteProjectFiles(db: DbHandle, projectId: number) {
+  await db.delete(files).where(eq(files.projectId, projectId));
+}
+
+export async function deleteProjectHistory(db: DbHandle, projectId: number) {
+  await db.delete(analysisBaselines).where(eq(analysisBaselines.projectId, projectId));
+  await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
 }
 
 export async function writeSuccessfulAnalysis(
@@ -134,7 +131,7 @@ export async function writeSuccessfulAnalysis(
     operation: "delete previous analysis data",
     table: "fieldDependencies,dependencies,risks,rules,fields,symbols",
   });
-  await clearPreviousAnalysisData(tx, projectId);
+  await clearLatestAnalysisProjection(tx, projectId);
 
   updatePersistCheckpoint(persistCheckpoint, {
     operation: "insert immutable analysis run",
@@ -475,45 +472,13 @@ export async function writeFailedAnalysis(
   const { tx, projectId, appError, executionState } = args;
   const {
     assertProjectJobExecutionActive,
-    getExistingUsableAnalysisResult,
-    mergeAnalysisWarnings,
-    replaceAnalysisResult,
     transitionProjectState,
   } = deps;
 
   await assertProjectJobExecutionActive(executionState, "analysis.write_failed.prepare", { refreshLease: true });
-  const existingReport = await getExistingUsableAnalysisResult(tx, projectId);
-  if (existingReport) {
-    await materializeLegacySnapshotIfMissing(tx, projectId, existingReport.id);
-    const failureWarning: AnalysisWarning = {
-      code: appError.code,
-      message: appError.message,
-      level: "error",
-      heuristic: true,
-    };
-    await tx
-      .update(analysisResults)
-      .set({ errorMessage: appError.message, warningsJson: mergeAnalysisWarnings(existingReport.warningsJson ?? [], [failureWarning]) })
-      .where(eq(analysisResults.id, existingReport.id));
-  } else {
-    const failureWarning: AnalysisWarning = {
-      code: appError.code,
-      message: appError.message,
-      level: "error",
-      heuristic: true,
-    };
-    await clearPreviousAnalysisData(tx, projectId);
-    await replaceAnalysisResult(tx, projectId, {
-      status: "failed",
-      flowMarkdown: null,
-      dataDependencyMarkdown: null,
-      risksMarkdown: null,
-      rulesYaml: null,
-      summaryJson: null,
-      warningsJson: [failureWarning],
-      errorMessage: appError.message,
-    });
-  }
+  await tx
+    .delete(analysisResults)
+    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["pending", "processing"])));
 
   await assertProjectJobExecutionActive(executionState, "analysis.write_failed.persist");
   await transitionProjectState(tx, projectId, {

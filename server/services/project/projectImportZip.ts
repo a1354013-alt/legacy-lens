@@ -7,6 +7,7 @@ import type { DatabaseClient, InsertProjectRecord } from "../../dbTypes";
 import { saveExtractedFiles } from "../../utils/fileExtractor";
 import { extractFilesFromZip, extractFilesFromZipBuffer } from "../../utils/zipHandler";
 import { logger } from "../../_core/logger";
+import { calculateSourceFingerprint } from "../sourceFingerprint";
 import { ProjectJobExecutionAbortedError, type ProjectJobExecutionState } from "./projectJobLease";
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete" | "transaction">;
@@ -31,7 +32,8 @@ export type ProjectImportDeps = {
     updates: Partial<InsertProjectRecord> & { status: ProjectStatus },
     userId?: number
   ) => Promise<void>;
-  clearPreviousAnalysisData: (db: DbHandle, projectId: number, includeFiles?: boolean) => Promise<void>;
+  clearLatestAnalysisProjection: (db: DbHandle, projectId: number) => Promise<void>;
+  deleteProjectFiles: (db: DbHandle, projectId: number) => Promise<void>;
 };
 
 function summarizeImportedFiles(extractedFiles: ExtractedProjectFiles, fileIds: number[]) {
@@ -69,8 +71,10 @@ export async function replaceProjectFiles(
       importWarningsJson: [],
     });
 
-    await deps.clearPreviousAnalysisData(tx, projectId, true);
+    await deps.clearLatestAnalysisProjection(tx, projectId);
+    await deps.deleteProjectFiles(tx, projectId);
     const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);
+    const sourceFingerprint = calculateSourceFingerprint(extractedFiles.files);
     await deps.assertProjectJobExecutionActive(executionState, "import.replace_files.persist");
     if (executionState?.ownership) {
       await tx
@@ -90,6 +94,8 @@ export async function replaceProjectFiles(
       status: "ready",
       importProgress: 100,
       analysisProgress: 0,
+      sourceFingerprint,
+      lastAnalyzedAt: null,
       errorMessage: null,
       lastErrorCode: null,
       importWarningsJson: extractedFiles.warnings,

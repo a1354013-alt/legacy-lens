@@ -12,6 +12,11 @@ export function registerReportDownloadRoute(app: Express) {
       sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Project id must be a positive integer.");
       return;
     }
+    const runIdValue = typeof req.query.runId === "string" ? Number(req.query.runId) : undefined;
+    if (req.query.runId !== undefined && (!Number.isInteger(runIdValue) || Number(runIdValue) <= 0)) {
+      sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Run id must be a positive integer.");
+      return;
+    }
 
     try {
       const user = await sdk.authenticateRequest(req).catch(() => null);
@@ -19,7 +24,7 @@ export function registerReportDownloadRoute(app: Express) {
         sendHttpErrorResponse(res, 401, "UNAUTHORIZED", "Invalid session.");
         return;
       }
-      const archive = await buildReportArchiveBuffer(projectId, user.id);
+      const archive = await buildReportArchiveBuffer(projectId, user.id, runIdValue);
       res.setHeader("Content-Type", archive.mimeType);
       res.setHeader("Content-Disposition", `attachment; filename="${archive.fileName}"`);
       res.setHeader("Content-Length", String(archive.buffer.length));

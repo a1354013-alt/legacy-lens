@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 import type {
   AnalysisDiff,
@@ -22,14 +21,16 @@ import {
   risks,
   rules,
   symbols,
+  projects,
 } from "../../drizzle/schema";
 import type { ProjectAnalysisResult } from "../analyzer/types";
 import type { DatabaseClient } from "../dbTypes";
 import { AppError } from "../appError";
 import { mapSnapshotReport } from "./projectWorkflow.helpers";
+import { buildSourceManifest, calculateSourceFingerprint, normalizeSourcePath, stableSourceJson } from "./sourceFingerprint";
 
 export const ANALYSIS_SNAPSHOT_SCHEMA_VERSION = 1;
-export const ANALYZER_VERSION = "1.1.0-rc1";
+export const ANALYZER_VERSION = "1.1.0-rc2";
 export const MAX_SNAPSHOT_BYTES = 15 * 1024 * 1024;
 const DIFF_LIMIT = 200;
 const USABLE_STATUSES = ["completed", "completed_with_warnings", "partial"] as const;
@@ -38,42 +39,20 @@ type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 type ProjectFileRecord = { id?: number | null; filePath: string; fileType?: string | null; lineCount?: number | null; content?: string | null };
 
 function normalizePath(value: string | null | undefined) {
-  return (value ?? "unknown").replace(/\\/g, "/");
+  return normalizeSourcePath(value);
 }
 
 function normalize(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function hash(value: string) {
-  return createHash("sha256").update(value).digest("hex");
-}
+const stableJson = stableSourceJson;
 
 function sortByJson<T>(items: T[]) {
   return [...items].sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
 }
 
-function sourceManifest(projectFiles: ProjectFileRecord[]) {
-  return projectFiles
-    .map((file) => ({
-      path: normalizePath(file.filePath),
-      fileType: file.fileType ?? null,
-      lineCount: file.lineCount ?? (file.content ? file.content.split(/\r?\n/).length : null),
-      sha256: hash(file.content ?? ""),
-    }))
-    .sort((left, right) => left.path.localeCompare(right.path));
-}
+const sourceManifest = buildSourceManifest;
 
 function serializeSnapshot(snapshot: AnalysisRunSnapshotV1) {
   const parsed = analysisRunSnapshotV1Schema.parse(snapshot);
@@ -177,7 +156,7 @@ export function buildAnalysisRunSnapshot(projectFiles: ProjectFileRecord[], resu
     flowTraces: sortByJson(result.flowTraces ?? []),
   };
   const snapshotJson = serializeSnapshot(snapshot);
-  return { snapshot, sourceFingerprint: hash(stableJson(manifest)), snapshotJson };
+  return { snapshot, sourceFingerprint: calculateSourceFingerprint(projectFiles), snapshotJson };
 }
 
 export async function allocateNextRunNumber(db: DbHandle, projectId: number) {
@@ -195,6 +174,38 @@ export async function getLatestUsableAnalysisRun(db: DbHandle, projectId: number
     .select()
     .from(analysisResults)
     .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, [...USABLE_STATUSES])))
+    .orderBy(desc(analysisResults.runNumber), desc(analysisResults.createdAt), desc(analysisResults.id))
+    .limit(1);
+  return report ?? null;
+}
+
+export async function ensureProjectSourceFingerprint(db: DbHandle, projectId: number) {
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) {
+    throw new AppError("PROJECT_NOT_FOUND", "Project not found.");
+  }
+  if (project.sourceFingerprint) {
+    return project.sourceFingerprint;
+  }
+
+  const fileRows = await db.select().from(files).where(eq(files.projectId, projectId));
+  if (fileRows.length === 0) {
+    return null;
+  }
+  const fingerprint = calculateSourceFingerprint(fileRows);
+  await db.update(projects).set({ sourceFingerprint: fingerprint, updatedAt: new Date() }).where(eq(projects.id, projectId));
+  return fingerprint;
+}
+
+export async function getLatestUsableCurrentSourceRun(db: DbHandle, projectId: number) {
+  const sourceFingerprint = await ensureProjectSourceFingerprint(db, projectId);
+  if (!sourceFingerprint) {
+    return null;
+  }
+  const [report] = await db
+    .select()
+    .from(analysisResults)
+    .where(and(eq(analysisResults.projectId, projectId), eq(analysisResults.sourceFingerprint, sourceFingerprint), inArray(analysisResults.status, [...USABLE_STATUSES])))
     .orderBy(desc(analysisResults.runNumber), desc(analysisResults.createdAt), desc(analysisResults.id))
     .limit(1);
   return report ?? null;
@@ -328,7 +339,7 @@ export async function materializeLegacySnapshotIfMissing(db: DbHandle, projectId
   await db.update(analysisResults).set({
     runNumber: legacy.runNumber ?? 1,
     analyzerVersion: legacy.analyzerVersion ?? "legacy-backfill",
-    sourceFingerprint: legacy.sourceFingerprint ?? hash(stableJson(snapshot.sourceManifest)),
+    sourceFingerprint: legacy.sourceFingerprint ?? calculateSourceFingerprint(fileRows),
     snapshotSchemaVersion: 1,
     snapshotJson,
     completedAt: legacy.completedAt ?? legacy.updatedAt ?? legacy.createdAt,

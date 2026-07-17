@@ -2,6 +2,7 @@ import JSZip from "jszip";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DependenciesPageInput, RisksPageInput } from "../../shared/contracts";
 import { AppError } from "../appError";
+import { calculateSourceFingerprint } from "./sourceFingerprint";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -151,6 +152,7 @@ function createFakeDb(initialStore?: Partial<Store>) {
     risks: [],
     rules: [],
     analysisResults: [],
+    analysisBaselines: [],
     ...initialStore,
   };
 
@@ -313,6 +315,7 @@ function seedProject(projectId = 1, overrides?: Row) {
     errorMessage: null,
     lastErrorCode: null,
     importWarningsJson: [],
+    sourceFingerprint: null,
     ...overrides,
   });
 }
@@ -519,6 +522,37 @@ describe("project workflow", () => {
     expect(gitProject.sourceUrl).toBe("https://example.com/org/repo.git");
   });
 
+  it("re-imports source files without deleting immutable analysis history", async () => {
+    const { getOwnedProject, importProjectZip } = await import("./projectWorkflow");
+    seedProject(1, { status: "completed", analysisProgress: 100, sourceFingerprint: "old-source" });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "old.go", fileName: "old.go", fileType: ".go", content: "package old", lineCount: 1, status: "stored" });
+    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old", type: "function", startLine: 1, endLine: 1 });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      status: "completed",
+      runNumber: 1,
+      sourceFingerprint: "old-source",
+      flowMarkdown: "# OLD FLOW",
+      warningsJson: [],
+    });
+    fakeDb.store.analysisBaselines.push({ id: 1, projectId: 1, baseRunId: 1, compareRunId: 1, createdAt: new Date("2026-01-01T00:00:00.000Z") });
+    zipFiles = [{ path: "new.go", fileName: "new.go", content: "package new", language: "go", size: 11 }];
+
+    await importProjectZip(1, 7, "encoded");
+    const project = await getOwnedProject(1, 7);
+
+    expect(fakeDb.store.analysisResults).toHaveLength(1);
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({ runNumber: 1, sourceFingerprint: "old-source", flowMarkdown: "# OLD FLOW" });
+    expect(fakeDb.store.analysisBaselines).toHaveLength(1);
+    expect(fakeDb.store.symbols).toHaveLength(0);
+    expect(fakeDb.store.files).toHaveLength(1);
+    expect(fakeDb.store.files[0]).toMatchObject({ filePath: "new.go", content: "package new" });
+    expect(project).toMatchObject({ status: "ready", analysisProgress: 0, lastAnalyzedAt: null });
+    expect(project.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(project.sourceFingerprint).not.toBe("old-source");
+  });
+
   it("writes back analysis artifacts and keeps transitions on the transaction handle", async () => {
     const { analyzeProject } = await import("./projectWorkflow");
     failRootProjectReadsDuringTransaction = true;
@@ -594,7 +628,6 @@ describe("project workflow", () => {
     const job = await queueAnalyzeProject(1, 7);
     await waitForProjectJobForTests(job.jobId);
     const jobRecord = await getProjectJob(job.jobId, 7);
-    const report = fakeDb.store.analysisResults[0];
 
     expect(jobRecord.status).toBe("failed");
     expect(jobRecord.errorCode).toBe("ANALYSIS_PARSE_FAILED");
@@ -602,14 +635,9 @@ describe("project workflow", () => {
     expect(jobRecord.errorMessage).toContain("Unexpected token while parsing unit at src/Form1.pas");
     expect(fakeDb.store.projects[0]?.errorMessage).toContain("ANALYSIS_PARSE_FAILED");
     expect(fakeDb.store.projects[0]?.errorMessage).toContain("Unexpected token while parsing unit at src/Form1.pas");
-    expect(report?.errorMessage).toContain("ANALYSIS_PARSE_FAILED");
-    expect(report?.errorMessage).toContain("Unexpected token while parsing unit at src/Form1.pas");
-    expect(report?.warningsJson).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: "ANALYSIS_PARSE_FAILED", level: "error" })])
-    );
+    expect(fakeDb.store.analysisResults).toHaveLength(0);
     expect(String(jobRecord.errorMessage)).not.toBe("Analysis failed.");
     expect(String(fakeDb.store.projects[0]?.errorMessage)).not.toBe("Analysis failed.");
-    expect(String(report?.errorMessage)).not.toBe("Analysis failed.");
     expect(loggerMock.error).toHaveBeenCalledWith(
       "Analysis failed",
       expect.objectContaining({
@@ -772,11 +800,9 @@ describe("project workflow", () => {
     expect(fakeDb.store.analysisResults[0]).toMatchObject({
       status: "completed",
       flowMarkdown: "# OLD FLOW",
-      errorMessage: expect.stringContaining(`db=${operation} @ ${tableName}`),
+      errorMessage: null,
     });
-    expect(fakeDb.store.analysisResults[0]?.warningsJson).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: "ANALYSIS_PERSIST_FAILED", level: "error" })])
-    );
+    expect(fakeDb.store.analysisResults[0]?.warningsJson).toEqual([]);
   });
 
   it("leaves ambiguous same-name dependency targets unresolved", async () => {
@@ -917,10 +943,13 @@ describe("project workflow", () => {
     const { analyzeProject, buildReportArchive } = await import("./projectWorkflow");
     seedProject(1, { status: "completed", analysisProgress: 100 });
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
+    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
     fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
       status: "completed",
+      sourceFingerprint,
       flowMarkdown: "# OLD FLOW",
       dataDependencyMarkdown: "# OLD DATA",
       risksMarkdown: "# OLD RISKS",
@@ -1194,10 +1223,13 @@ describe("project workflow", () => {
     const { getAnalysisSnapshot } = await import("./projectWorkflow");
     seedProject(1, { status: "completed", importWarningsJson: [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }] });
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
+    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
     fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
       status: "completed",
+      sourceFingerprint,
       flowMarkdown: "# FLOW",
       dataDependencyMarkdown: "# DATA_DEPENDENCY",
       risksMarkdown: "# RISKS",
@@ -1469,6 +1501,8 @@ describe("project workflow", () => {
       lineCount: 1,
       status: "stored",
     });
+    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
+    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
     fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old_symbol", type: "function", startLine: 1, endLine: 1 });
     fakeDb.store.dependencies.push({
       id: 1,
@@ -1484,6 +1518,7 @@ describe("project workflow", () => {
       id: 1,
       projectId: 1,
       status: "partial",
+      sourceFingerprint,
       flowMarkdown: "# OLD FLOW",
       dataDependencyMarkdown: "# OLD DATA",
       risksMarkdown: "# OLD RISKS",
@@ -3105,6 +3140,7 @@ describe("project workflow", () => {
     fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", severity: "medium", title: "Risk" });
     fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "Rule" });
     fakeDb.store.analysisResults.push({ id: 1, projectId: 1, status: "completed", warningsJson: [] });
+    fakeDb.store.analysisBaselines.push({ id: 1, projectId: 1, baseRunId: 1, compareRunId: 1 });
     fakeDb.store.projectJobs.push({
       id: 1,
       projectId: 1,
@@ -3133,6 +3169,7 @@ describe("project workflow", () => {
     expect(fakeDb.store.risks).toHaveLength(0);
     expect(fakeDb.store.rules).toHaveLength(0);
     expect(fakeDb.store.analysisResults).toHaveLength(0);
+    expect(fakeDb.store.analysisBaselines).toHaveLength(0);
   });
 
   it("enforces ownership on paged reads and job reads", async () => {
@@ -3234,10 +3271,13 @@ describe("project workflow", () => {
     });
     fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", title: "Critical risk", severity: "high", sourceFile: "main.go", lineNumber: 1 });
     fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "MainRule", sourceFile: "main.go", lineNumber: 1 });
+    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
+    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
     fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
       status: "completed",
+      sourceFingerprint,
       flowMarkdown: "# FLOW",
       dataDependencyMarkdown: "# DATA_DEPENDENCY",
       risksMarkdown: "# RISKS",
@@ -3361,6 +3401,61 @@ describe("project workflow", () => {
     expect(summary.confidence).toEqual(finalConfidence);
   });
 
+  it("exports a selected historical analysis run by id", async () => {
+    const { buildReportArchive } = await import("./projectWorkflow");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "historical-report",
+      language: "go",
+      sourceType: "upload",
+      status: "completed",
+      importWarningsJson: [],
+    });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "new.go", fileName: "new.go", fileType: ".go", content: "package new", lineCount: 1, status: "stored" });
+    const currentFingerprint = calculateSourceFingerprint(fakeDb.store.files);
+    fakeDb.store.projects[0].sourceFingerprint = currentFingerprint;
+    fakeDb.store.analysisResults.push(
+      {
+        id: 1,
+        projectId: 1,
+        status: "completed",
+        runNumber: 1,
+        sourceFingerprint: "old-source",
+        flowMarkdown: "# OLD FLOW",
+        dataDependencyMarkdown: "# OLD DATA",
+        risksMarkdown: "# OLD RISKS",
+        rulesYaml: "rules: []",
+        summaryJson: { fileCount: 1 },
+        warningsJson: [],
+        errorMessage: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        id: 2,
+        projectId: 1,
+        status: "completed",
+        runNumber: 2,
+        sourceFingerprint: currentFingerprint,
+        flowMarkdown: "# NEW FLOW",
+        dataDependencyMarkdown: "# NEW DATA",
+        risksMarkdown: "# NEW RISKS",
+        rulesYaml: "rules: []",
+        summaryJson: { fileCount: 1 },
+        warningsJson: [],
+        errorMessage: null,
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+      }
+    );
+
+    const archive = await buildReportArchive(1, 7, 1);
+    const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
+
+    await expect(zip.file("FLOW.md")!.async("text")).resolves.toBe("# OLD FLOW");
+  });
+
   it("fails oversized report exports before ZIP generation allocates the archive buffer", async () => {
     const { buildReportArchiveBuffer } = await import("./projectWorkflow");
     const generateSpy = vi.spyOn(JSZip.prototype, "generateAsync");
@@ -3372,10 +3467,14 @@ describe("project workflow", () => {
       status: "completed",
       importWarningsJson: [],
     });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
+    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
+    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
     fakeDb.store.analysisResults.push({
       id: 1,
       projectId: 1,
       status: "completed",
+      sourceFingerprint,
       flowMarkdown: "A".repeat(10 * 1024 * 1024),
       dataDependencyMarkdown: "B".repeat(10 * 1024 * 1024),
       risksMarkdown: "C".repeat(10 * 1024 * 1024),

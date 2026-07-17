@@ -489,6 +489,7 @@ export const projectRecordSummarySchema = z.object({
   errorMessage: z.string().nullable(),
   lastErrorCode: z.string().nullable(),
   importWarningsJson: z.array(importWarningSchema),
+  sourceFingerprint: z.string().nullable(),
   lastAnalyzedAt: z.date().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),

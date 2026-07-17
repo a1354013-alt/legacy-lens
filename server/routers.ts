@@ -191,6 +191,7 @@ function toProjectSummary(
     errorMessage: typeof project.errorMessage === "string" ? project.errorMessage : null,
     lastErrorCode: typeof project.lastErrorCode === "string" ? project.lastErrorCode : null,
     importWarningsJson: Array.isArray(project.importWarningsJson) ? project.importWarningsJson : [],
+    sourceFingerprint: typeof project.sourceFingerprint === "string" ? project.sourceFingerprint : null,
     lastAnalyzedAt: project.lastAnalyzedAt instanceof Date ? project.lastAnalyzedAt : project.lastAnalyzedAt ? new Date(String(project.lastAnalyzedAt)) : null,
     createdAt: project.createdAt instanceof Date ? project.createdAt : project.createdAt ? new Date(String(project.createdAt)) : new Date(0),
     updatedAt: project.updatedAt instanceof Date ? project.updatedAt : project.updatedAt ? new Date(String(project.updatedAt)) : new Date(0),
