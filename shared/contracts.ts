@@ -248,6 +248,14 @@ export const delphiFlowTraceSchema = z.object({
 });
 export type DelphiFlowTrace = z.infer<typeof delphiFlowTraceSchema>;
 
+export const analysisRunProjectContextSchema = z.object({
+  projectName: z.string(),
+  sourceType: z.string(),
+  focusLanguage: z.string().nullable(),
+  importWarnings: z.array(importWarningSchema),
+});
+export type AnalysisRunProjectContext = z.infer<typeof analysisRunProjectContextSchema>;
+
 const snapshotSymbolSchema = z.object({
   stableKey: z.string(),
   name: z.string(),
@@ -315,6 +323,7 @@ const snapshotRuleSchema = z.object({
 
 export const analysisRunSnapshotV1Schema = z.object({
   schemaVersion: z.literal(1),
+  projectContext: analysisRunProjectContextSchema.optional(),
   sourceManifest: z.array(z.object({
     path: z.string(),
     fileType: z.string().nullable(),
@@ -409,6 +418,7 @@ export const appErrorCodes = [
   "ANALYSIS_SUMMARY_FAILED",
   "ANALYSIS_UNKNOWN_FAILED",
   "REPORT_NOT_READY",
+  "UNSUPPORTED_SNAPSHOT_VERSION",
   "REPORT_TOO_LARGE",
   "DELETE_FAILED",
 ] as const;
@@ -581,7 +591,7 @@ export type AnalysisRunSummary = z.infer<typeof analysisRunSummarySchema>;
 
 export const analysisRunDetailSchema = analysisRunSummarySchema.extend({
   report: analysisSnapshotReportSchema,
-  snapshot: analysisRunSnapshotV1Schema.nullable(),
+  snapshot: analysisRunSnapshotSchema.nullable(),
   snapshotWarning: z.string().nullable(),
 });
 export type AnalysisRunDetail = z.infer<typeof analysisRunDetailSchema>;

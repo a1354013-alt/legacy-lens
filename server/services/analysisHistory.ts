@@ -2,6 +2,7 @@ import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 import type {
   AnalysisDiff,
   AnalysisRunDetail,
+  AnalysisRunProjectContext,
   AnalysisRunSnapshotV1,
   AnalysisRunSummary,
   DelphiFlowTrace,
@@ -34,6 +35,12 @@ export const ANALYZER_VERSION = "1.1.0-rc2";
 export const MAX_SNAPSHOT_BYTES = 15 * 1024 * 1024;
 const DIFF_LIMIT = 200;
 const USABLE_STATUSES = ["completed", "completed_with_warnings", "partial"] as const;
+const LEGACY_UNKNOWN_PROJECT_CONTEXT: AnalysisRunProjectContext = {
+  projectName: "unknown",
+  sourceType: "unknown",
+  focusLanguage: null,
+  importWarnings: [],
+};
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 type ProjectFileRecord = { id?: number | null; filePath: string; fileType?: string | null; lineCount?: number | null; content?: string | null };
@@ -62,6 +69,14 @@ function serializeSnapshot(snapshot: AnalysisRunSnapshotV1) {
     throw new AppError("ANALYSIS_PERSIST_FAILED", `Analysis snapshot is too large to persist (${bytes} bytes; limit ${MAX_SNAPSHOT_BYTES}).`);
   }
   return text;
+}
+
+function isUsableStatus(status: string | null | undefined): status is (typeof USABLE_STATUSES)[number] {
+  return USABLE_STATUSES.includes(status as (typeof USABLE_STATUSES)[number]);
+}
+
+function getProjectContextOrLegacyDefault(snapshot: AnalysisRunSnapshotV1 | null | undefined) {
+  return snapshot?.projectContext ?? LEGACY_UNKNOWN_PROJECT_CONTEXT;
 }
 
 function normalizeMetrics(result: ProjectAnalysisResult) {
@@ -136,10 +151,40 @@ export function parseAnalysisSnapshot(snapshotJson: string | null | undefined) {
   return { snapshot: parsed.data, warning: null };
 }
 
-export function buildAnalysisRunSnapshot(projectFiles: ProjectFileRecord[], result: ProjectAnalysisResult): { snapshot: AnalysisRunSnapshotV1; sourceFingerprint: string; snapshotJson: string } {
+export function parseAnalysisSnapshotStrict(snapshotJson: string | null | undefined) {
+  if (!snapshotJson) {
+    throw new AppError("REPORT_NOT_READY", "Historical report snapshot is missing for the selected run.");
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(snapshotJson);
+  } catch {
+    throw new AppError("REPORT_NOT_READY", "Historical report snapshot JSON is invalid for the selected run.");
+  }
+
+  const schemaVersion = typeof raw === "object" && raw ? (raw as { schemaVersion?: unknown }).schemaVersion : null;
+  if (schemaVersion !== 1) {
+    throw new AppError("UNSUPPORTED_SNAPSHOT_VERSION", `Snapshot schema version ${String(schemaVersion)} is not supported by this Legacy Lens build.`);
+  }
+
+  const parsed = analysisRunSnapshotV1Schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new AppError("REPORT_NOT_READY", "Historical report snapshot failed strict validation for the selected run.");
+  }
+
+  return parsed.data;
+}
+
+export function buildAnalysisRunSnapshot(
+  projectFiles: ProjectFileRecord[],
+  result: ProjectAnalysisResult,
+  projectContext?: AnalysisRunProjectContext
+): { snapshot: AnalysisRunSnapshotV1; sourceFingerprint: string; snapshotJson: string } {
   const manifest = sourceManifest(projectFiles);
   const snapshot: AnalysisRunSnapshotV1 = {
     schemaVersion: 1,
+    projectContext,
     sourceManifest: manifest,
     metrics: normalizeMetrics(result),
     warnings: sortByJson(result.warnings ?? []),
@@ -211,6 +256,21 @@ export async function getLatestUsableCurrentSourceRun(db: DbHandle, projectId: n
   return report ?? null;
 }
 
+async function getUsableRunById(db: DbHandle, projectId: number, runId: number) {
+  const [run] = await db
+    .select()
+    .from(analysisResults)
+    .where(and(eq(analysisResults.projectId, projectId), eq(analysisResults.id, runId)))
+    .limit(1);
+  if (!run) {
+    throw new AppError("PROJECT_NOT_FOUND", "Analysis run not found for this project.");
+  }
+  if (!isUsableStatus(run.status)) {
+    throw new AppError("REPORT_NOT_READY", "Historical analysis artifacts are only available for usable immutable runs.");
+  }
+  return run;
+}
+
 function toSummary(report: typeof analysisResults.$inferSelect, baselineId: number | null, latestUsableId: number | null): AnalysisRunSummary {
   const metrics = report.summaryJson;
   return {
@@ -238,13 +298,33 @@ function toSummary(report: typeof analysisResults.$inferSelect, baselineId: numb
 }
 
 export async function materializeLegacySnapshotIfMissing(db: DbHandle, projectId: number, runId?: number) {
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) {
+    throw new AppError("PROJECT_NOT_FOUND", "Project not found.");
+  }
+
   const candidates = await db
     .select()
     .from(analysisResults)
     .where(runId ? and(eq(analysisResults.projectId, projectId), eq(analysisResults.id, runId)) : eq(analysisResults.projectId, projectId))
     .orderBy(asc(analysisResults.runNumber), asc(analysisResults.id));
-  const legacy = candidates.find((row) => !row.snapshotJson && USABLE_STATUSES.includes(row.status as (typeof USABLE_STATUSES)[number]));
-  if (!legacy) return null;
+  const usableLegacyRows = candidates.filter((row) => isUsableStatus(row.status));
+  const missingSnapshots = usableLegacyRows.filter((row) => !row.snapshotJson);
+  if (missingSnapshots.length === 0) return null;
+  let legacy = missingSnapshots[0];
+  if (missingSnapshots.length > 1) {
+    const currentSourceMissing = missingSnapshots.filter((row) => row.sourceFingerprint && row.sourceFingerprint === project.sourceFingerprint);
+    if (!runId && currentSourceMissing.length === 1) {
+      legacy = currentSourceMissing[0];
+    } else if (runId && currentSourceMissing.length === 1 && currentSourceMissing[0].id === runId) {
+      legacy = currentSourceMissing[0];
+    } else {
+      throw new AppError(
+        "REPORT_NOT_READY",
+        "Historical snapshots cannot be reconstructed safely because multiple usable legacy runs are missing immutable snapshots."
+      );
+    }
+  }
 
   const [fileRows, symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
     db.select().from(files).where(eq(files.projectId, projectId)),
@@ -276,6 +356,12 @@ export async function materializeLegacySnapshotIfMissing(db: DbHandle, projectId
   const fieldById = new Map(fieldRows.map((field) => [field.id, field]));
   const snapshot: AnalysisRunSnapshotV1 = {
     schemaVersion: 1,
+    projectContext: {
+      projectName: project.name ?? "unknown",
+      sourceType: project.sourceType ?? "unknown",
+      focusLanguage: project.language ?? null,
+      importWarnings: project.importWarningsJson ?? [],
+    },
     sourceManifest: sourceManifest(fileRows),
     metrics: normalizeLegacyMetrics(legacy.summaryJson, {
       files: fileRows.length,
@@ -350,10 +436,11 @@ export async function materializeLegacySnapshotIfMissing(db: DbHandle, projectId
 export async function listAnalysisRuns(db: DbHandle, projectId: number, page: number, pageSize: number) {
   await materializeLegacySnapshotIfMissing(db, projectId);
   const offset = (page - 1) * pageSize;
-  const [totalRow] = await db.select({ value: count() }).from(analysisResults).where(eq(analysisResults.projectId, projectId));
-  const rows = await db.select().from(analysisResults).where(eq(analysisResults.projectId, projectId)).orderBy(desc(analysisResults.runNumber), desc(analysisResults.id)).limit(pageSize).offset(offset);
+  const usableCondition = and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, [...USABLE_STATUSES]));
+  const [totalRow] = await db.select({ value: count() }).from(analysisResults).where(usableCondition);
+  const rows = await db.select().from(analysisResults).where(usableCondition).orderBy(desc(analysisResults.runNumber), desc(analysisResults.id)).limit(pageSize).offset(offset);
   const baselineId = await getBaselineId(db, projectId);
-  const latest = await getLatestUsableAnalysisRun(db, projectId);
+  const latest = await getLatestUsableCurrentSourceRun(db, projectId);
   return {
     items: rows.map((row) => toSummary(row, baselineId, latest?.id ?? null)),
     total: Number(totalRow?.value ?? 0),
@@ -365,10 +452,9 @@ export async function listAnalysisRuns(db: DbHandle, projectId: number, page: nu
 
 export async function getAnalysisRunDetail(db: DbHandle, projectId: number, runId: number): Promise<AnalysisRunDetail> {
   await materializeLegacySnapshotIfMissing(db, projectId, runId);
-  const [report] = await db.select().from(analysisResults).where(and(eq(analysisResults.projectId, projectId), eq(analysisResults.id, runId))).limit(1);
-  if (!report) throw new AppError("PROJECT_NOT_FOUND", "Analysis run not found for this project.");
+  const report = await getUsableRunById(db, projectId, runId);
   const baselineId = await getBaselineId(db, projectId);
-  const latest = await getLatestUsableAnalysisRun(db, projectId);
+  const latest = await getLatestUsableCurrentSourceRun(db, projectId);
   const parsed = parseAnalysisSnapshot(report.snapshotJson);
   return {
     ...toSummary(report, baselineId, latest?.id ?? null),
@@ -379,8 +465,7 @@ export async function getAnalysisRunDetail(db: DbHandle, projectId: number, runI
 }
 
 export async function setAnalysisBaseline(db: DbHandle, projectId: number, runId: number) {
-  const [run] = await db.select().from(analysisResults).where(and(eq(analysisResults.projectId, projectId), eq(analysisResults.id, runId))).limit(1);
-  if (!run) throw new AppError("PROJECT_NOT_FOUND", "Analysis run not found for this project.");
+  await getUsableRunById(db, projectId, runId);
   const [existing] = await db.select().from(analysisBaselines).where(eq(analysisBaselines.projectId, projectId)).limit(1);
   if (existing) {
     await db.update(analysisBaselines).set({ analysisResultId: runId, updatedAt: new Date() }).where(eq(analysisBaselines.projectId, projectId));
@@ -455,11 +540,22 @@ export async function getAnalysisDiff(db: DbHandle, projectId: number, baseRunId
 }
 
 export async function getFlowTracesFromRun(db: DbHandle, projectId: number, runId?: number) {
-  const run = runId ? await getAnalysisRunDetail(db, projectId, runId) : await getLatestUsableAnalysisRun(db, projectId).then(async (latest) => {
+  const run = runId ? await getAnalysisRunDetail(db, projectId, runId) : await getLatestUsableCurrentSourceRun(db, projectId).then(async (latest) => {
     if (!latest) throw new AppError("REPORT_NOT_READY", "No usable analysis run exists for this project.");
     return getAnalysisRunDetail(db, projectId, latest.id);
   });
   return run.snapshot?.flowTraces ?? [];
+}
+
+export async function getStrictSnapshotRunDetail(db: DbHandle, projectId: number, runId: number) {
+  await materializeLegacySnapshotIfMissing(db, projectId, runId);
+  const report = await getUsableRunById(db, projectId, runId);
+  const snapshot = parseAnalysisSnapshotStrict(report.snapshotJson);
+  return {
+    report,
+    snapshot,
+    projectContext: getProjectContextOrLegacyDefault(snapshot),
+  };
 }
 
 export function filterFlowTraces(traces: DelphiFlowTrace[], input: {

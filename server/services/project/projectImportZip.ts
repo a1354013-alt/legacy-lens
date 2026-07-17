@@ -32,6 +32,7 @@ export type ProjectImportDeps = {
     updates: Partial<InsertProjectRecord> & { status: ProjectStatus },
     userId?: number
   ) => Promise<void>;
+  materializeLegacySnapshotIfMissing: (db: DbHandle, projectId: number) => Promise<unknown>;
   clearLatestAnalysisProjection: (db: DbHandle, projectId: number) => Promise<void>;
   deleteProjectFiles: (db: DbHandle, projectId: number) => Promise<void>;
 };
@@ -71,6 +72,7 @@ export async function replaceProjectFiles(
       importWarningsJson: [],
     });
 
+    await deps.materializeLegacySnapshotIfMissing(tx, projectId);
     await deps.clearLatestAnalysisProjection(tx, projectId);
     await deps.deleteProjectFiles(tx, projectId);
     const fileIds = await saveExtractedFiles(projectId, extractedFiles.files, tx);

@@ -11,6 +11,7 @@ export function getHttpStatusForAppError(error: AppError) {
     case "PROJECT_JOB_ACTIVE":
     case "INVALID_PROJECT_STATE":
     case "REPORT_NOT_READY":
+    case "UNSUPPORTED_SNAPSHOT_VERSION":
     case "DELETE_FAILED":
       return 409;
     case "ZIP_INVALID":

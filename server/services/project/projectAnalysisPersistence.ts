@@ -7,6 +7,7 @@ import {
   fieldDependencies,
   fields,
   files,
+  projects,
   risks,
   rules,
   symbols,
@@ -122,7 +123,13 @@ export async function writeSuccessfulAnalysis(
   await materializeLegacySnapshotIfMissing(tx, projectId);
 
   const runNumber = await allocateNextRunNumber(tx, projectId);
-  const snapshot = buildAnalysisRunSnapshot(projectFiles, result);
+  const [project] = await tx.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  const snapshot = buildAnalysisRunSnapshot(projectFiles, result, {
+    projectName: project?.name ?? "unknown",
+    sourceType: project?.sourceType ?? "unknown",
+    focusLanguage: project?.language ?? null,
+    importWarnings: project?.importWarningsJson ?? [],
+  });
   await tx
     .delete(analysisResults)
     .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["pending", "processing"])));

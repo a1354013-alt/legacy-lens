@@ -3,6 +3,8 @@ import { rm } from "node:fs/promises";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type {
+  AnalysisRunProjectContext,
+  AnalysisRunSnapshotV1,
   AnalysisWarning,
   AnalysisSnapshot,
   DependenciesPageInput,
@@ -122,7 +124,9 @@ import {
   getAnalysisRunDetail,
   getFlowTracesFromRun,
   getLatestUsableCurrentSourceRun,
+  getStrictSnapshotRunDetail,
   listAnalysisRuns,
+  materializeLegacySnapshotIfMissing,
   parseAnalysisSnapshot,
   setAnalysisBaseline,
 } from "./analysisHistory";
@@ -1661,6 +1665,7 @@ function getProjectImportDeps(): ProjectImportDeps {
     assertProjectJobExecutionActive,
     updateImportExecutionProgress,
     transitionProjectState,
+    materializeLegacySnapshotIfMissing,
     clearLatestAnalysisProjection,
     deleteProjectFiles,
   };
@@ -1817,7 +1822,13 @@ async function getProjectAnalysisRecord(db: DbHandle, projectId: number, runId?:
     const [run] = await db
       .select()
       .from(analysisResults)
-      .where(and(eq(analysisResults.projectId, projectId), eq(analysisResults.id, runId)))
+      .where(
+        and(
+          eq(analysisResults.projectId, projectId),
+          eq(analysisResults.id, runId),
+          inArray(analysisResults.status, ["completed", "completed_with_warnings", "partial"])
+        )
+      )
       .limit(1);
     return run ?? null;
   }
@@ -2663,42 +2674,365 @@ function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisS
   ].join("\n");
 }
 
+function getSnapshotProjectContext(snapshot: AnalysisRunSnapshotV1): AnalysisRunProjectContext {
+  return snapshot.projectContext ?? {
+    projectName: "unknown",
+    sourceType: "unknown",
+    focusLanguage: null,
+    importWarnings: [],
+  };
+}
+
+function buildSnapshotImpactSummary(snapshot: AnalysisRunSnapshotV1) {
+  const symbolByStableKey = new Map(snapshot.symbols.map((symbol) => [symbol.stableKey, symbol]));
+  const fileImpactCounts = new Map<string, number>();
+  const incrementFileImpact = (filePath: string | null | undefined) => {
+    if (!filePath) return;
+    fileImpactCounts.set(filePath, (fileImpactCounts.get(filePath) ?? 0) + 1);
+  };
+
+  snapshot.risks.forEach((risk) => incrementFileImpact(risk.sourceFile));
+  snapshot.rules.forEach((rule) => incrementFileImpact(rule.sourceFile));
+  snapshot.dependencies.forEach((dependency) => {
+    incrementFileImpact(symbolByStableKey.get(dependency.from)?.file);
+    incrementFileImpact(dependency.to ? symbolByStableKey.get(dependency.to)?.file : undefined);
+  });
+
+  const dependencySummaries = snapshot.dependencies
+    .map((dependency) => `${dependency.fromName} -> ${dependency.toName} (${dependency.type})`)
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, 10);
+
+  const topImpactedFiles = Array.from(fileImpactCounts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 10)
+    .map(([filePath, impactCount]) => ({ filePath, impactCount }));
+
+  const highRiskItems = snapshot.risks
+    .filter((risk) => severityRank(risk.severity) >= severityRank("high"))
+    .slice(0, 10)
+    .map((risk) => ({
+      title: risk.title,
+      severity: risk.severity,
+      sourceFile: risk.sourceFile,
+      lineNumber: risk.lineNumber,
+    }));
+
+  const ruleTypeCounts = new Map<string, number>();
+  for (const rule of snapshot.rules) {
+    ruleTypeCounts.set(rule.ruleType, (ruleTypeCounts.get(rule.ruleType) ?? 0) + 1);
+  }
+
+  return {
+    totals: {
+      files: snapshot.sourceManifest.length,
+      symbols: snapshot.symbols.length,
+      dependencies: snapshot.dependencies.length,
+      risks: snapshot.risks.length,
+      rules: snapshot.rules.length,
+    },
+    topImpactedFiles,
+    topDependencies: dependencySummaries,
+    highRiskItems,
+    businessRules: {
+      countsByType: Object.fromEntries(Array.from(ruleTypeCounts.entries()).sort((left, right) => left[0].localeCompare(right[0]))),
+      items: snapshot.rules.slice(0, 10).map((rule) => ({
+        name: rule.name,
+        ruleType: rule.ruleType,
+        sourceFile: rule.sourceFile ?? null,
+        lineNumber: rule.lineNumber ?? null,
+      })),
+    },
+  };
+}
+
+function buildSnapshotReportCompletenessArtifacts(input: {
+  snapshot: AnalysisRunSnapshotV1;
+  report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>;
+  metadata: {
+    projectName: string;
+    analysisVersion: string;
+    createdAt: string;
+    focusLanguage: string | null;
+    fileCount: number;
+    symbolCount: number;
+    dependencyCount: number;
+    warningCount: number;
+    importWarningCount: number;
+  };
+  projectId: number;
+}) {
+  const { snapshot } = input;
+  const projectContext = getSnapshotProjectContext(snapshot);
+  const importWarnings = projectContext.importWarnings;
+  const analyzerWarnings = snapshot.warnings;
+  const delphiEventMap = snapshot.delphiEventMap;
+  const delphiDataBindings = snapshot.delphiDataBindings;
+  const confidence = snapshot.metrics.confidence ?? null;
+
+  const symbolsByFile = new Map<string, number>();
+  const dependenciesByFile = new Map<string, number>();
+  const risksByFile = new Map<string, number>();
+  const warningsByFile = new Map<string, number>();
+  const limitedFilePaths = new Set<string>();
+  const symbolByStableKey = new Map(snapshot.symbols.map((symbol) => [symbol.stableKey, symbol]));
+
+  for (const symbol of snapshot.symbols) {
+    symbolsByFile.set(symbol.file, (symbolsByFile.get(symbol.file) ?? 0) + 1);
+  }
+  for (const dependency of snapshot.dependencies) {
+    const sourceFile = symbolByStableKey.get(dependency.from)?.file;
+    if (sourceFile) {
+      dependenciesByFile.set(sourceFile, (dependenciesByFile.get(sourceFile) ?? 0) + 1);
+    }
+  }
+  for (const risk of snapshot.risks) {
+    risksByFile.set(risk.sourceFile, (risksByFile.get(risk.sourceFile) ?? 0) + 1);
+  }
+  for (const warning of [...importWarnings, ...analyzerWarnings]) {
+    if (!warning.filePath) continue;
+    warningsByFile.set(warning.filePath, (warningsByFile.get(warning.filePath) ?? 0) + 1);
+    if (warning.code === "IMPORT_LIMITED_ANALYSIS" || ("heuristic" in warning && warning.heuristic)) {
+      limitedFilePaths.add(warning.filePath);
+    }
+  }
+
+  const languageCounts = snapshot.sourceManifest.reduce(
+    (counts, file) => {
+      const language = classifyReportLanguage(file.fileType);
+      if (language === "delphi-like") counts.delphiLike += 1;
+      if (language === "go") counts.go += 1;
+      if (language === "sql") counts.sql += 1;
+      if (language === "unknown") counts.unknown += 1;
+      return counts;
+    },
+    { delphiLike: 0, go: 0, sql: 0, unknown: 0 }
+  );
+
+  const fileInventoryItems = snapshot.sourceManifest.map((file) => {
+    const importWarningCodes = importWarnings.filter((warning) => warning.filePath === file.path).map((warning) => warning.code);
+    return {
+      filePath: file.path,
+      fileType: normalizeReportFileType(file.fileType),
+      language: classifyReportLanguage(file.fileType),
+      analysisSucceeded: !importWarningCodes.includes("IMPORT_SKIPPED_UNSUPPORTED"),
+      symbolCount: symbolsByFile.get(file.path) ?? 0,
+      dependencyCount: dependenciesByFile.get(file.path) ?? 0,
+      riskCount: risksByFile.get(file.path) ?? 0,
+      warningCount: warningsByFile.get(file.path) ?? 0,
+    };
+  });
+
+  const fieldAccessItems = snapshot.fieldDependencies
+    .map((dependency) => {
+      const context = dependency.context ?? "";
+      const accessKind = /ParamByName\s*\(/i.test(context) ? "param" : "field";
+      const ownerMatch = context.match(/([A-Za-z_][\w.]*)\s*\.\s*(?:FieldByName|ParamByName)\s*\(/i);
+      return {
+        filePath: dependency.file,
+        lineNumber: dependency.line,
+        owner: ownerMatch?.[1] ?? "unknown",
+        accessKind,
+        name: dependency.field,
+        operation: dependency.type,
+        context: context || null,
+        symbolName: dependency.symbolName ?? null,
+      };
+    })
+    .filter((item) => item.filePath.toLowerCase().endsWith(".pas") || item.accessKind === "param" || item.context?.match(/FieldByName|ParamByName/i));
+
+  const projectOverviewMarkdown = [
+    "# PROJECT_OVERVIEW",
+    "",
+    `- Project name: ${projectContext.projectName}`,
+    `- Import source type: ${projectContext.sourceType}`,
+    `- Analysis time: ${input.metadata.createdAt}`,
+    `- Total scanned files: ${snapshot.sourceManifest.length}`,
+    `- Delphi-like files: ${languageCounts.delphiLike}`,
+    `- Go files: ${languageCounts.go}`,
+    `- SQL files: ${languageCounts.sql}`,
+    `- Unknown files: ${languageCounts.unknown}`,
+    `- Limited-analysis files: ${limitedFilePaths.size}`,
+    "",
+    "## Analysis Confidence",
+    confidence ? `- Score: ${confidence.score}/100` : "- Score: unknown",
+    confidence ? `- Level: ${confidence.level}` : "- Level: unknown",
+    "",
+    confidence
+      ? renderMarkdownTable(["Label", "Impact", "Reason"], confidence.breakdown.map((item) => [item.label, item.impact > 0 ? `+${item.impact}` : item.impact, item.reason]))
+      : "Confidence details are unavailable for this snapshot.",
+    "",
+    "## Findings Summary",
+    `- Symbols: ${snapshot.symbols.length}`,
+    `- Dependencies: ${snapshot.dependencies.length}`,
+    `- Risks: ${snapshot.risks.length}`,
+    `- Field accesses: ${fieldAccessItems.length}`,
+    `- Import warnings: ${importWarnings.length}`,
+    `- Analyzer warnings: ${analyzerWarnings.length}`,
+    "",
+    "## Report Limits",
+    ...reportLimitationLines(),
+    snapshot.projectContext ? "" : "- Legacy snapshot context was not persisted for this run; project name, source type, focus language, and import warnings may be unknown.",
+    "",
+  ].join("\n");
+
+  const fileInventoryMarkdown = [
+    "# FILE_INVENTORY",
+    "",
+    renderMarkdownTable(
+      ["File path", "File type", "Language", "Analyzed", "Symbol count", "Dependency count", "Risk count", "Warning count"],
+      fileInventoryItems.map((item) => [
+        item.filePath,
+        item.fileType,
+        item.language,
+        item.analysisSucceeded ? "yes" : "no",
+        item.symbolCount,
+        item.dependencyCount,
+        item.riskCount,
+        item.warningCount,
+      ])
+    ),
+    "",
+  ].join("\n");
+
+  const delphiFieldAccessMarkdown = [
+    "# DELPHI_FIELD_ACCESS",
+    "",
+    fieldAccessItems.length === 0
+      ? "No Pascal FieldByName or ParamByName accesses were detected in persisted analysis artifacts."
+      : renderMarkdownTable(
+          ["File path", "Line", "Owner", "Field/param", "Read/write", "Context"],
+          fieldAccessItems.map((item) => [item.filePath, item.lineNumber ?? "unknown", item.owner, `${item.accessKind}:${item.name}`, item.operation, item.context ?? ""])
+        ),
+    "",
+    "Owner note: when dataset or parameter ownership cannot be inferred from the static context, owner is reported as `unknown`.",
+    "",
+  ].join("\n");
+
+  const executiveSummaryMarkdown = renderExecutiveSummaryMarkdown({
+    metadata: {
+      projectName: projectContext.projectName,
+      createdAt: input.metadata.createdAt,
+      focusLanguage: projectContext.focusLanguage,
+    },
+    project: { sourceType: projectContext.sourceType } as typeof projects.$inferSelect,
+    metrics: input.report.summaryJson,
+    confidence,
+    languageCounts,
+    limitedFileCount: limitedFilePaths.size,
+    fileInventoryItems,
+    risks: snapshot.risks.map((risk) => ({
+      riskType: risk.category,
+      title: risk.title,
+      description: risk.description,
+      sourceFile: risk.sourceFile,
+      severity: risk.severity,
+    })) as Array<typeof risks.$inferSelect>,
+    warnings: analyzerWarnings,
+    importWarnings,
+    delphiEventMap,
+    delphiDataBindings,
+    fieldAccessItems,
+  });
+
+  return {
+    executiveSummaryMarkdown,
+    projectOverviewMarkdown,
+    fileInventoryMarkdown,
+    delphiFieldAccessMarkdown,
+    delphiEventMapMarkdown: renderDelphiEventMapMarkdown(delphiEventMap),
+    delphiDataBindingsMarkdown: renderDelphiDataBindingsMarkdown(delphiDataBindings),
+    limitationsMarkdown: ["# LIMITATIONS", "", ...reportLimitationLines(), snapshot.projectContext ? "" : "- Legacy snapshot context was not persisted for this run.", ""].join("\n"),
+    confidence,
+    fullFindingsJson: JSON.stringify(
+      {
+        metadata: {
+          ...input.metadata,
+          confidence,
+          projectId: input.projectId,
+          sourceType: projectContext.sourceType,
+          reportStatus: input.report.status,
+          reportId: input.report.id,
+        },
+        confidence,
+        files: fileInventoryItems,
+        symbols: snapshot.symbols,
+        dependencies: snapshot.dependencies,
+        risks: snapshot.risks,
+        rules: snapshot.rules,
+        fieldAccesses: fieldAccessItems,
+        delphiEventMap,
+        delphiDataBindings,
+        importWarnings,
+        analyzerWarnings,
+        buildDoctor: snapshot.buildDoctor,
+        flowTraces: snapshot.flowTraces,
+      },
+      null,
+      2
+    ),
+  };
+}
+
 export async function buildReportArchiveBuffer(projectId: number, userId: number, runId?: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
   await getOwnedProject(projectId, userId);
   logger.info("Export started", { projectId, runId: runId ?? null, action: "export.zip.start", status: "ok" });
   const db = await requireDb();
-  const [project, report] = await Promise.all([
-    db.select().from(projects).where(eq(projects.id, projectId)).limit(1).then((rows) => rows[0] ?? null),
-    getProjectAnalysisRecord(db, projectId, runId),
-  ]);
+  const project = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1).then((rows) => rows[0] ?? null);
+
+  let strictSnapshot: AnalysisRunSnapshotV1 | null = null;
+  let snapshotProjectContext: AnalysisRunProjectContext | null = null;
+  if (typeof runId === "number") {
+    const strictRun = await getStrictSnapshotRunDetail(db, projectId, runId);
+    strictSnapshot = strictRun.snapshot;
+    snapshotProjectContext = strictRun.projectContext;
+  } else {
+    await materializeLegacySnapshotIfMissing(db, projectId);
+  }
+  let report = typeof runId === "number" ? await getProjectAnalysisRecord(db, projectId, runId) : await getProjectAnalysisRecord(db, projectId);
 
   if (!isReportReadyForExport(report)) {
     logger.warn("Export not ready", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
     throw new AppError("REPORT_NOT_READY", "Analysis report is not ready for download.");
   }
-  const readyReport = report;
-  const selectedSnapshot = parseAnalysisSnapshot(readyReport.snapshotJson).snapshot;
+  let readyReport = report;
+  let selectedSnapshot = strictSnapshot ?? parseAnalysisSnapshot(readyReport.snapshotJson).snapshot;
+  if (!selectedSnapshot && typeof runId !== "number") {
+    await materializeLegacySnapshotIfMissing(db, projectId);
+    const refreshedReport = await getProjectAnalysisRecord(db, projectId);
+    if (isReportReadyForExport(refreshedReport)) {
+      readyReport = refreshedReport;
+      selectedSnapshot = parseAnalysisSnapshot(readyReport.snapshotJson).snapshot;
+    }
+  }
+  if (!selectedSnapshot) {
+    logger.warn("Export not ready", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
+    throw new AppError("REPORT_NOT_READY", "Analysis report snapshot is not ready for download.");
+  }
+  const projectContext = snapshotProjectContext ?? getSnapshotProjectContext(selectedSnapshot);
 
   const version = getAppVersion();
   const metrics = readyReport.summaryJson ?? null;
   const createdAtSource = readyReport.createdAt ?? readyReport.updatedAt ?? new Date(0);
   const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
-  const impactSummary = await generateProjectImpactSummary(db, projectId);
+  const completedAtSource = readyReport.completedAt ?? readyReport.updatedAt ?? readyReport.createdAt ?? new Date(0);
+  const completedAtIso = completedAtSource instanceof Date ? completedAtSource.toISOString() : new Date(completedAtSource).toISOString();
+  const impactSummary = buildSnapshotImpactSummary(selectedSnapshot);
   const impactMarkdown = renderProjectImpactSummaryMarkdown(impactSummary, createdAtIso);
 
   const metadata = {
-    projectName: project?.name ?? "project",
+    projectName: projectContext.projectName,
     analysisVersion: version,
     createdAt: createdAtIso,
-    focusLanguage: project?.language ?? null,
+    focusLanguage: projectContext.focusLanguage,
     fileCount: metrics?.fileCount ?? 0,
     symbolCount: metrics?.symbolCount ?? 0,
     dependencyCount: metrics?.dependencyCount ?? 0,
     warningCount: metrics?.warningCount ?? 0,
-    importWarningCount: project?.importWarningsJson?.length ?? 0,
+    importWarningCount: projectContext.importWarnings.length,
   } as const;
-  const reportCompletenessArtifacts = await buildReportCompletenessArtifacts(db, {
-    project,
+  const reportCompletenessArtifacts = buildSnapshotReportCompletenessArtifacts({
+    snapshot: selectedSnapshot,
     report: readyReport,
     metadata,
     projectId,
@@ -2717,14 +3051,32 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     { path: "DELPHI_EVENT_MAP.md", content: reportCompletenessArtifacts.delphiEventMapMarkdown },
     { path: "DELPHI_DATA_BINDINGS.md", content: reportCompletenessArtifacts.delphiDataBindingsMarkdown },
     { path: "DELPHI_BUILD_DOCTOR.md", content: renderDelphiBuildDoctorMarkdown(selectedSnapshot) },
-    { path: "delphi-build-doctor.json", content: JSON.stringify(selectedSnapshot?.buildDoctor ?? null, null, 2) },
+    { path: "delphi-build-doctor.json", content: JSON.stringify(selectedSnapshot.buildDoctor ?? null, null, 2) },
     { path: "UI_DATABASE_FLOW.md", content: renderUiDatabaseFlowMarkdown(selectedSnapshot) },
-    { path: "ui-database-flow.json", content: JSON.stringify(selectedSnapshot?.flowTraces ?? [], null, 2) },
+    { path: "ui-database-flow.json", content: JSON.stringify(selectedSnapshot.flowTraces ?? [], null, 2) },
     { path: "LIMITATIONS.md", content: reportCompletenessArtifacts.limitationsMarkdown },
     { path: "FULL_FINDINGS.json", content: reportCompletenessArtifacts.fullFindingsJson },
     { path: "impact-analysis.json", content: JSON.stringify(impactSummary, null, 2) },
-    { path: "import-warnings.json", content: JSON.stringify(project?.importWarningsJson ?? [], null, 2) },
-    { path: "metadata.json", content: JSON.stringify({ ...metadata, confidence: reportCompletenessArtifacts.confidence }, null, 2) },
+    { path: "import-warnings.json", content: JSON.stringify(projectContext.importWarnings, null, 2) },
+    {
+      path: "metadata.json",
+      content: JSON.stringify(
+        {
+          projectId,
+          analysisResultId: readyReport.id,
+          runNumber: readyReport.runNumber ?? 1,
+          sourceFingerprint: readyReport.sourceFingerprint ?? selectedSnapshot.sourceManifest.map((file) => file.sha256).join(":"),
+          analyzerVersion: readyReport.analyzerVersion ?? "legacy",
+          snapshotSchemaVersion: readyReport.snapshotSchemaVersion ?? selectedSnapshot.schemaVersion,
+          createdAt: createdAtIso,
+          completedAt: completedAtIso,
+          isHistoricalExport: typeof runId === "number",
+          confidence: reportCompletenessArtifacts.confidence,
+        },
+        null,
+        2
+      ),
+    },
     {
       path: "analysis-summary.json",
       content: JSON.stringify(
@@ -2733,8 +3085,9 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
           status: readyReport.status,
           metrics: readyReport.summaryJson,
           confidence: reportCompletenessArtifacts.confidence,
-          warnings: readyReport.warningsJson,
-          importWarnings: project?.importWarningsJson ?? [],
+          warnings: selectedSnapshot.warnings,
+          importWarnings: projectContext.importWarnings,
+          projectContext,
           limitationSummary:
             "Legacy Lens is a legacy impact review assistant that uses heuristic static analysis for Go, SQL, and Delphi. Review skipped files, degraded files, warnings, dynamic SQL paths, complex Delphi inheritance, Go interface dispatch, and cross-package type resolution limits before treating the report as source-of-truth.",
         },
@@ -2745,7 +3098,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
   ] as const;
 
   logger.info("Export completed", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
-  return buildProjectReportArchiveBuffer(projectId, [...archiveEntries]);
+  return buildProjectReportArchiveBuffer(projectId, [...archiveEntries], readyReport.runNumber ?? 1);
 }
 
 export async function buildReportArchive(projectId: number, userId: number, runId?: number): Promise<ReportArchivePayload> {
