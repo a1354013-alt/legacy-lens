@@ -28,14 +28,9 @@ import { projectStatusLabels } from "../../shared/contracts";
 import {
   analysisResults,
   dependencies,
-  fieldDependencies,
-  fields,
-  files,
   projectJobs,
   projects,
   risks,
-  rules,
-  symbols,
 } from "../../drizzle/schema";
 import { AppError, toAppError } from "../appError";
 import { ImpactAnalyzer } from "../analyzer/impactAnalyzer";
@@ -52,13 +47,6 @@ import { runProjectJob } from "./jobWorker";
 import {
   renderProjectImpactSummaryMarkdown,
   severityRank,
-  sortFieldDependencies,
-  sortProjectDependencies,
-  sortProjectFields,
-  sortProjectFiles,
-  sortProjectRisks,
-  sortProjectRules,
-  sortProjectSymbols,
 } from "./projectWorkflow.helpers";
 import {
   clearLatestAnalysisProjection,
@@ -1146,19 +1134,6 @@ function mergeAnalysisWarnings(base: AnalysisWarning[], additions: AnalysisWarni
   return merged;
 }
 
-function isAnalysisConfidence(value: unknown): value is AnalysisConfidence {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const confidence = value as Partial<AnalysisConfidence>;
-  return (
-    typeof confidence.score === "number" &&
-    ["high", "medium", "low"].includes(String(confidence.level)) &&
-    Array.isArray(confidence.breakdown)
-  );
-}
-
 function inferAnalysisResultFileTypes(result: ProjectAnalysisResult) {
   const paths = [
     ...result.symbols.map((symbol) => symbol.file),
@@ -1853,8 +1828,6 @@ function isReportReadyForExport(
   );
 }
 
-const DELPHI_LIKE_EXTENSIONS = new Set([".pas", ".dpr", ".dfm", ".inc", ".dpk", ".fmx"]);
-
 function normalizeReportFileType(fileType: string | null | undefined) {
   return (fileType ?? "unknown").trim().toLowerCase() || "unknown";
 }
@@ -1880,16 +1853,6 @@ function renderMarkdownTable(headers: string[], rows: unknown[][]) {
     `| ${headers.map(() => "---").join(" | ")} |`,
     ...rows.map((row) => `| ${row.map(escapeMarkdownTableCell).join(" | ")} |`),
   ].join("\n");
-}
-
-function getReportDelphiEventMap(report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>) {
-  const summary = report.summaryJson as (typeof report.summaryJson & { delphiEventMap?: Array<Record<string, unknown>> }) | null;
-  return Array.isArray(summary?.delphiEventMap) ? summary.delphiEventMap : [];
-}
-
-function getReportDelphiDataBindings(report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>) {
-  const summary = report.summaryJson as (typeof report.summaryJson & { delphiDataBindings?: Array<Record<string, unknown>> }) | null;
-  return Array.isArray(summary?.delphiDataBindings) ? summary.delphiDataBindings : [];
 }
 
 function renderDelphiEventMapMarkdown(eventMap: Array<Record<string, unknown>>) {
@@ -2111,425 +2074,6 @@ function renderExecutiveSummaryMarkdown(input: {
   ].join("\n");
 }
 
-function resolveReportConfidence(input: {
-  report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>;
-  importWarnings: ImportWarning[];
-  analyzerWarnings: AnalysisWarning[];
-  fileTypes: string[];
-  risks: Array<typeof risks.$inferSelect>;
-}) {
-  const persistedConfidence = input.report.summaryJson?.confidence;
-  if (isAnalysisConfidence(persistedConfidence)) {
-    return persistedConfidence;
-  }
-
-  return calculateAnalysisConfidence({
-    metrics: input.report.summaryJson,
-    importWarnings: input.importWarnings,
-    analyzerWarnings: input.analyzerWarnings,
-    fileTypes: input.fileTypes,
-    risks: input.risks,
-  });
-}
-
-async function buildReportCompletenessArtifacts(
-  db: Awaited<ReturnType<typeof requireDb>>,
-  input: {
-    project: typeof projects.$inferSelect | null;
-    report: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>;
-    metadata: {
-      projectName: string;
-      analysisVersion: string;
-      createdAt: string;
-      focusLanguage: string | null;
-      fileCount: number;
-      symbolCount: number;
-      dependencyCount: number;
-      warningCount: number;
-      importWarningCount: number;
-    };
-    projectId: number;
-  }
-) {
-  const [fileRows, symbolRows, dependencyRows, fieldRows, fieldDependencyRows, riskRows, ruleRows] = await Promise.all([
-    db.select().from(files).where(eq(files.projectId, input.projectId)),
-    db.select().from(symbols).where(eq(symbols.projectId, input.projectId)),
-    db.select().from(dependencies).where(eq(dependencies.projectId, input.projectId)),
-    db.select().from(fields).where(eq(fields.projectId, input.projectId)),
-    db.select().from(fieldDependencies).where(eq(fieldDependencies.projectId, input.projectId)),
-    db.select().from(risks).where(eq(risks.projectId, input.projectId)),
-    db.select().from(rules).where(eq(rules.projectId, input.projectId)),
-  ]);
-
-  const sortedFiles = sortProjectFiles(fileRows);
-  const sortedSymbols = sortProjectSymbols(symbolRows);
-  const sortedDependencies = sortProjectDependencies(dependencyRows);
-  const sortedFields = sortProjectFields(fieldRows);
-  const sortedFieldDependencies = sortFieldDependencies(fieldDependencyRows);
-  const sortedRisks = sortProjectRisks(riskRows);
-  const sortedRules = sortProjectRules(ruleRows);
-
-  const importWarnings = input.project?.importWarningsJson ?? [];
-  const analyzerWarnings = input.report.warningsJson ?? [];
-  const allWarnings = [...importWarnings, ...analyzerWarnings];
-  const delphiEventMap = getReportDelphiEventMap(input.report);
-  const delphiDataBindings = getReportDelphiDataBindings(input.report);
-  const fileById = new Map(sortedFiles.map((file) => [file.id, file]));
-  const fieldById = new Map(sortedFields.map((field) => [field.id, field]));
-  const symbolById = new Map(sortedSymbols.map((symbol) => [symbol.id, symbol]));
-  const symbolsByFileId = new Map<number, number>();
-  const dependenciesByFileId = new Map<number, number>();
-  const risksByFilePath = new Map<string, number>();
-  const warningsByFilePath = new Map<string, number>();
-  const limitedFilePaths = new Set<string>();
-
-  for (const symbol of sortedSymbols) {
-    symbolsByFileId.set(symbol.fileId, (symbolsByFileId.get(symbol.fileId) ?? 0) + 1);
-  }
-
-  for (const dependency of sortedDependencies) {
-    const sourceFileId = symbolById.get(dependency.sourceSymbolId)?.fileId;
-    if (sourceFileId) {
-      dependenciesByFileId.set(sourceFileId, (dependenciesByFileId.get(sourceFileId) ?? 0) + 1);
-    }
-  }
-
-  for (const risk of sortedRisks) {
-    if (risk.sourceFile) {
-      risksByFilePath.set(risk.sourceFile, (risksByFilePath.get(risk.sourceFile) ?? 0) + 1);
-    }
-  }
-
-  for (const warning of allWarnings) {
-    if (warning.filePath) {
-      warningsByFilePath.set(warning.filePath, (warningsByFilePath.get(warning.filePath) ?? 0) + 1);
-      if (warning.code === "IMPORT_LIMITED_ANALYSIS" || ("heuristic" in warning && warning.heuristic)) {
-        limitedFilePaths.add(warning.filePath);
-      }
-    }
-  }
-
-  for (const file of sortedFiles) {
-    if (DELPHI_LIKE_EXTENSIONS.has(normalizeReportFileType(file.fileType)) && file.fileType !== ".pas" && file.fileType !== ".dpr") {
-      limitedFilePaths.add(file.filePath);
-    }
-  }
-
-  const languageCounts = sortedFiles.reduce(
-    (counts, file) => {
-      const language = classifyReportLanguage(file.fileType);
-      if (language === "delphi-like") counts.delphiLike += 1;
-      if (language === "go") counts.go += 1;
-      if (language === "sql") counts.sql += 1;
-      if (language === "unknown") counts.unknown += 1;
-      return counts;
-    },
-    { delphiLike: 0, go: 0, sql: 0, unknown: 0 }
-  );
-
-  const fileInventoryItems = sortedFiles.map((file) => {
-    const symbolCount = symbolsByFileId.get(file.id) ?? 0;
-    const dependencyCount = dependenciesByFileId.get(file.id) ?? 0;
-    const riskCount = risksByFilePath.get(file.filePath) ?? 0;
-    const warningCount = warningsByFilePath.get(file.filePath) ?? 0;
-    const importWarningCodes = importWarnings.filter((warning) => warning.filePath === file.filePath).map((warning) => warning.code);
-    const analysisSucceeded = file.status === "stored" && !importWarningCodes.includes("IMPORT_SKIPPED_UNSUPPORTED");
-
-    return {
-      filePath: file.filePath,
-      fileType: normalizeReportFileType(file.fileType),
-      language: classifyReportLanguage(file.fileType),
-      analysisSucceeded,
-      symbolCount,
-      dependencyCount,
-      riskCount,
-      warningCount,
-    };
-  });
-
-  const fieldAccessItems = sortedFieldDependencies
-    .map((dependency) => {
-      const field = fieldById.get(dependency.fieldId);
-      const symbol = symbolById.get(dependency.symbolId);
-      const filePath = symbol ? (fileById.get(symbol.fileId)?.filePath ?? null) : null;
-      const context = dependency.context ?? "";
-      const accessKind = /ParamByName\s*\(/i.test(context) ? "param" : "field";
-      const ownerMatch = context.match(/([A-Za-z_][\w.]*)\s*\.\s*(?:FieldByName|ParamByName)\s*\(/i);
-
-      return {
-        filePath: filePath ?? field?.tableName ?? "unknown",
-        lineNumber: dependency.lineNumber ?? null,
-        owner: ownerMatch?.[1] ?? "unknown",
-        accessKind,
-        name: field?.fieldName ?? "unknown",
-        operation: dependency.operationType,
-        context: context || null,
-        symbolName: symbol?.name ?? null,
-      };
-    })
-    .filter((item) => item.filePath.toLowerCase().endsWith(".pas") || item.accessKind === "param" || item.context?.match(/FieldByName|ParamByName/i));
-  const confidence = resolveReportConfidence({
-    report: input.report,
-    importWarnings,
-    analyzerWarnings,
-    fileTypes: sortedFiles.map((file) => file.fileType).filter((fileType): fileType is string => Boolean(fileType)),
-    risks: sortedRisks,
-  });
-
-  const projectOverviewMarkdown = [
-    "# PROJECT_OVERVIEW",
-    "",
-    `- Project name: ${input.metadata.projectName}`,
-    `- Import source type: ${input.project?.sourceType ?? "unknown"}`,
-    `- Analysis time: ${input.metadata.createdAt}`,
-    `- Total scanned files: ${sortedFiles.length}`,
-    `- Delphi-like files: ${languageCounts.delphiLike}`,
-    `- Go files: ${languageCounts.go}`,
-    `- SQL files: ${languageCounts.sql}`,
-    `- Unknown files: ${languageCounts.unknown}`,
-    `- Limited-analysis files: ${limitedFilePaths.size}`,
-    "",
-    "## Analysis Confidence",
-    `- Score: ${confidence.score}/100`,
-    `- Level: ${confidence.level}`,
-    "",
-    renderMarkdownTable(
-      ["Label", "Impact", "Reason"],
-      confidence.breakdown.map((item) => [item.label, item.impact > 0 ? `+${item.impact}` : item.impact, item.reason])
-    ),
-    "",
-    "## Findings Summary",
-    `- Symbols: ${sortedSymbols.length}`,
-    `- Dependencies: ${sortedDependencies.length}`,
-    `- Risks: ${sortedRisks.length}`,
-    `- Field accesses: ${fieldAccessItems.length}`,
-    `- Import warnings: ${importWarnings.length}`,
-    `- Analyzer warnings: ${analyzerWarnings.length}`,
-    "",
-    "## Report Limits",
-    ...reportLimitationLines(),
-    "",
-  ].join("\n");
-
-  const fileInventoryMarkdown = [
-    "# FILE_INVENTORY",
-    "",
-    renderMarkdownTable(
-      ["File path", "File type", "Language", "Analyzed", "Symbol count", "Dependency count", "Risk count", "Warning count"],
-      fileInventoryItems.map((item) => [
-        item.filePath,
-        item.fileType,
-        item.language,
-        item.analysisSucceeded ? "yes" : "no",
-        item.symbolCount,
-        item.dependencyCount,
-        item.riskCount,
-        item.warningCount,
-      ])
-    ),
-    "",
-  ].join("\n");
-
-  const delphiFieldAccessMarkdown = [
-    "# DELPHI_FIELD_ACCESS",
-    "",
-    fieldAccessItems.length === 0
-      ? "No Pascal FieldByName or ParamByName accesses were detected in persisted analysis artifacts."
-      : renderMarkdownTable(
-          ["File path", "Line", "Owner", "Field/param", "Read/write", "Context"],
-          fieldAccessItems.map((item) => [
-            item.filePath,
-            item.lineNumber ?? "unknown",
-            item.owner,
-            `${item.accessKind}:${item.name}`,
-            item.operation,
-            item.context ?? "",
-          ])
-        ),
-    "",
-    "Owner note: when dataset or parameter ownership cannot be inferred from the static context, owner is reported as `unknown`.",
-    "",
-  ].join("\n");
-
-  const delphiEventMapMarkdown = renderDelphiEventMapMarkdown(delphiEventMap);
-  const delphiDataBindingsMarkdown = renderDelphiDataBindingsMarkdown(delphiDataBindings);
-  const limitationsMarkdown = ["# LIMITATIONS", "", ...reportLimitationLines(), ""].join("\n");
-  const executiveSummaryMarkdown = renderExecutiveSummaryMarkdown({
-    metadata: input.metadata,
-    project: input.project,
-    metrics: input.report.summaryJson,
-    confidence,
-    languageCounts,
-    limitedFileCount: limitedFilePaths.size,
-    fileInventoryItems,
-    risks: sortedRisks,
-    warnings: analyzerWarnings,
-    importWarnings,
-    delphiEventMap,
-    delphiDataBindings,
-    fieldAccessItems,
-  });
-
-  const fullFindings = {
-    metadata: {
-      ...input.metadata,
-      confidence,
-      projectId: input.projectId,
-      sourceType: input.project?.sourceType ?? "unknown",
-      reportStatus: input.report.status,
-      reportId: input.report.id,
-    },
-    confidence,
-    files: fileInventoryItems,
-    symbols: sortedSymbols.map((symbol) => ({
-      id: symbol.id,
-      filePath: fileById.get(symbol.fileId)?.filePath ?? null,
-      name: symbol.name,
-      type: symbol.type,
-      startLine: symbol.startLine,
-      endLine: symbol.endLine,
-      signature: symbol.signature ?? null,
-      description: symbol.description ?? null,
-      metadata: symbol.metadata ?? null,
-    })),
-    dependencies: sortedDependencies.map((dependency) => ({
-      id: dependency.id,
-      sourceSymbolId: dependency.sourceSymbolId,
-      sourceSymbolName: symbolById.get(dependency.sourceSymbolId)?.name ?? null,
-      targetSymbolId: dependency.targetSymbolId ?? null,
-      targetSymbolName: dependency.targetSymbolId ? (symbolById.get(dependency.targetSymbolId)?.name ?? null) : null,
-      targetExternalName: dependency.targetExternalName ?? null,
-      targetKind: dependency.targetKind,
-      dependencyType: dependency.dependencyType,
-      lineNumber: dependency.lineNumber ?? null,
-    })),
-    risks: sortedRisks.map((risk) => ({
-      id: risk.id,
-      riskType: risk.riskType,
-      severity: risk.severity,
-      title: risk.title,
-      description: risk.description ?? null,
-      sourceFile: risk.sourceFile ?? null,
-      lineNumber: risk.lineNumber ?? null,
-      codeSnippet: risk.codeSnippet ?? null,
-      recommendation: risk.recommendation ?? null,
-    })),
-    rules: sortedRules.map((rule) => ({
-      id: rule.id,
-      ruleType: rule.ruleType,
-      name: rule.name,
-      description: rule.description ?? null,
-      condition: rule.condition ?? null,
-      sourceFile: rule.sourceFile ?? null,
-      lineNumber: rule.lineNumber ?? null,
-    })),
-    fieldAccesses: fieldAccessItems,
-    delphiEventMap,
-    delphiDataBindings,
-    importWarnings,
-    analyzerWarnings,
-  };
-
-  return {
-    executiveSummaryMarkdown,
-    projectOverviewMarkdown,
-    fileInventoryMarkdown,
-    delphiFieldAccessMarkdown,
-    delphiEventMapMarkdown,
-    delphiDataBindingsMarkdown,
-    limitationsMarkdown,
-    confidence,
-    fullFindingsJson: JSON.stringify(fullFindings, null, 2),
-  };
-}
-
-async function generateProjectImpactSummary(db: Awaited<ReturnType<typeof requireDb>>, projectId: number) {
-  const [rawProjectFiles, rawProjectSymbols, rawProjectDependencies, rawProjectRisks, rawProjectRules] = await Promise.all([
-    db.select().from(files).where(eq(files.projectId, projectId)),
-    db.select().from(symbols).where(eq(symbols.projectId, projectId)),
-    db.select().from(dependencies).where(eq(dependencies.projectId, projectId)),
-    db.select().from(risks).where(eq(risks.projectId, projectId)),
-    db.select().from(rules).where(eq(rules.projectId, projectId)),
-  ]);
-
-  const projectFiles = sortProjectFiles(rawProjectFiles);
-  const projectSymbols = sortProjectSymbols(rawProjectSymbols);
-  const projectDependencies = sortProjectDependencies(rawProjectDependencies);
-  const projectRisks = sortProjectRisks(rawProjectRisks);
-  const projectRules = sortProjectRules(rawProjectRules);
-
-  const fileById = new Map(projectFiles.map((file) => [file.id, file.filePath]));
-  const symbolById = new Map(projectSymbols.map((symbol) => [symbol.id, symbol]));
-  const fileImpactCounts = new Map<string, number>();
-
-  const incrementFileImpact = (filePath: string | null | undefined) => {
-    if (!filePath) return;
-    fileImpactCounts.set(filePath, (fileImpactCounts.get(filePath) ?? 0) + 1);
-  };
-
-  projectRisks.forEach((risk) => incrementFileImpact(risk.sourceFile));
-  projectRules.forEach((rule) => incrementFileImpact(rule.sourceFile));
-  projectDependencies.forEach((dependency) => {
-    incrementFileImpact(fileById.get(symbolById.get(dependency.sourceSymbolId)?.fileId ?? -1));
-    incrementFileImpact(fileById.get(symbolById.get(dependency.targetSymbolId ?? -1)?.fileId ?? -1));
-  });
-
-  const dependencySummaries = projectDependencies
-    .map((dependency) => {
-      const source = symbolById.get(dependency.sourceSymbolId);
-      const target = dependency.targetSymbolId ? symbolById.get(dependency.targetSymbolId) : null;
-      const sourceName = source?.name ?? `symbol:${dependency.sourceSymbolId}`;
-      const targetName = target?.name ?? dependency.targetExternalName ?? "unresolved";
-      return `${sourceName} -> ${targetName} (${dependency.dependencyType})`;
-    })
-    .sort((left, right) => left.localeCompare(right))
-    .slice(0, 10);
-
-  const topImpactedFiles = Array.from(fileImpactCounts.entries())
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, 10)
-    .map(([filePath, impactCount]) => ({ filePath, impactCount }));
-
-  const highRiskItems = projectRisks
-    .filter((risk) => severityRank(risk.severity) >= severityRank("high"))
-    .slice(0, 10)
-    .map((risk) => ({
-      title: risk.title,
-      severity: risk.severity,
-      sourceFile: risk.sourceFile,
-      lineNumber: risk.lineNumber,
-    }));
-
-  const ruleTypeCounts = new Map<string, number>();
-  for (const rule of projectRules) {
-    ruleTypeCounts.set(rule.ruleType, (ruleTypeCounts.get(rule.ruleType) ?? 0) + 1);
-  }
-  const rulesByType = Object.fromEntries(Array.from(ruleTypeCounts.entries()).sort((left, right) => left[0].localeCompare(right[0])));
-
-  const businessRules = projectRules.map((rule) => ({
-    name: rule.name,
-    ruleType: rule.ruleType,
-    sourceFile: rule.sourceFile,
-    lineNumber: rule.lineNumber,
-  }));
-
-  return {
-    totals: {
-      files: projectFiles.length,
-      symbols: projectSymbols.length,
-      dependencies: projectDependencies.length,
-      risks: projectRisks.length,
-      rules: projectRules.length,
-    },
-    topImpactedFiles,
-    topDependencies: dependencySummaries,
-    highRiskItems,
-    businessRules: {
-      countsByType: rulesByType,
-      items: businessRules.slice(0, 10),
-    },
-  };
-}
 
 export async function getAnalysisSnapshot(projectId: number, userId: number): Promise<AnalysisSnapshot> {
   return getAnalysisSnapshotImpl({ requireDb, getOwnedProject, getProjectAnalysisRecord }, projectId, userId);
@@ -2978,7 +2522,6 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
   await getOwnedProject(projectId, userId);
   logger.info("Export started", { projectId, runId: runId ?? null, action: "export.zip.start", status: "ok" });
   const db = await requireDb();
-  const project = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1).then((rows) => rows[0] ?? null);
 
   let strictSnapshot: AnalysisRunSnapshotV1 | null = null;
   let snapshotProjectContext: AnalysisRunProjectContext | null = null;
@@ -2989,7 +2532,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
   } else {
     await materializeLegacySnapshotIfMissing(db, projectId);
   }
-  let report = typeof runId === "number" ? await getProjectAnalysisRecord(db, projectId, runId) : await getProjectAnalysisRecord(db, projectId);
+  const report = typeof runId === "number" ? await getProjectAnalysisRecord(db, projectId, runId) : await getProjectAnalysisRecord(db, projectId);
 
   if (!isReportReadyForExport(report)) {
     logger.warn("Export not ready", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });

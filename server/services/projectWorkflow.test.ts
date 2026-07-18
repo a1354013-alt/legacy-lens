@@ -1,8 +1,11 @@
 import JSZip from "jszip";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DependenciesPageInput, RisksPageInput } from "../../shared/contracts";
+import type { ProjectAnalysisResult } from "../analyzer/types";
 import { AppError } from "../appError";
+import { parseAnalysisSnapshotStrict } from "./analysisHistory";
 import { calculateSourceFingerprint } from "./sourceFingerprint";
+import { createAnalysisResultFixture, createValidAnalysisRunFixture } from "./projectWorkflow.test.helpers";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -14,12 +17,12 @@ type Condition =
   | { type: "inArray"; column: string; values: unknown[] }
   | { type: "and"; conditions: Condition[] }
   | undefined;
-type SortOrder = { type: "desc"; column: string } | undefined;
+type SortOrder = Array<{ type: "asc" | "desc"; column: string }> | undefined;
 
 let zipFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
 let gitFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
 let importWarnings: Array<{ code: string; message: string; filePath?: string }> = [];
-let analyzerResult: Record<string, unknown> | null = null;
+let analyzerResult: ProjectAnalysisResult | null = null;
 let analyzerError: Error | null = null;
 let fakeDb: ReturnType<typeof createFakeDb>;
 let failRootProjectReadsDuringTransaction = false;
@@ -54,6 +57,7 @@ vi.mock("drizzle-orm", async () => {
     eq: (column: { name: string }, value: unknown) => ({ type: "eq", column: column.name, value }),
     inArray: (column: { name: string }, values: unknown[]) => ({ type: "inArray", column: column.name, values }),
     and: (...conditions: Condition[]) => ({ type: "and", conditions: conditions.filter(Boolean) as Condition[] }),
+    asc: (column: { name: string }) => ({ type: "asc", column: column.name }),
     desc: (column: { name: string }) => ({ type: "desc", column: column.name }),
   };
 });
@@ -116,14 +120,29 @@ function matches(condition: Condition, row: Row): boolean {
   return condition.conditions.every((child) => matches(child, row));
 }
 
-function selectRows(store: Store, table: object, condition: Condition, sort: SortOrder, limit?: number, selection?: Row) {
+function selectRows(store: Store, table: object, condition: Condition, sort: SortOrder, limit?: number, selection?: Row, offset = 0) {
   let rows = [...store[getTableName(table)]];
   rows = rows.filter((row) => matches(condition, row));
 
-  if (sort?.type === "desc") {
-    rows.sort((left, right) => Number(right[sort.column] ?? 0) - Number(left[sort.column] ?? 0));
+  if (sort && sort.length > 0) {
+    rows.sort((left, right) => {
+      for (const entry of sort) {
+        const leftValue = left[entry.column];
+        const rightValue = right[entry.column];
+        if (leftValue === rightValue) continue;
+        const leftComparable = leftValue instanceof Date ? leftValue.getTime() : leftValue;
+        const rightComparable = rightValue instanceof Date ? rightValue.getTime() : rightValue;
+        if (leftComparable === rightComparable) continue;
+        const comparison = leftComparable! < rightComparable! ? -1 : 1;
+        return entry.type === "desc" ? comparison * -1 : comparison;
+      }
+      return 0;
+    });
   }
 
+  if (offset > 0) {
+    rows = rows.slice(offset);
+  }
   if (typeof limit === "number") {
     rows = rows.slice(0, limit);
   }
@@ -175,6 +194,7 @@ function createFakeDb(initialStore?: Partial<Store>) {
     private condition: Condition;
     private limitCount?: number;
     private sort?: SortOrder;
+    private offsetCount = 0;
 
     constructor(private readonly selection?: Row, private readonly table?: object) {}
 
@@ -187,8 +207,8 @@ function createFakeDb(initialStore?: Partial<Store>) {
       return this;
     }
 
-    orderBy(sort: SortOrder) {
-      this.sort = sort;
+    orderBy(...sorts: Array<{ type: "asc" | "desc"; column: string } | undefined>) {
+      this.sort = sorts.filter(Boolean) as SortOrder;
       return this;
     }
 
@@ -197,11 +217,16 @@ function createFakeDb(initialStore?: Partial<Store>) {
       return this;
     }
 
+    offset(count: number) {
+      this.offsetCount = count;
+      return this;
+    }
+
     then<TResult1 = Row[], TResult2 = never>(
       onfulfilled?: ((value: Row[]) => TResult1 | PromiseLike<TResult1>) | null,
       onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
     ) {
-      const value = selectRows(store, this.table as object, this.condition, this.sort, this.limitCount, this.selection);
+      const value = selectRows(store, this.table as object, this.condition, this.sort, this.limitCount, this.selection, this.offsetCount);
       return Promise.resolve(value).then(onfulfilled, onrejected);
     }
   }
@@ -332,20 +357,17 @@ function claimedOwnership(overrides: Row = {}): Row {
 }
 
 function createPersistenceAnalysisResult() {
-  return {
+  return createAnalysisResultFixture({
     projectId: 1,
-    status: "completed" as const,
-    language: "go",
+    status: "completed",
     symbols: [
-      { stableKey: "main.go::main::1", name: "main", type: "function" as const, file: "main.go", startLine: 1, endLine: 5, signature: "func main()" },
-      { stableKey: "repo.sql::query_1::1", name: "query_1", type: "query" as const, file: "repo.sql", startLine: 1, endLine: 1, signature: "SELECT amount FROM orders" },
+      { stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 5, signature: "func main()" },
+      { stableKey: "repo.sql::query_1::1", name: "query_1", type: "query", file: "repo.sql", startLine: 1, endLine: 1, signature: "SELECT amount FROM orders" },
     ],
-    dependencies: [{ from: "main.go::main::1", to: "repo.sql::query_1::1", fromName: "main", toName: "query_1", type: "calls" as const, line: 3 }],
-    fieldReferences: [{ table: "orders", field: "amount", type: "read" as const, file: "repo.sql", line: 1, symbolStableKey: "repo.sql::query_1::1", context: "SELECT amount FROM orders" }],
-    schemaFields: [],
-    risks: [{ title: "Date literal", description: "hard-coded date", severity: "medium" as const, category: "magic_value" as const, sourceFile: "main.go", lineNumber: 2, suggestion: "Use a constant." }],
-    rules: [{ ruleType: "magic_value" as const, name: "externalize_main_go_2", description: "Date literal", condition: "hard-coded date", sourceFile: "main.go", lineNumber: 2 }],
-    warnings: [],
+    dependencies: [{ from: "main.go::main::1", to: "repo.sql::query_1::1", fromName: "main", toName: "query_1", type: "calls", line: 3 }],
+    fieldReferences: [{ table: "orders", field: "amount", type: "read", file: "repo.sql", line: 1, symbolStableKey: "repo.sql::query_1::1", context: "SELECT amount FROM orders" }],
+    risks: [{ title: "Date literal", description: "hard-coded date", severity: "medium", category: "magic_value", sourceFile: "main.go", lineNumber: 2, suggestion: "Use a constant." }],
+    rules: [{ ruleType: "magic_value", name: "externalize_main_go_2", description: "Date literal", condition: "hard-coded date", sourceFile: "main.go", lineNumber: 2 }],
     flowDocument: "# FLOW",
     dataDependencyDocument: "# DATA_DEPENDENCY",
     risksDocument: "# RISKS",
@@ -366,7 +388,7 @@ function createPersistenceAnalysisResult() {
       ruleCount: 1,
       warningCount: 0,
     },
-  };
+  });
 }
 
 beforeEach(() => {
@@ -561,10 +583,8 @@ describe("project workflow", () => {
       { id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 12, status: "stored" },
       { id: 2, projectId: 1, filePath: "repo.sql", fileName: "repo.sql", fileType: ".sql", content: "SELECT amount FROM orders", lineCount: 8, status: "stored" }
     );
-    analyzerResult = {
-      projectId: 1,
+    analyzerResult = createAnalysisResultFixture({
       status: "partial",
-      language: "go",
       symbols: [
         { stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 5, signature: "func main()" },
         { stableKey: "repo.sql::query_1::1", name: "query_1", type: "query", file: "repo.sql", startLine: 1, endLine: 1, signature: "SELECT amount FROM orders" },
@@ -595,12 +615,23 @@ describe("project workflow", () => {
         ruleCount: 1,
         warningCount: 1,
       },
-    };
+    });
 
     const result = await analyzeProject(1, 7);
+    const persistedRun = fakeDb.store.analysisResults[0];
+    const parsedSnapshot = parseAnalysisSnapshotStrict(String(persistedRun?.snapshotJson ?? ""));
 
     expect(result.status).toBe("partial");
-    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "partial" });
+    expect(persistedRun).toMatchObject({
+      status: "partial",
+      runNumber: 1,
+      snapshotSchemaVersion: 1,
+      analyzerVersion: expect.any(String),
+      completedAt: expect.any(Date),
+    });
+    expect(String(persistedRun?.sourceFingerprint ?? "")).toMatch(/^[a-f0-9]{64}$/);
+    expect(fakeDb.store.projects[0].sourceFingerprint).toBe(persistedRun.sourceFingerprint);
+    expect(parsedSnapshot.schemaVersion).toBe(1);
     expect(fakeDb.store.symbols).toHaveLength(2);
     expect(fakeDb.store.dependencies).toHaveLength(1);
     expect(fakeDb.store.fields).toHaveLength(1);
@@ -678,8 +709,7 @@ describe("project workflow", () => {
         status: "stored",
       }
     );
-    analyzerResult = {
-      projectId: 1,
+    analyzerResult = createAnalysisResultFixture({
       status: "completed",
       language: "delphi",
       symbols: [{ stableKey: "legacy/OrderRepo.pas::OrderRepo::1", name: "OrderRepo", type: "class", file: "legacy/OrderRepo.pas", startLine: 1, endLine: 1 }],
@@ -709,7 +739,7 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     const result = await analyzeProject(1, 7);
 
@@ -813,10 +843,7 @@ describe("project workflow", () => {
       { id: 2, projectId: 1, filePath: "pkg/a.go", fileName: "a.go", fileType: ".go", content: "package pkg", lineCount: 8, status: "stored" },
       { id: 3, projectId: 1, filePath: "pkg/b.go", fileName: "b.go", fileType: ".go", content: "package pkg", lineCount: 8, status: "stored" }
     );
-    analyzerResult = {
-      projectId: 1,
-      status: "completed",
-      language: "go",
+    analyzerResult = createAnalysisResultFixture({
       symbols: [
         { stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 5 },
         { stableKey: "pkg/a.go::Run::1", name: "Run", qualifiedName: "a.Run", type: "function", file: "pkg/a.go", startLine: 1, endLine: 5 },
@@ -848,7 +875,7 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     await analyzeProject(1, 7);
 
@@ -863,12 +890,8 @@ describe("project workflow", () => {
     const { analyzeProject } = await import("./projectWorkflow");
     seedProject();
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "schema.sql", fileName: "schema.sql", fileType: ".sql", content: "schema", lineCount: 3, status: "stored" });
-    analyzerResult = {
-      projectId: 1,
-      status: "completed",
+    analyzerResult = createAnalysisResultFixture({
       language: "sql",
-      symbols: [],
-      dependencies: [],
       fieldReferences: [
         { table: "customer", field: "id", type: "read", file: "schema.sql", line: 2 },
         { table: "dbo.Customer", field: "Id", type: "write", file: "schema.sql", line: 3 },
@@ -897,7 +920,7 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     await analyzeProject(1, 7);
 
@@ -942,40 +965,61 @@ describe("project workflow", () => {
   it("preserves the previous usable snapshot when re-analysis fails", async () => {
     const { analyzeProject, buildReportArchive } = await import("./projectWorkflow");
     seedProject(1, { status: "completed", analysisProgress: 100 });
-    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
-    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
-    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
-    fakeDb.store.analysisResults.push({
+    const currentFile = {
       id: 1,
       projectId: 1,
-      status: "completed",
-      sourceFingerprint,
-      flowMarkdown: "# OLD FLOW",
-      dataDependencyMarkdown: "# OLD DATA",
-      risksMarkdown: "# OLD RISKS",
-      rulesYaml: "rules: []",
-      summaryJson: { fileCount: 1 },
-      warningsJson: [],
-      errorMessage: null,
-      createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      filePath: "main.go",
+      fileName: "main.go",
+      fileType: ".go",
+      content: "package main",
+      lineCount: 1,
+      status: "stored",
+    };
+    fakeDb.store.files.push(currentFile);
+    const oldRun = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      projectFiles: [{ path: "main.go", content: "package main" }],
+      projectContext: { projectName: "project-1", sourceType: "upload", focusLanguage: "go", importWarnings: [] },
+      result: {
+        status: "completed",
+        symbols: [{ stableKey: "main.go::old_symbol::1", name: "old_symbol", type: "function", file: "main.go", startLine: 1, endLine: 1 }],
+        dependencies: [{ from: "main.go::old_symbol::1", fromName: "old_symbol", toName: "LegacyApi", targetKind: "external", type: "references", line: 1 }],
+        schemaFields: [{ table: "orders", field: "amount", file: "main.go", line: 1 }],
+        risks: [{ title: "Old risk", description: "legacy", severity: "high", category: "magic_value", sourceFile: "main.go", lineNumber: 1 }],
+        rules: [{ ruleType: "validation", name: "OldRule", description: "legacy", sourceFile: "main.go", lineNumber: 1 }],
+        flowDocument: "# OLD FLOW",
+        dataDependencyDocument: "# OLD DATA",
+        risksDocument: "# OLD RISKS",
+        rulesYaml: "rules: []",
+        metrics: {
+          fileCount: 1,
+          eligibleFileCount: 1,
+          analyzedFileCount: 1,
+          skippedFileCount: 0,
+          heuristicFileCount: 0,
+          degradedFileCount: 0,
+          symbolCount: 1,
+          dependencyCount: 1,
+          fieldCount: 1,
+          fieldDependencyCount: 0,
+          riskCount: 1,
+          ruleCount: 1,
+          warningCount: 0,
+        },
+      },
     });
+    fakeDb.store.projects[0].sourceFingerprint = oldRun.sourceFingerprint;
+    fakeDb.store.analysisResults.push(oldRun.row);
     fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old_symbol", type: "function", startLine: 1, endLine: 1 });
     fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "orders", fieldName: "amount", fieldType: null, description: null });
     fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "LegacyApi", targetKind: "external", dependencyType: "references", lineNumber: 1 });
     fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", severity: "high", title: "Old risk", sourceFile: "main.go", lineNumber: 1 });
     fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "OldRule", sourceFile: "main.go", lineNumber: 1 });
-    analyzerResult = {
-      projectId: 1,
+    const beforeSnapshotJson = String(oldRun.row.snapshotJson);
+    analyzerResult = createAnalysisResultFixture({
       status: "failed",
-      language: "go",
-      symbols: [],
-      dependencies: [],
-      fieldReferences: [],
-      schemaFields: [],
-      risks: [],
-      rules: [],
-      warnings: [],
       flowDocument: "",
       dataDependencyDocument: "",
       risksDocument: "",
@@ -996,17 +1040,19 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     await expect(analyzeProject(1, 7)).rejects.toMatchObject({ code: "ANALYSIS_SUMMARY_FAILED" });
 
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "ANALYSIS_SUMMARY_FAILED" });
-    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "completed", flowMarkdown: "# OLD FLOW" });
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "completed", flowMarkdown: "# OLD FLOW", sourceFingerprint: oldRun.sourceFingerprint });
+    expect(String(fakeDb.store.analysisResults[0].snapshotJson)).toBe(beforeSnapshotJson);
     expect(fakeDb.store.symbols).toHaveLength(1);
     expect(fakeDb.store.dependencies).toHaveLength(1);
     expect(fakeDb.store.fields).toHaveLength(1);
     expect(fakeDb.store.risks).toHaveLength(1);
     expect(fakeDb.store.rules).toHaveLength(1);
+    expect(fakeDb.store.projects[0].sourceFingerprint).toBe(oldRun.sourceFingerprint);
 
     const archive = await buildReportArchive(1, 7);
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
@@ -1035,14 +1081,7 @@ describe("project workflow", () => {
         },
       };
     };
-    analyzerResult = {
-      projectId: 1,
-      status: "completed",
-      language: "go",
-      symbols: [],
-      dependencies: [],
-      fieldReferences: [],
-      schemaFields: [],
+    analyzerResult = createAnalysisResultFixture({
       risks: Array.from({ length: 251 }, (_value, index) => ({
         title: `Risk ${index}`,
         description: "risk",
@@ -1081,7 +1120,7 @@ describe("project workflow", () => {
         ruleCount: 251,
         warningCount: 0,
       },
-    };
+    });
 
     await analyzeProject(1, 7);
 
@@ -1120,10 +1159,10 @@ describe("project workflow", () => {
         },
       };
     };
-    const analyzedSymbols = Array.from({ length: 251 }, (_value, index) => ({
+    const analyzedSymbols: ProjectAnalysisResult["symbols"] = Array.from({ length: 251 }, (_value, index) => ({
       stableKey: `main.go::Symbol${index}::${index + 1}`,
       name: `Symbol${index}`,
-      type: "function",
+      type: "function" as const,
       file: "main.go",
       startLine: index + 1,
       endLine: index + 1,
@@ -1132,11 +1171,10 @@ describe("project workflow", () => {
       table: "orders",
       field: `field_${index}`,
       fieldType: "varchar",
+      file: "main.go",
+      line: index + 1,
     }));
-    analyzerResult = {
-      projectId: 1,
-      status: "completed",
-      language: "go",
+    analyzerResult = createAnalysisResultFixture({
       symbols: analyzedSymbols,
       dependencies: [
         {
@@ -1189,7 +1227,7 @@ describe("project workflow", () => {
         ruleCount: 1,
         warningCount: 0,
       },
-    };
+    });
 
     await analyzeProject(1, 7);
 
@@ -1397,17 +1435,7 @@ describe("project workflow", () => {
       startedAt: null,
       finishedAt: null,
     });
-    analyzerResult = {
-      projectId: 1,
-      status: "completed",
-      language: "go",
-      symbols: [],
-      dependencies: [],
-      fieldReferences: [],
-      schemaFields: [],
-      risks: [],
-      rules: [],
-      warnings: [],
+    analyzerResult = createAnalysisResultFixture({
       flowDocument: "# FLOW",
       dataDependencyDocument: "# DATA_DEPENDENCY",
       risksDocument: "# RISKS",
@@ -1428,7 +1456,7 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-02T00:16:00.000Z"), 15 * 60 * 1000);
     await waitForProjectJobForTests(1);
@@ -1491,7 +1519,7 @@ describe("project workflow", () => {
   it("keeps the previous usable report and graph when startup recovery fails a stuck analyzing project", async () => {
     const { buildReportArchive, recoverStaleProjectJobsOnStartup } = await import("./projectWorkflow");
     seedProject(1, { status: "analyzing", analysisProgress: 42 });
-    fakeDb.store.files.push({
+    const currentFile = {
       id: 1,
       projectId: 1,
       filePath: "main.go",
@@ -1500,9 +1528,41 @@ describe("project workflow", () => {
       content: "package main",
       lineCount: 1,
       status: "stored",
+    };
+    fakeDb.store.files.push(currentFile);
+    const previousRun = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      status: "partial",
+      projectFiles: [{ path: "main.go", content: "package main" }],
+      projectContext: { projectName: "project-1", sourceType: "upload", focusLanguage: "go", importWarnings: [] },
+      result: {
+        status: "partial",
+        symbols: [{ stableKey: "main.go::old_symbol::1", name: "old_symbol", type: "function", file: "main.go", startLine: 1, endLine: 1 }],
+        dependencies: [{ from: "main.go::old_symbol::1", fromName: "old_symbol", toName: "LegacyApi", targetKind: "external", type: "references", line: 1 }],
+        flowDocument: "# OLD FLOW",
+        dataDependencyDocument: "# OLD DATA",
+        risksDocument: "# OLD RISKS",
+        rulesYaml: "rules: []",
+        metrics: {
+          fileCount: 1,
+          eligibleFileCount: 1,
+          analyzedFileCount: 1,
+          skippedFileCount: 0,
+          heuristicFileCount: 0,
+          degradedFileCount: 0,
+          symbolCount: 1,
+          dependencyCount: 1,
+          fieldCount: 0,
+          fieldDependencyCount: 0,
+          riskCount: 0,
+          ruleCount: 0,
+          warningCount: 0,
+        },
+      },
     });
-    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
-    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
+    fakeDb.store.projects[0].sourceFingerprint = previousRun.sourceFingerprint;
     fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "old_symbol", type: "function", startLine: 1, endLine: 1 });
     fakeDb.store.dependencies.push({
       id: 1,
@@ -1514,30 +1574,19 @@ describe("project workflow", () => {
       dependencyType: "references",
       lineNumber: 1,
     });
-    fakeDb.store.analysisResults.push({
-      id: 1,
-      projectId: 1,
-      status: "partial",
-      sourceFingerprint,
-      flowMarkdown: "# OLD FLOW",
-      dataDependencyMarkdown: "# OLD DATA",
-      risksMarkdown: "# OLD RISKS",
-      rulesYaml: "rules: []",
-      summaryJson: { fileCount: 1 },
-      warningsJson: [],
-      errorMessage: null,
-      createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-    });
+    fakeDb.store.analysisResults.push(previousRun.row);
+    const beforeSnapshotJson = String(previousRun.row.snapshotJson);
 
     const recovered = await recoverStaleProjectJobsOnStartup(new Date("2026-01-02T00:16:00.000Z"), 15 * 60 * 1000);
 
     expect(recovered).toBe(0);
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "failed", lastErrorCode: "PROJECT_JOB_STALE", analysisProgress: 0 });
     expect(fakeDb.store.analysisResults).toHaveLength(1);
-    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "partial", flowMarkdown: "# OLD FLOW" });
+    expect(fakeDb.store.analysisResults[0]).toMatchObject({ status: "partial", flowMarkdown: "# OLD FLOW", sourceFingerprint: previousRun.sourceFingerprint });
+    expect(String(fakeDb.store.analysisResults[0].snapshotJson)).toBe(beforeSnapshotJson);
     expect(fakeDb.store.symbols).toHaveLength(1);
     expect(fakeDb.store.dependencies).toHaveLength(1);
+    expect(fakeDb.store.projects[0].sourceFingerprint).toBe(previousRun.sourceFingerprint);
 
     const archive = await buildReportArchive(1, 7);
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
@@ -1912,17 +1961,7 @@ describe("project workflow", () => {
     const { getProjectJob, queueAnalyzeProject, waitForProjectJobForTests } = await import("./projectWorkflow");
     seedProject();
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
-    analyzerResult = {
-      projectId: 1,
-      status: "completed",
-      language: "go",
-      symbols: [],
-      dependencies: [],
-      fieldReferences: [],
-      schemaFields: [],
-      risks: [],
-      rules: [],
-      warnings: [],
+    analyzerResult = createAnalysisResultFixture({
       flowDocument: "# FLOW",
       dataDependencyDocument: "# DATA_DEPENDENCY",
       risksDocument: "# RISKS",
@@ -1943,7 +1982,7 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     const queued = await queueAnalyzeProject(1, 7);
     await expect(queueAnalyzeProject(1, 7)).rejects.toMatchObject({ code: "PROJECT_JOB_ACTIVE" });
@@ -1953,17 +1992,8 @@ describe("project workflow", () => {
     expect(fakeDb.store.projects[0]).toMatchObject({ status: "completed" });
 
     fakeDb.store.projects[0] = { ...fakeDb.store.projects[0], status: "ready", analysisProgress: 0, errorMessage: null, lastErrorCode: null };
-    analyzerResult = {
-      projectId: 1,
+    analyzerResult = createAnalysisResultFixture({
       status: "failed",
-      language: "go",
-      symbols: [],
-      dependencies: [],
-      fieldReferences: [],
-      schemaFields: [],
-      risks: [],
-      rules: [],
-      warnings: [],
       flowDocument: "",
       dataDependencyDocument: "",
       risksDocument: "",
@@ -1984,7 +2014,7 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     const failed = await queueAnalyzeProject(1, 7);
     await waitForProjectJobForTests(failed.jobId);
@@ -3176,17 +3206,7 @@ describe("project workflow", () => {
     const { getProjectJob, getSymbolsPage, queueAnalyzeProject, waitForProjectJobForTests } = await import("./projectWorkflow");
     seedProject(1, { userId: 7 });
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
-    analyzerResult = {
-      projectId: 1,
-      status: "completed",
-      language: "go",
-      symbols: [],
-      dependencies: [],
-      fieldReferences: [],
-      schemaFields: [],
-      risks: [],
-      rules: [],
-      warnings: [],
+    analyzerResult = createAnalysisResultFixture({
       flowDocument: "# FLOW",
       dataDependencyDocument: "# DATA_DEPENDENCY",
       risksDocument: "# RISKS",
@@ -3207,7 +3227,7 @@ describe("project workflow", () => {
         ruleCount: 0,
         warningCount: 0,
       },
-    };
+    });
 
     const job = await queueAnalyzeProject(1, 7);
     await waitForProjectJobForTests(job.jobId);
@@ -3220,7 +3240,7 @@ describe("project workflow", () => {
     const { buildReportArchive } = await import("./projectWorkflow");
     const finalConfidence = {
       score: 64,
-      level: "medium",
+      level: "medium" as const,
       breakdown: [
         { label: "Base score", impact: 100, reason: "Start from full confidence." },
         { label: "Persisted final penalty", impact: -36, reason: "Use the persisted final analysis result confidence." },
@@ -3235,67 +3255,52 @@ describe("project workflow", () => {
       status: "completed",
       importWarningsJson: [{ code: "IMPORT_LIMITED_ANALYSIS", message: "Imported with limited analysis.", filePath: "Form1.dfm" }],
     });
-    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
-    fakeDb.store.files.push({
-      id: 2,
-      projectId: 1,
-      filePath: "repo/Invoice.pas",
-      fileName: "Invoice.pas",
-      fileType: ".pas",
-      content: "procedure UpdateOrder;\nbegin\n  Query.ParamByName('OrderId').AsInteger := 42;\nend;",
-      lineCount: 4,
-      status: "stored",
-    });
-    fakeDb.store.symbols.push({ id: 1, projectId: 1, fileId: 1, name: "main", type: "function", startLine: 1, endLine: 1, signature: "func main()", description: null });
-    fakeDb.store.symbols.push({
-      id: 2,
-      projectId: 1,
-      fileId: 2,
-      name: "UpdateOrder",
-      type: "procedure",
-      startLine: 1,
-      endLine: 4,
-      signature: "procedure UpdateOrder;",
-      description: null,
-    });
-    fakeDb.store.dependencies.push({ id: 1, projectId: 1, sourceSymbolId: 1, targetSymbolId: null, targetExternalName: "external.Dependency", targetKind: "unresolved", dependencyType: "references", lineNumber: 1 });
-    fakeDb.store.fields.push({ id: 1, projectId: 1, tableName: "delphi", fieldName: "OrderId", fieldType: null, description: null });
-    fakeDb.store.fieldDependencies.push({
+    const currentFiles = [
+      { id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" },
+      {
+        id: 2,
+        projectId: 1,
+        filePath: "repo/Invoice.pas",
+        fileName: "Invoice.pas",
+        fileType: ".pas",
+        content: "procedure UpdateOrder;\nbegin\n  Query.ParamByName('OrderId').AsInteger := 42;\nend;",
+        lineCount: 4,
+        status: "stored",
+      },
+    ];
+    fakeDb.store.files.push(...currentFiles);
+    const currentRun = createValidAnalysisRunFixture({
       id: 1,
       projectId: 1,
-      fieldId: 1,
-      symbolId: 2,
-      operationType: "write",
-      lineNumber: 3,
-      context: "Query.ParamByName('OrderId').AsInteger := 42;",
-    });
-    fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", title: "Critical risk", severity: "high", sourceFile: "main.go", lineNumber: 1 });
-    fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "MainRule", sourceFile: "main.go", lineNumber: 1 });
-    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
-    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
-    fakeDb.store.analysisResults.push({
-      id: 1,
-      projectId: 1,
-      status: "completed",
-      sourceFingerprint,
-      flowMarkdown: "# FLOW",
-      dataDependencyMarkdown: "# DATA_DEPENDENCY",
-      risksMarkdown: "# RISKS",
-      rulesYaml: "rules: []",
-      summaryJson: {
-        fileCount: 2,
-        eligibleFileCount: 2,
-        analyzedFileCount: 2,
-        skippedFileCount: 0,
-        heuristicFileCount: 0,
-        degradedFileCount: 0,
-        symbolCount: 2,
-        dependencyCount: 1,
-        fieldCount: 1,
-        fieldDependencyCount: 1,
-        riskCount: 1,
-        ruleCount: 1,
-        warningCount: 0,
+      runNumber: 1,
+      projectFiles: currentFiles.map((file) => ({ path: file.filePath, content: String(file.content), fileType: String(file.fileType) })),
+      projectContext: {
+        projectName: "report-project",
+        sourceType: "upload",
+        focusLanguage: "go",
+        importWarnings: [{ code: "IMPORT_LIMITED_ANALYSIS", message: "Imported with limited analysis.", filePath: "Form1.dfm" }],
+      },
+      result: {
+        status: "completed",
+        symbols: [
+          { stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 1, signature: "func main()" },
+          { stableKey: "repo/Invoice.pas::UpdateOrder::1", name: "UpdateOrder", type: "procedure", file: "repo/Invoice.pas", startLine: 1, endLine: 4, signature: "procedure UpdateOrder;" },
+        ],
+        dependencies: [{ from: "main.go::main::1", fromName: "main", toName: "external.Dependency", targetKind: "unresolved", type: "references", line: 1 }],
+        fieldReferences: [
+          {
+            table: "delphi",
+            field: "OrderId",
+            type: "write",
+            file: "repo/Invoice.pas",
+            line: 3,
+            symbolStableKey: "repo/Invoice.pas::UpdateOrder::1",
+            symbolName: "UpdateOrder",
+            context: "Query.ParamByName('OrderId').AsInteger := 42;",
+          },
+        ],
+        risks: [{ title: "Critical risk", description: "high risk", severity: "high", category: "magic_value", sourceFile: "main.go", lineNumber: 1 }],
+        rules: [{ ruleType: "validation", name: "MainRule", description: "validate", sourceFile: "main.go", lineNumber: 1 }],
         delphiEventMap: [
           {
             formName: "InvoiceForm",
@@ -3329,13 +3334,69 @@ describe("project workflow", () => {
             warnings: ["DataSet was not resolved."],
           },
         ],
-        confidence: finalConfidence,
+        buildDoctor: {
+          status: "ready_with_warnings",
+          score: 72,
+          compilerFamily: { value: "Delphi", confidence: "medium", evidence: ["Invoice.dpr"] },
+          projectEntries: [{ path: "Invoice.dpr", kind: "project", lineNumber: 1, evidence: "program Invoice;" }],
+          configurations: ["Debug"],
+          platforms: ["Win32"],
+          defines: ["DEBUG"],
+          searchPaths: ["src"],
+          runtimePackages: ["rtl"],
+          requiredPackages: ["vcl"],
+          requiredUnits: ["Forms"],
+          missingUnits: [],
+          unresolvedUnits: [],
+          missingPackages: [],
+          externalDependencies: [],
+          findings: [{ code: "DEL001", severity: "warning", title: "OLD_FINDING", description: "legacy finding", recommendation: "review", confidence: "medium", evidence: "Invoice.dpr" }],
+          limitations: [],
+        },
+        flowTraces: [
+          {
+            stableKey: "trace-1",
+            formName: "InvoiceForm",
+            componentName: "SaveButton",
+            componentClass: "TButton",
+            eventName: "OnClick",
+            handlerName: "SaveButtonClick",
+            resolvedHandler: "UpdateOrder",
+            status: "partial",
+            confidence: "medium",
+            steps: [{ id: "step-1", type: "handler", label: "UpdateOrder", filePath: "repo/Invoice.pas", lineNumber: 1, confidence: "medium" }],
+            affectedTables: ["delphi"],
+            affectedFields: [{ table: "delphi", field: "OrderId", operation: "write" }],
+            warnings: ["trace warning"],
+            truncated: false,
+          },
+        ],
+        flowDocument: "# FLOW",
+        dataDependencyDocument: "# DATA_DEPENDENCY",
+        risksDocument: "# RISKS",
+        rulesYaml: "rules: []",
+        metrics: {
+          fileCount: 2,
+          eligibleFileCount: 2,
+          analyzedFileCount: 2,
+          skippedFileCount: 0,
+          heuristicFileCount: 0,
+          degradedFileCount: 0,
+          symbolCount: 2,
+          dependencyCount: 1,
+          fieldCount: 0,
+          fieldDependencyCount: 1,
+          riskCount: 1,
+          ruleCount: 1,
+          warningCount: 0,
+          delphiEventMap: [],
+          delphiDataBindings: [],
+          confidence: finalConfidence,
+        },
       },
-      warningsJson: [],
-      errorMessage: null,
-      createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
+    fakeDb.store.projects[0].sourceFingerprint = currentRun.sourceFingerprint;
+    fakeDb.store.analysisResults.push(currentRun.row);
 
     const archive = await buildReportArchive(1, 7);
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
@@ -3395,8 +3456,10 @@ describe("project workflow", () => {
     expect(fullFindings.risks).toHaveLength(1);
     expect(fullFindings.fieldAccesses).toEqual([expect.objectContaining({ owner: "Query", name: "OrderId", operation: "write" })]);
 
-    const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { confidence?: unknown };
+    const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { confidence?: unknown; runNumber?: number; projectId?: number };
     expect(metadata.confidence).toEqual(finalConfidence);
+    expect(metadata.runNumber).toBe(1);
+    expect(metadata.projectId).toBe(1);
     const summary = JSON.parse(await zip.file("analysis-summary.json")!.async("text")) as { confidence?: unknown };
     expect(summary.confidence).toEqual(finalConfidence);
   });
@@ -3412,48 +3475,118 @@ describe("project workflow", () => {
       status: "completed",
       importWarningsJson: [],
     });
-    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "new.go", fileName: "new.go", fileType: ".go", content: "package new", lineCount: 1, status: "stored" });
-    const currentFingerprint = calculateSourceFingerprint(fakeDb.store.files);
-    fakeDb.store.projects[0].sourceFingerprint = currentFingerprint;
-    fakeDb.store.analysisResults.push(
-      {
-        id: 1,
-        projectId: 1,
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "NewForm.pas", fileName: "NewForm.pas", fileType: ".pas", content: "procedure NewSave;\nbegin\nend;", lineCount: 3, status: "stored" });
+    const run1 = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      projectFiles: [{ path: "OldForm.pas", content: "procedure OldSave;\nbegin\nend;", fileType: ".pas" }],
+      projectContext: { projectName: "historical-report", sourceType: "upload", focusLanguage: "go", importWarnings: [] },
+      result: {
         status: "completed",
-        runNumber: 1,
-        sourceFingerprint: "old-source",
-        flowMarkdown: "# OLD FLOW",
-        dataDependencyMarkdown: "# OLD DATA",
-        risksMarkdown: "# OLD RISKS",
+        symbols: [{ stableKey: "OldForm.pas::OldSave::1", name: "OldSave", type: "procedure", file: "OldForm.pas", startLine: 1, endLine: 3 }],
+        fieldReferences: [{ table: "OLD_ORDER", field: "ID", type: "read", file: "OldForm.pas", line: 2, symbolStableKey: "OldForm.pas::OldSave::1", symbolName: "OldSave", context: "FieldByName('ID')" }],
+        risks: [{ title: "Old risk", description: "legacy", severity: "high", category: "magic_value", sourceFile: "OldForm.pas", lineNumber: 2 }],
+        buildDoctor: {
+          status: "ready_with_warnings",
+          score: 60,
+          compilerFamily: { value: "Delphi", confidence: "medium", evidence: ["OldForm.pas"] },
+          projectEntries: [],
+          configurations: [],
+          platforms: [],
+          defines: [],
+          searchPaths: [],
+          runtimePackages: [],
+          requiredPackages: [],
+          requiredUnits: [],
+          missingUnits: [],
+          unresolvedUnits: [],
+          missingPackages: [],
+          externalDependencies: [],
+          findings: [{ code: "OLD_FINDING", severity: "warning", title: "OLD_FINDING", description: "old finding", recommendation: "review", confidence: "medium", evidence: "OldForm.pas:2" }],
+          limitations: [],
+        },
+        flowTraces: [{ stableKey: "old-trace", formName: "OldForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "OldSave", resolvedHandler: "OldSave", status: "complete", confidence: "high", steps: [{ id: "old-step", type: "handler", label: "OldSave", filePath: "OldForm.pas", lineNumber: 1, confidence: "high" }], affectedTables: ["OLD_ORDER"], affectedFields: [{ table: "OLD_ORDER", field: "ID", operation: "read" }], warnings: [], truncated: false }],
+        delphiEventMap: [{ formName: "OldForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "OldSave", filePath: "OldForm.dfm", lineNumber: 1, resolvedMethod: "OldSave", resolvedFile: "OldForm.pas", status: "resolved", warnings: [] }],
+        delphiDataBindings: [{ formName: "OldForm", componentName: "OrderEdit", componentClass: "TDBEdit", dataSource: "OrdersSource", dataSet: "OLD_ORDER", dataField: "ID", readOnly: false, enabled: true, visible: true, accessHint: "read-write", confidence: "high", sourceFile: "OldForm.dfm", lineNumber: 2, warnings: [] }],
+        flowDocument: "# OLD FLOW",
+        dataDependencyDocument: "# OLD DATA",
+        risksDocument: "# OLD RISKS",
         rulesYaml: "rules: []",
-        summaryJson: { fileCount: 1 },
-        warningsJson: [],
-        errorMessage: null,
-        createdAt: new Date("2026-01-01T00:00:00.000Z"),
-        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
       },
-      {
-        id: 2,
-        projectId: 1,
+    });
+    const run2 = createValidAnalysisRunFixture({
+      id: 2,
+      projectId: 1,
+      runNumber: 2,
+      projectFiles: [{ path: "NewForm.pas", content: "procedure NewSave;\nbegin\nend;", fileType: ".pas" }],
+      projectContext: { projectName: "historical-report", sourceType: "upload", focusLanguage: "go", importWarnings: [] },
+      result: {
         status: "completed",
-        runNumber: 2,
-        sourceFingerprint: currentFingerprint,
-        flowMarkdown: "# NEW FLOW",
-        dataDependencyMarkdown: "# NEW DATA",
-        risksMarkdown: "# NEW RISKS",
+        symbols: [{ stableKey: "NewForm.pas::NewSave::1", name: "NewSave", type: "procedure", file: "NewForm.pas", startLine: 1, endLine: 3 }],
+        fieldReferences: [{ table: "NEW_ORDER", field: "ID", type: "write", file: "NewForm.pas", line: 2, symbolStableKey: "NewForm.pas::NewSave::1", symbolName: "NewSave", context: "FieldByName('ID')" }],
+        risks: [{ title: "New risk", description: "modern", severity: "high", category: "magic_value", sourceFile: "NewForm.pas", lineNumber: 2 }],
+        buildDoctor: {
+          status: "ready_with_warnings",
+          score: 80,
+          compilerFamily: { value: "Delphi", confidence: "medium", evidence: ["NewForm.pas"] },
+          projectEntries: [],
+          configurations: [],
+          platforms: [],
+          defines: [],
+          searchPaths: [],
+          runtimePackages: [],
+          requiredPackages: [],
+          requiredUnits: [],
+          missingUnits: [],
+          unresolvedUnits: [],
+          missingPackages: [],
+          externalDependencies: [],
+          findings: [{ code: "NEW_FINDING", severity: "warning", title: "NEW_FINDING", description: "new finding", recommendation: "review", confidence: "medium", evidence: "NewForm.pas:2" }],
+          limitations: [],
+        },
+        flowTraces: [{ stableKey: "new-trace", formName: "NewForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "NewSave", resolvedHandler: "NewSave", status: "complete", confidence: "high", steps: [{ id: "new-step", type: "handler", label: "NewSave", filePath: "NewForm.pas", lineNumber: 1, confidence: "high" }], affectedTables: ["NEW_ORDER"], affectedFields: [{ table: "NEW_ORDER", field: "ID", operation: "write" }], warnings: [], truncated: false }],
+        delphiEventMap: [{ formName: "NewForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "NewSave", filePath: "NewForm.dfm", lineNumber: 1, resolvedMethod: "NewSave", resolvedFile: "NewForm.pas", status: "resolved", warnings: [] }],
+        delphiDataBindings: [{ formName: "NewForm", componentName: "OrderEdit", componentClass: "TDBEdit", dataSource: "OrdersSource", dataSet: "NEW_ORDER", dataField: "ID", readOnly: false, enabled: true, visible: true, accessHint: "read-write", confidence: "high", sourceFile: "NewForm.dfm", lineNumber: 2, warnings: [] }],
+        flowDocument: "# NEW FLOW",
+        dataDependencyDocument: "# NEW DATA",
+        risksDocument: "# NEW RISKS",
         rulesYaml: "rules: []",
-        summaryJson: { fileCount: 1 },
-        warningsJson: [],
-        errorMessage: null,
-        createdAt: new Date("2026-01-02T00:00:00.000Z"),
-        updatedAt: new Date("2026-01-02T00:00:00.000Z"),
-      }
-    );
+      },
+    });
+    fakeDb.store.projects[0].sourceFingerprint = run2.sourceFingerprint;
+    fakeDb.store.analysisResults.push(run1.row, run2.row);
 
     const archive = await buildReportArchive(1, 7, 1);
     const zip = await JSZip.loadAsync(Buffer.from(archive.base64, "base64"));
 
     await expect(zip.file("FLOW.md")!.async("text")).resolves.toBe("# OLD FLOW");
+    await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.toContain("OldForm.pas");
+    await expect(zip.file("FILE_INVENTORY.md")!.async("text")).resolves.not.toContain("NewForm.pas");
+    await expect(zip.file("DELPHI_FIELD_ACCESS.md")!.async("text")).resolves.toContain("OldForm.pas");
+    await expect(zip.file("DELPHI_FIELD_ACCESS.md")!.async("text")).resolves.toContain("field:ID");
+    await expect(zip.file("DELPHI_FIELD_ACCESS.md")!.async("text")).resolves.not.toContain("NewForm.pas");
+    await expect(zip.file("DELPHI_EVENT_MAP.md")!.async("text")).resolves.toContain("OldSave");
+    await expect(zip.file("DELPHI_EVENT_MAP.md")!.async("text")).resolves.not.toContain("NewSave");
+    await expect(zip.file("DELPHI_DATA_BINDINGS.md")!.async("text")).resolves.toContain("OLD_ORDER");
+    await expect(zip.file("DELPHI_DATA_BINDINGS.md")!.async("text")).resolves.not.toContain("NEW_ORDER");
+    await expect(zip.file("DELPHI_BUILD_DOCTOR.md")!.async("text")).resolves.toContain("OLD_FINDING");
+    await expect(zip.file("DELPHI_BUILD_DOCTOR.md")!.async("text")).resolves.not.toContain("NEW_FINDING");
+    await expect(zip.file("UI_DATABASE_FLOW.md")!.async("text")).resolves.toContain("OldSave");
+    await expect(zip.file("UI_DATABASE_FLOW.md")!.async("text")).resolves.toContain("OLD_ORDER");
+    await expect(zip.file("UI_DATABASE_FLOW.md")!.async("text")).resolves.not.toContain("NewSave");
+    await expect(zip.file("FULL_FINDINGS.json")!.async("text")).resolves.toContain("Old risk");
+    await expect(zip.file("FULL_FINDINGS.json")!.async("text")).resolves.not.toContain("New risk");
+    await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("OldForm.pas");
+    await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("Old risk");
+    await expect(zip.file("impact-analysis.json")!.async("text")).resolves.not.toContain("NewForm.pas");
+    const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { runNumber?: number; analysisResultId?: number; isHistoricalExport?: boolean };
+    expect(metadata.runNumber).toBe(1);
+    expect(metadata.analysisResultId).toBe(1);
+    expect(metadata.isHistoricalExport).toBe(true);
+    await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"analysisResultId\": 1");
+    await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"projectName\": \"historical-report\"");
+    await expect(zip.file("analysis-summary.json")!.async("text")).resolves.not.toContain("NewSave");
   });
 
   it("fails oversized report exports before ZIP generation allocates the archive buffer", async () => {
@@ -3468,23 +3601,37 @@ describe("project workflow", () => {
       importWarningsJson: [],
     });
     fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", content: "package main", lineCount: 1, status: "stored" });
-    const sourceFingerprint = calculateSourceFingerprint(fakeDb.store.files);
-    fakeDb.store.projects[0].sourceFingerprint = sourceFingerprint;
-    fakeDb.store.analysisResults.push({
+    const oversizedRun = createValidAnalysisRunFixture({
       id: 1,
       projectId: 1,
-      status: "completed",
-      sourceFingerprint,
-      flowMarkdown: "A".repeat(10 * 1024 * 1024),
-      dataDependencyMarkdown: "B".repeat(10 * 1024 * 1024),
-      risksMarkdown: "C".repeat(10 * 1024 * 1024),
-      rulesYaml: "rules: []",
-      summaryJson: { fileCount: 1 },
-      warningsJson: [],
-      errorMessage: null,
-      createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      runNumber: 1,
+      projectFiles: [{ path: "main.go", content: "package main" }],
+      projectContext: { projectName: "oversized-report", sourceType: "upload", focusLanguage: "go", importWarnings: [] },
+      result: {
+        status: "completed",
+        flowDocument: "A".repeat(10 * 1024 * 1024),
+        dataDependencyDocument: "B".repeat(10 * 1024 * 1024),
+        risksDocument: "C".repeat(10 * 1024 * 1024),
+        rulesYaml: "rules: []",
+        metrics: {
+          fileCount: 1,
+          eligibleFileCount: 1,
+          analyzedFileCount: 1,
+          skippedFileCount: 0,
+          heuristicFileCount: 0,
+          degradedFileCount: 0,
+          symbolCount: 0,
+          dependencyCount: 0,
+          fieldCount: 0,
+          fieldDependencyCount: 0,
+          riskCount: 0,
+          ruleCount: 0,
+          warningCount: 0,
+        },
+      },
     });
+    fakeDb.store.projects[0].sourceFingerprint = oversizedRun.sourceFingerprint;
+    fakeDb.store.analysisResults.push(oversizedRun.row);
 
     await expect(buildReportArchiveBuffer(1, 7)).rejects.toMatchObject({ code: "REPORT_TOO_LARGE" });
     expect(generateSpy).not.toHaveBeenCalled();

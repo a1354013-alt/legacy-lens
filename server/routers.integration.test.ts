@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 import JSZip from "jszip";
 import { MAX_LEGACY_BASE64_ZIP_BYTES } from "../shared/const";
+import type { ProjectAnalysisResult } from "./analyzer/types";
 import {
   analysisSnapshotOutputSchema,
+  analysisRunsPageOutputSchema,
   fieldsPageOutputSchema,
   jobByIdOutputSchema,
   projectByIdOutputSchema,
@@ -12,6 +14,8 @@ import {
   risksPageOutputSchema,
   symbolsPageOutputSchema,
 } from "../shared/contracts";
+import { parseAnalysisSnapshotStrict } from "./services/analysisHistory";
+import { createAnalysisResultFixture } from "./services/projectWorkflow.test.helpers";
 
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -20,11 +24,11 @@ type Condition =
   | { type: "inArray"; column: string; values: unknown[] }
   | { type: "and"; conditions: Condition[] }
   | undefined;
-type SortOrder = { type: "desc"; column: string } | undefined;
+type SortOrder = Array<{ type: "asc" | "desc"; column: string }> | undefined;
 
 let fakeDb: ReturnType<typeof createFakeDb>;
 let zipFiles: Array<{ path: string; fileName: string; content: string; language: string; size: number }> = [];
-let analyzerResult: Record<string, unknown> | null = null;
+let analyzerResult: ProjectAnalysisResult | null = null;
 let importWarnings: Array<{ code: string; message: string; filePath?: string }> = [];
 
 vi.mock("drizzle-orm", async () => {
@@ -34,6 +38,7 @@ vi.mock("drizzle-orm", async () => {
     eq: (column: { name: string }, value: unknown) => ({ type: "eq", column: column.name, value }),
     inArray: (column: { name: string }, values: unknown[]) => ({ type: "inArray", column: column.name, values }),
     and: (...conditions: Condition[]) => ({ type: "and", conditions: conditions.filter(Boolean) as Condition[] }),
+    asc: (column: { name: string }) => ({ type: "asc", column: column.name }),
     desc: (column: { name: string }) => ({ type: "desc", column: column.name }),
   };
 });
@@ -80,14 +85,29 @@ function matches(condition: Condition, row: Row): boolean {
   return condition.conditions.every((child) => matches(child, row));
 }
 
-function selectRows(store: Store, table: object, condition: Condition, sort: SortOrder, limit?: number, selection?: Row) {
+function selectRows(store: Store, table: object, condition: Condition, sort: SortOrder, limit?: number, selection?: Row, offset = 0) {
   let rows = [...store[getTableName(table)]];
   rows = rows.filter((row) => matches(condition, row));
 
-  if (sort?.type === "desc") {
-    rows.sort((left, right) => Number(right[sort.column] ?? 0) - Number(left[sort.column] ?? 0));
+  if (sort && sort.length > 0) {
+    rows.sort((left, right) => {
+      for (const entry of sort) {
+        const leftValue = left[entry.column];
+        const rightValue = right[entry.column];
+        if (leftValue === rightValue) continue;
+        const leftComparable = leftValue instanceof Date ? leftValue.getTime() : leftValue;
+        const rightComparable = rightValue instanceof Date ? rightValue.getTime() : rightValue;
+        if (leftComparable === rightComparable) continue;
+        const comparison = leftComparable! < rightComparable! ? -1 : 1;
+        return entry.type === "desc" ? comparison * -1 : comparison;
+      }
+      return 0;
+    });
   }
 
+  if (offset > 0) {
+    rows = rows.slice(offset);
+  }
   if (typeof limit === "number") {
     rows = rows.slice(0, limit);
   }
@@ -116,6 +136,7 @@ function createFakeDb(initialStore?: Partial<Store>) {
     risks: [],
     rules: [],
     analysisResults: [],
+    analysisBaselines: [],
     ...initialStore,
   };
 
@@ -127,6 +148,7 @@ function createFakeDb(initialStore?: Partial<Store>) {
     private condition: Condition;
     private limitCount?: number;
     private sort?: SortOrder;
+    private offsetCount = 0;
 
     constructor(private readonly selection?: Row, private readonly table?: object) {}
 
@@ -139,8 +161,8 @@ function createFakeDb(initialStore?: Partial<Store>) {
       return this;
     }
 
-    orderBy(sort: SortOrder) {
-      this.sort = sort;
+    orderBy(...sorts: Array<{ type: "asc" | "desc"; column: string } | undefined>) {
+      this.sort = sorts.filter(Boolean) as SortOrder;
       return this;
     }
 
@@ -149,11 +171,16 @@ function createFakeDb(initialStore?: Partial<Store>) {
       return this;
     }
 
+    offset(count: number) {
+      this.offsetCount = count;
+      return this;
+    }
+
     then<TResult1 = Row[], TResult2 = never>(
       onfulfilled?: ((value: Row[]) => TResult1 | PromiseLike<TResult1>) | null,
       onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
     ) {
-      const value = selectRows(store, this.table as object, this.condition, this.sort, this.limitCount, this.selection);
+      const value = selectRows(store, this.table as object, this.condition, this.sort, this.limitCount, this.selection, this.offsetCount);
       return Promise.resolve(value).then(onfulfilled, onrejected);
     }
   }
@@ -173,7 +200,13 @@ function createFakeDb(initialStore?: Partial<Store>) {
             const nextId = (idCounters.get(tableName) ?? 0) + 1;
             idCounters.set(tableName, nextId);
             lastId = nextId;
-            store[tableName].push({ ...row, id: nextId });
+            const now = new Date("2026-01-01T00:00:00.000Z");
+            store[tableName].push({
+              ...(row.createdAt === undefined ? { createdAt: now } : {}),
+              ...(row.updatedAt === undefined ? { updatedAt: now } : {}),
+              ...row,
+              id: nextId,
+            });
           }
           return { insertId: lastId };
         },
@@ -225,14 +258,11 @@ beforeEach(() => {
   fakeDb = createFakeDb();
   zipFiles = [{ path: "main.go", fileName: "main.go", content: "package main", language: "go", size: 12 }];
   importWarnings = [{ code: "IMPORT_ENCODING_DETECTED", message: "Detected Big5 encoding.", filePath: "legacy.pas" }];
-  analyzerResult = {
+  analyzerResult = createAnalysisResultFixture({
     projectId: 1,
     status: "partial",
-    language: "go",
     symbols: [{ stableKey: "main.go::main::1", name: "main", type: "function", file: "main.go", startLine: 1, endLine: 3, signature: "func main()" }],
-    dependencies: [],
     fieldReferences: [{ table: "dbo.Users", field: "Name", type: "read", file: "main.go", line: 2, symbolStableKey: "main.go::main::1", symbolName: "main" }],
-    schemaFields: [],
     risks: [{ title: "Dynamic SQL review", description: "Manual review is required.", severity: "medium", category: "other", sourceFile: "main.go", lineNumber: 2 }],
     rules: [{ ruleType: "validation", name: "review_user_name_reads", description: "Review dbo.Users.Name usage.", sourceFile: "main.go", lineNumber: 2 }],
     warnings: [{ code: "HEURISTIC_ANALYSIS", message: "best-effort", level: "note", heuristic: true }],
@@ -256,7 +286,7 @@ beforeEach(() => {
       ruleCount: 1,
       warningCount: 1,
     },
-  };
+  });
 });
 
 describe("appRouter integration", () => {
@@ -327,6 +357,20 @@ describe("appRouter integration", () => {
     expect(risksPageOutputSchema.parse(risksPage)).toEqual(risksPage);
     expect(risksPage.items).toEqual([expect.objectContaining({ title: "Dynamic SQL review", severity: "medium" })]);
 
+    const projectBeforeDownload = await caller.projects.getById(created.projectId);
+    expect(projectBeforeDownload?.sourceFingerprint).toBeTruthy();
+    const runs = await caller.analysis.listRuns({
+      projectId: created.projectId,
+      page: 1,
+      pageSize: 10,
+    });
+    expect(analysisRunsPageOutputSchema.parse(runs)).toEqual(runs);
+    expect(runs.items).toHaveLength(1);
+    expect(runs.items[0].sourceFingerprint).toBe(projectBeforeDownload?.sourceFingerprint);
+    const persistedRun = fakeDb.store.analysisResults.find((row: Row) => Number(row.projectId) === created.projectId);
+    expect(persistedRun).toBeTruthy();
+    parseAnalysisSnapshotStrict(String(persistedRun?.snapshotJson ?? ""));
+
     const archive = await caller.analysis.downloadReport({
       projectId: created.projectId,
       format: "zip",
@@ -338,13 +382,11 @@ describe("appRouter integration", () => {
     const metadata = zip.file("metadata.json");
     expect(metadata).toBeTruthy();
     const metadataJson = JSON.parse(await metadata!.async("text")) as Record<string, unknown>;
-    expect(metadataJson.projectName).toBe("integration-project");
-    expect(metadataJson.focusLanguage).toBe("go");
-    expect(typeof metadataJson.analysisVersion).toBe("string");
-    expect(metadataJson.fileCount).toBe(1);
-    expect(metadataJson.symbolCount).toBe(1);
-    expect(metadataJson.dependencyCount).toBe(0);
-    expect(metadataJson.warningCount).toBe(3);
+    expect(metadataJson.projectId).toBe(created.projectId);
+    expect(metadataJson.runNumber).toBe(1);
+    expect(typeof metadataJson.analyzerVersion).toBe("string");
+    expect(metadataJson.snapshotSchemaVersion).toBe(1);
+    expect(metadataJson.sourceFingerprint).toBe(projectBeforeDownload?.sourceFingerprint);
     expect(metadataJson.confidence).toEqual(expect.objectContaining({ score: expect.any(Number), level: expect.any(String) }));
 
     for (const expectedPath of [

@@ -453,6 +453,7 @@ export async function writeSuccessfulAnalysis(
     await transitionProjectState(tx, projectId, {
       status: "completed",
       analysisProgress: 100,
+      sourceFingerprint: snapshot.sourceFingerprint,
       errorMessage: getAnalysisResultErrorMessage(result),
       lastErrorCode: null,
       lastAnalyzedAt: new Date(),
