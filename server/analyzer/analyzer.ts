@@ -1,6 +1,7 @@
 import type { AnalysisMetrics, AnalysisStatus, AnalysisWarning } from "../../shared/contracts";
 import { calculateAnalysisConfidence } from "../../shared/analysisConfidence";
 import { analyzeDelphiBuild } from "./buildDoctor";
+import { formatDelphiResolverCandidates, resolveDelphiSymbol } from "./delphiSymbolResolver";
 import { getNormalizedFileExtension, isDelphiLikeLanguage } from "./delphiLanguage";
 import { DocumentGenerator } from "./documentGenerator";
 import { buildFieldIdentityKey, parseFieldIdentityKey } from "./fieldIdentity";
@@ -133,6 +134,10 @@ function getBaseName(filePath: string) {
   return fileName.replace(/\.[^.]+$/, "").toLowerCase();
 }
 
+function ownerNameForForm(binding: DelphiEventBinding) {
+  return binding.formClass ?? `T${binding.formName}`;
+}
+
 function collectDfmProjectMetadata(files: AnalyzableFile[]) {
   const eventBindings: DelphiEventBinding[] = [];
   const dataBindings: DelphiDataBinding[] = [];
@@ -174,22 +179,21 @@ function resolveDelphiEventMap(bindings: DelphiEventBinding[], symbols: Analyzed
 
   return bindings.map((binding) => {
     const dfmBaseName = getBaseName(binding.filePath);
-    const sameBase = pascalMethods.filter((method) => getBaseName(method.file) === dfmBaseName);
-    const candidates = sameBase.length > 0 ? sameBase : pascalMethods;
-    const qualifiedFormCandidates = [binding.formClass, `T${binding.formName}`]
-      .filter((value): value is string => Boolean(value))
-      .map((formClass) => `${formClass}.${binding.handlerName}`.toLowerCase());
-
-    const resolved =
-      candidates.find((method) => qualifiedFormCandidates.includes((method.qualifiedName ?? method.name).toLowerCase())) ??
-      candidates.find((method) => (method.qualifiedName ?? "").toLowerCase().endsWith(`.${binding.handlerName.toLowerCase()}`)) ??
-      candidates.find((method) => method.name.toLowerCase() === binding.handlerName.toLowerCase()) ??
-      pascalMethods.find((method) => qualifiedFormCandidates.includes((method.qualifiedName ?? method.name).toLowerCase())) ??
-      pascalMethods.find((method) => method.name.toLowerCase() === binding.handlerName.toLowerCase());
-
+    const resolution = resolveDelphiSymbol({
+      symbols: pascalMethods,
+      qualifiedName: `${ownerNameForForm(binding)}.${binding.handlerName}`,
+      name: binding.handlerName,
+      ownerName: ownerNameForForm(binding),
+      pascalUnit: dfmBaseName,
+    });
+    const resolved = resolution.symbol;
     const warnings: string[] = [];
     if (!resolved) {
-      warnings.push("No matching Pascal procedure/function/method was found by handler name, form-qualified name, or same-basename pairing.");
+      if (resolution.ambiguous) {
+        warnings.push(`Handler ${binding.handlerName} matched multiple Pascal symbols: ${formatDelphiResolverCandidates(resolution.candidates).join("; ")}`);
+      } else {
+        warnings.push("No matching Pascal procedure/function/method was found by stable key, qualified name, owner, same unit, or unique project candidate.");
+      }
     } else if (getBaseName(resolved.file) !== dfmBaseName) {
       warnings.push("Resolved outside the same DFM/PAS basename; verify inherited forms or cross-unit handler wiring.");
     }
@@ -414,13 +418,14 @@ export class Analyzer {
     const delphiEventMap = resolveDelphiEventMap(dfmMetadata.eventBindings, symbols);
     const sqlStatements = collectSqlEvidence(files, symbols, fieldReferences);
     const buildDoctor = analyzeDelphiBuild(files);
-    const flowTraces = buildDelphiFlowTraces({
+    const flowTraceResult = buildDelphiFlowTraces({
       delphiEventMap,
       delphiDataBindings: dfmMetadata.dataBindings,
       symbols,
       dependencies: combinedDependencies,
       sqlStatements,
     });
+    const flowTraces = flowTraceResult.traces;
     warnings.push(...dfmMetadata.warnings);
     for (const eventEntry of delphiEventMap) {
       if (eventEntry.status === "unresolved") {
@@ -513,6 +518,7 @@ export class Analyzer {
       sqlStatements,
       buildDoctor,
       flowTraces,
+      flowTraceSummary: flowTraceResult.summary,
       riskScore: this.riskDetector.calculateRiskScore(combinedRisks),
       metrics,
     };

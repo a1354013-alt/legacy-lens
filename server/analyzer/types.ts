@@ -62,6 +62,7 @@ export interface DelphiDataBinding {
   componentClass: string;
   dataSource: string | null;
   dataSet: string | null;
+  resolvedTable?: string | null;
   dataField: string | null;
   readOnly: boolean | null;
   enabled: boolean | null;
@@ -149,6 +150,7 @@ export interface ProjectAnalysisResult {
   sqlStatements: SqlStatementEvidence[];
   buildDoctor: DelphiBuildDoctorResult;
   flowTraces: DelphiFlowTrace[];
+  flowTraceSummary: import("../../shared/contracts").DelphiFlowTraceRunSummary;
   riskScore: number;
   metrics: AnalysisMetrics;
 }

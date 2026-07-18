@@ -26,7 +26,8 @@ function operationForSql(sql: string): SqlStatementEvidence["operation"] {
 }
 
 function tableOperation(statementOperation: SqlStatementEvidence["operation"], table: string) {
-  if (statementOperation === "select" || statementOperation === "execute" || statementOperation === "unknown") return "read" as const;
+  if (statementOperation === "select") return "read" as const;
+  if (statementOperation === "execute" || statementOperation === "unknown") return "unknown" as const;
   if (statementOperation === "insert" || statementOperation === "update" || statementOperation === "delete") return "write" as const;
   return table ? "unknown" as const : "unknown" as const;
 }
@@ -49,12 +50,12 @@ function detectDynamicSql(fileContent: string, sql: string) {
 }
 
 export function collectSqlEvidence(files: AnalyzableFile[], symbols: AnalyzedSymbol[], fieldReferences: FieldReference[]): SqlStatementEvidence[] {
-  const referencesByFileLine = new Map<string, FieldReference[]>();
+  const referencesByFile = new Map<string, FieldReference[]>();
   for (const reference of fieldReferences) {
-    const key = `${normalizePath(reference.file)}:${reference.line}`;
-    const bucket = referencesByFileLine.get(key) ?? [];
+    const key = normalizePath(reference.file);
+    const bucket = referencesByFile.get(key) ?? [];
     bucket.push(reference);
-    referencesByFileLine.set(key, bucket);
+    referencesByFile.set(key, bucket);
   }
 
   const evidence: SqlStatementEvidence[] = [];
@@ -65,9 +66,12 @@ export function collectSqlEvidence(files: AnalyzableFile[], symbols: AnalyzedSym
       const owner = resolveMostSpecificSymbol(symbols, statement.line, normalizedPath);
       const operation = operationForSql(normalizedSql);
       const tables = collectTables(normalizedSql);
-      const references = referencesByFileLine.get(`${normalizedPath}:${statement.line}`) ?? [];
       const dynamic = detectDynamicSql(file.content, statement.sql);
       const hash = createHash("sha256").update(`${normalizedPath}:${statement.line}:${normalizedSql}`).digest("hex").slice(0, 16);
+      const endLine = statement.line + Math.max(0, statement.sql.split(/\r?\n/).length - 1);
+      const references = (referencesByFile.get(normalizedPath) ?? []).filter(
+        (reference) => reference.line >= statement.line && reference.line <= endLine
+      );
 
       evidence.push({
         stableKey: `${normalizedPath}::sql::${statement.line}::${hash}`,
@@ -75,7 +79,7 @@ export function collectSqlEvidence(files: AnalyzableFile[], symbols: AnalyzedSym
         ownerSymbolName: owner?.qualifiedName ?? owner?.name ?? null,
         filePath: normalizedPath,
         startLine: statement.line,
-        endLine: statement.line + Math.max(0, statement.sql.split(/\r?\n/).length - 1),
+        endLine,
         operation,
         normalizedSql,
         tables: tables.map((table) => ({ name: table, operation: tableOperation(operation, table) })),

@@ -197,8 +197,9 @@ export function buildAnalysisRunSnapshot(
     delphiEventMap: sortByJson((result.delphiEventMap ?? []).map((entry) => ({ ...entry, filePath: normalizePath(entry.filePath), resolvedFile: entry.resolvedFile ? normalizePath(entry.resolvedFile) : null }))),
     delphiDataBindings: sortByJson((result.delphiDataBindings ?? []).map((binding) => ({ ...binding, sourceFile: normalizePath(binding.sourceFile) }))),
     sqlStatements: sortByJson(result.sqlStatements ?? []),
-    buildDoctor: delphiBuildDoctorResultSchema.parse(result.buildDoctor ?? { status: "not_applicable", score: 100, compilerFamily: { value: null, confidence: "low", evidence: [] }, projectEntries: [], configurations: [], platforms: [], defines: [], searchPaths: [], runtimePackages: [], requiredPackages: [], requiredUnits: [], missingUnits: [], unresolvedUnits: [], missingPackages: [], externalDependencies: [], findings: [], limitations: [] }),
+    buildDoctor: delphiBuildDoctorResultSchema.parse(result.buildDoctor ?? { status: "not_applicable", score: 100, compilerFamily: { value: null, confidence: "low", evidence: [] }, projectEntries: [], configurations: [], platforms: [], defines: [], searchPaths: [], includePaths: [], outputPaths: [], runtimePackages: [], requiredPackages: [], packageResolutions: [], requiredUnits: [], missingUnits: [], unresolvedUnits: [], missingPackages: [], externalDependencies: [], findings: [], limitations: [] }),
     flowTraces: sortByJson(result.flowTraces ?? []),
+    flowTraceSummary: result.flowTraceSummary ?? { candidateTraceCount: result.flowTraces?.length ?? 0, persistedTraceCount: result.flowTraces?.length ?? 0, globalTruncated: false },
   };
   const snapshotJson = serializeSnapshot(snapshot);
   return { snapshot, sourceFingerprint: calculateSourceFingerprint(projectFiles), snapshotJson };
@@ -418,8 +419,9 @@ export async function materializeLegacySnapshotIfMissing(db: DbHandle, projectId
     delphiEventMap: legacy.summaryJson?.delphiEventMap ?? [],
     delphiDataBindings: legacy.summaryJson?.delphiDataBindings ?? [],
     sqlStatements: [],
-    buildDoctor: { status: "not_applicable", score: 100, compilerFamily: { value: null, confidence: "low", evidence: [] }, projectEntries: [], configurations: [], platforms: [], defines: [], searchPaths: [], runtimePackages: [], requiredPackages: [], requiredUnits: [], missingUnits: [], unresolvedUnits: [], missingPackages: [], externalDependencies: [], findings: [], limitations: ["Legacy snapshot was backfilled from projection tables; Build Doctor was not available for the original run."] },
+    buildDoctor: { status: "not_applicable", score: 100, compilerFamily: { value: null, confidence: "low", evidence: [] }, projectEntries: [], configurations: [], platforms: [], defines: [], searchPaths: [], includePaths: [], outputPaths: [], runtimePackages: [], requiredPackages: [], packageResolutions: [], requiredUnits: [], missingUnits: [], unresolvedUnits: [], missingPackages: [], externalDependencies: [], findings: [], limitations: ["Legacy snapshot was backfilled from projection tables; Build Doctor was not available for the original run."] },
     flowTraces: [],
+    flowTraceSummary: { candidateTraceCount: 0, persistedTraceCount: 0, globalTruncated: false },
   };
   const snapshotJson = serializeSnapshot(snapshot);
   await db.update(analysisResults).set({

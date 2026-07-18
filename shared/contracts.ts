@@ -126,6 +126,7 @@ const delphiDataBindingSchema = z.object({
   componentClass: z.string(),
   dataSource: z.string().nullable(),
   dataSet: z.string().nullable(),
+  resolvedTable: z.string().nullable().optional(),
   dataField: z.string().nullable(),
   readOnly: z.boolean().nullable(),
   enabled: z.boolean().nullable(),
@@ -192,6 +193,23 @@ export const delphiBuildFindingSchema = z.object({
 });
 export type DelphiBuildFinding = z.infer<typeof delphiBuildFindingSchema>;
 
+export const delphiPackageResolutionSchema = z.enum([
+  "project_local",
+  "delphi_standard",
+  "external_unverified",
+  "missing",
+  "ambiguous",
+]);
+export type DelphiPackageResolution = z.infer<typeof delphiPackageResolutionSchema>;
+
+export const delphiPackageResolutionDetailSchema = z.object({
+  packageName: z.string(),
+  resolution: delphiPackageResolutionSchema,
+  resolvedPath: z.string().optional(),
+  evidence: z.array(z.string()),
+});
+export type DelphiPackageResolutionDetail = z.infer<typeof delphiPackageResolutionDetailSchema>;
+
 export const delphiBuildDoctorResultSchema = z.object({
   status: z.enum(["not_applicable", "ready", "ready_with_warnings", "blocked"]),
   score: z.number().int().min(0).max(100),
@@ -205,8 +223,11 @@ export const delphiBuildDoctorResultSchema = z.object({
   platforms: z.array(z.string()),
   defines: z.array(z.string()),
   searchPaths: z.array(z.string()),
+  includePaths: z.array(z.string()),
+  outputPaths: z.array(z.string()),
   runtimePackages: z.array(z.string()),
   requiredPackages: z.array(z.string()),
+  packageResolutions: z.array(delphiPackageResolutionDetailSchema).default([]),
   requiredUnits: z.array(z.string()),
   missingUnits: z.array(z.string()),
   unresolvedUnits: z.array(z.string()),
@@ -247,6 +268,13 @@ export const delphiFlowTraceSchema = z.object({
   truncated: z.boolean(),
 });
 export type DelphiFlowTrace = z.infer<typeof delphiFlowTraceSchema>;
+
+export const delphiFlowTraceRunSummarySchema = z.object({
+  candidateTraceCount: z.number().int().nonnegative(),
+  persistedTraceCount: z.number().int().nonnegative(),
+  globalTruncated: z.boolean(),
+});
+export type DelphiFlowTraceRunSummary = z.infer<typeof delphiFlowTraceRunSummarySchema>;
 
 export const analysisRunProjectContextSchema = z.object({
   projectName: z.string(),
@@ -343,6 +371,7 @@ export const analysisRunSnapshotV1Schema = z.object({
   sqlStatements: z.array(sqlStatementEvidenceSchema).default([]),
   buildDoctor: delphiBuildDoctorResultSchema,
   flowTraces: z.array(delphiFlowTraceSchema),
+  flowTraceSummary: delphiFlowTraceRunSummarySchema.default({ candidateTraceCount: 0, persistedTraceCount: 0, globalTruncated: false }),
 });
 export type AnalysisRunSnapshotV1 = z.infer<typeof analysisRunSnapshotV1Schema>;
 
@@ -654,6 +683,9 @@ export const flowTraceSummarySchema = z.object({
   readPaths: z.number().int().nonnegative(),
   writePaths: z.number().int().nonnegative(),
   affectedTables: z.number().int().nonnegative(),
+  candidateTraceCount: z.number().int().nonnegative().default(0),
+  persistedTraceCount: z.number().int().nonnegative().default(0),
+  globalTruncated: z.boolean().default(false),
 });
 
 export const summarySymbolSchema = z.object({

@@ -185,7 +185,7 @@ Audience: Delphi engineers, release owners, and migration teams checking whether
 
 Data sources: Persisted run snapshot only. The report uses imported `.dpr`, `.dpk`, `.dproj`, `.groupproj`, `.bdsproj`, `.cfg`, `.dof`, `.rc`, and Pascal/form evidence. It does not invoke Delphi, MSBuild, scripts, binaries, or project commands.
 
-Companion JSON: `delphi-build-doctor.json` contains the full persisted Build Doctor result, including readiness score, status, compiler-family evidence, project entries, configurations, platforms, defines, search paths, packages, missing/unresolved units, findings, confidence, evidence, recommendations, and limitations.
+Companion JSON: `delphi-build-doctor.json` contains the full persisted Build Doctor result, including readiness score, status, compiler-family evidence, project entries, configurations, platforms, defines, search paths, include paths, output paths, package resolution classification, missing/unresolved units, findings, confidence, evidence, recommendations, and limitations.
 
 ### UI_DATABASE_FLOW.md
 
@@ -193,9 +193,9 @@ Purpose: Summarizes deterministic UI event/data-binding to SQL/table/field trace
 
 Audience: Delphi engineers, database migration reviewers, QA leads, and analysts tracing UI behavior to database impact.
 
-Data sources: Persisted static-analysis evidence only: DFM/FMX event bindings, resolved handlers, call dependencies, SQL statement evidence, field references, and data bindings. The Markdown caps representative traces and discloses omitted counts. The companion `ui-database-flow.json` contains the persisted trace set subject to the configured analysis-size guard.
+Data sources: Persisted static-analysis evidence only: DFM/FMX event bindings, resolved handlers, confirmed static call dependencies, SQL statement evidence, field references, and data bindings. Generic references do not extend call chains. The Markdown caps representative traces and discloses omitted counts. The companion `ui-database-flow.json` contains the persisted trace set subject to the configured analysis-size guard, plus persisted candidate/persisted trace counts and global truncation summary metadata in the snapshot.
 
-Limitations: Runtime-created controls, inherited event wiring, dynamic SQL, runtime DataSource/DataSet assignment, and unresolved calls can make traces partial or unresolved. Legacy Lens does not use an LLM to invent missing flow steps.
+Limitations: Runtime-created controls, inherited event wiring, dynamic SQL, runtime DataSource/DataSet assignment, unresolved DataSet-to-table mappings, and ambiguous or unresolved calls can make traces partial or unresolved. Legacy Lens does not use an LLM to invent missing flow steps.
 
 ### LIMITATIONS.md
 
@@ -316,6 +316,7 @@ Delphi and C++Builder projects often rely on runtime behavior that static analys
 - Dynamic SQL can only be partially reconstructed.
 - DFM, FMX, PAS, DPR, and INC encoding issues may affect parsed results.
 - DataSource and DataSet runtime assignment may not be resolved.
+- DataSet component names are not treated as confirmed database tables unless static table evidence exists.
 - Runtime-created components may not appear in DFM/FMX analysis.
 
 These limitations do not make the report unusable; they define where human review is still required.

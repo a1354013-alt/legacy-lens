@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDelphiFlowTraces } from "./flowTracer";
+import { buildDelphiFlowTraces, FLOW_TRACE_LIMITS } from "./flowTracer";
 import { buildSymbolStableKey, type AnalyzedSymbol } from "./types";
 
 function symbol(name: string, line: number): AnalyzedSymbol {
@@ -20,7 +20,7 @@ describe("Delphi flow tracer", () => {
     const validateOrder = symbol("ValidateOrder", 20);
     const saveOrder = symbol("SaveOrder", 30);
 
-    const traces = buildDelphiFlowTraces({
+    const result = buildDelphiFlowTraces({
       delphiEventMap: [
         {
           formName: "OrderForm",
@@ -66,17 +66,198 @@ describe("Delphi flow tracer", () => {
       ],
     });
 
-    expect(traces).toHaveLength(1);
-    expect(traces[0]?.status).toBe("complete");
-    expect(traces[0]?.steps.map((step) => step.label)).toEqual(
+    expect(result.traces).toHaveLength(1);
+    expect(result.summary).toEqual({ candidateTraceCount: 1, persistedTraceCount: 1, globalTruncated: false });
+    expect(result.traces[0]?.status).toBe("complete");
+    expect(result.traces[0]?.steps.map((step) => step.label)).toEqual(
       expect.arrayContaining(["TButton.btnSave", "OnClick", "TOrderForm.btnSaveClick", "TOrderForm.ValidateOrder", "TOrderForm.SaveOrder", "UPDATE dbo.ORDER_M"])
     );
-    expect(traces[0]?.affectedFields).toEqual(
+    expect(result.traces[0]?.affectedFields).toEqual(
       expect.arrayContaining([
         { table: "dbo.ORDER_M", field: "STATUS", operation: "write" },
         { table: "dbo.ORDER_M", field: "UPDATE_USER", operation: "write" },
         { table: "dbo.ORDER_M", field: "ORDER_ID", operation: "read" },
       ])
     );
+  });
+
+  it("does not follow generic references as call edges", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const referencedOnly = symbol("ReferencedOnly", 20);
+
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [
+        {
+          formName: "OrderForm",
+          formClass: "TOrderForm",
+          componentName: "btnSave",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "btnSaveClick",
+          filePath: "MainForm.dfm",
+          lineNumber: 4,
+          resolvedMethod: "TOrderForm.btnSaveClick",
+          resolvedFile: "MainForm.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick, referencedOnly],
+      dependencies: [
+        { from: btnSaveClick.stableKey, to: referencedOnly.stableKey, fromName: "btnSaveClick", toName: "ReferencedOnly", type: "references", line: 12 },
+      ],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.steps.map((step) => step.label)).not.toContain("TOrderForm.ReferencedOnly");
+  });
+
+  it("marks ambiguous same-name call targets as partial instead of silently choosing one", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const duplicateA = symbol("LoadOrder", 20);
+    const duplicateB: AnalyzedSymbol = { ...symbol("LoadOrder", 40), file: "OtherForm.pas", stableKey: buildSymbolStableKey({ file: "OtherForm.pas", name: "TOrderForm.LoadOrder", startLine: 40 }) };
+
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [
+        {
+          formName: "OrderForm",
+          formClass: "TOrderForm",
+          componentName: "btnSave",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "btnSaveClick",
+          filePath: "MainForm.dfm",
+          lineNumber: 4,
+          resolvedMethod: "TOrderForm.btnSaveClick",
+          resolvedFile: "MainForm.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick, duplicateA, duplicateB],
+      dependencies: [
+        { from: btnSaveClick.stableKey, fromName: "btnSaveClick", toName: "LoadOrder", type: "calls", line: 12 },
+      ],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.status).toBe("partial");
+    expect(result.traces[0]?.warnings.join(" ")).toContain("Ambiguous call target LoadOrder");
+  });
+
+  it("keeps dataset component bindings out of affected tables when no static table mapping exists", () => {
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [],
+      delphiDataBindings: [
+        {
+          formName: "OrderForm",
+          componentName: "edtName",
+          componentClass: "TDBEdit",
+          dataSource: "dsCustomer",
+          dataSet: "qryCustomer",
+          dataField: "CUSTOMER_NAME",
+          readOnly: false,
+          enabled: true,
+          visible: true,
+          accessHint: "read-write",
+          confidence: "high",
+          sourceFile: "OrderForm.dfm",
+          lineNumber: 10,
+          warnings: [],
+        },
+      ],
+      symbols: [],
+      dependencies: [],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.affectedTables).toEqual([]);
+    expect(result.traces[0]?.steps.map((step) => step.label)).toContain("CUSTOMER_NAME");
+    expect(result.traces[0]?.steps.map((step) => step.label)).not.toContain("qryCustomer.CUSTOMER_NAME");
+    expect(result.traces[0]?.warnings.join(" ")).toContain("database table could not be determined statically");
+  });
+
+  it("uses resolved table mappings for data bindings when static table evidence exists", () => {
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [],
+      delphiDataBindings: [
+        {
+          formName: "OrderForm",
+          componentName: "edtName",
+          componentClass: "TDBEdit",
+          dataSource: "dsCustomer",
+          dataSet: "qryCustomer",
+          resolvedTable: "dbo.CUSTOMER",
+          dataField: "CUSTOMER_NAME",
+          readOnly: false,
+          enabled: true,
+          visible: true,
+          accessHint: "read-write",
+          confidence: "high",
+          sourceFile: "OrderForm.dfm",
+          lineNumber: 10,
+          warnings: [],
+        },
+      ],
+      symbols: [],
+      dependencies: [],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.affectedTables).toEqual(["dbo.CUSTOMER"]);
+    expect(result.traces[0]?.steps.map((step) => step.label)).toContain("dbo.CUSTOMER.CUSTOMER_NAME");
+  });
+
+  it("reports global trace truncation when candidate traces exceed the configured limit", () => {
+    const originalLimit = FLOW_TRACE_LIMITS.maxTracesPerRun;
+    (FLOW_TRACE_LIMITS as any).maxTracesPerRun = 1;
+    try {
+      const result = buildDelphiFlowTraces({
+        delphiEventMap: [
+          {
+            formName: "FormA",
+            formClass: "TFormA",
+            componentName: "BtnA",
+            componentClass: "TButton",
+            eventName: "OnClick",
+            handlerName: "BtnAClick",
+            filePath: "FormA.dfm",
+            lineNumber: 1,
+            resolvedMethod: "TFormA.BtnAClick",
+            resolvedFile: "MainForm.pas",
+            status: "resolved",
+            warnings: [],
+          },
+          {
+            formName: "FormB",
+            formClass: "TFormB",
+            componentName: "BtnB",
+            componentClass: "TButton",
+            eventName: "OnClick",
+            handlerName: "BtnBClick",
+            filePath: "FormB.dfm",
+            lineNumber: 1,
+            resolvedMethod: "TFormB.BtnBClick",
+            resolvedFile: "OtherForm.pas",
+            status: "resolved",
+            warnings: [],
+          },
+        ],
+        delphiDataBindings: [],
+        symbols: [
+          { ...symbol("BtnAClick", 10), qualifiedName: "TFormA.BtnAClick" },
+          { ...symbol("BtnBClick", 20), qualifiedName: "TFormB.BtnBClick", file: "OtherForm.pas", stableKey: buildSymbolStableKey({ file: "OtherForm.pas", name: "TFormB.BtnBClick", startLine: 20 }) },
+        ],
+        dependencies: [],
+        sqlStatements: [],
+      });
+
+      expect(result.summary).toEqual({ candidateTraceCount: 2, persistedTraceCount: 1, globalTruncated: true });
+      expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_LIMIT_REACHED");
+    } finally {
+      (FLOW_TRACE_LIMITS as any).maxTracesPerRun = originalLimit;
+    }
   });
 });

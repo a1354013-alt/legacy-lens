@@ -48,6 +48,8 @@ This document records intentionally unfinished or bounded behavior so deployment
 - Analysis history stores immutable JSON snapshots for usable runs. The normalized project tables remain only the latest usable projection.
 - Failed reanalysis is recorded through project/job failure state and does not erase the previous usable run or its projection.
 - Build Doctor is a static heuristic audit. It never compiles Delphi projects and never executes imported project files, scripts, binaries, MSBuild files, or commands.
-- Build Doctor cannot prove third-party package availability when a dependency is supplied by an IDE library path that was not imported.
-- UI-to-database flow tracing follows persisted static evidence only. Dynamic SQL, runtime event assignment, runtime-created components, inherited form behavior, and runtime data binding can be incomplete.
+- Build Doctor cannot prove third-party package availability when a dependency is supplied by an IDE library path that was not imported. Unknown packages without concrete local-path evidence are classified as `external_unverified`, not `missing`.
+- Standard Delphi namespace classification is conservative and heuristic. Common namespaces such as `System.*`, `Winapi.*`, `Vcl.*`, `Data.*`, `Xml.*`, `Soap.*`, `Datasnap.*`, `FireDAC.*`, `FMX.*`, and `REST.*` are treated as standard, but third-party namespaces still require manual review.
+- UI-to-database flow tracing follows persisted static evidence only. Dynamic SQL, runtime event assignment, runtime-created components, inherited form behavior, ambiguous same-name method resolution, unresolved DataSet-to-table mapping, and runtime data binding can be incomplete.
+- Flow tracing traverses only confirmed static call edges. Generic symbol references are preserved as supporting evidence elsewhere, but they do not extend call chains.
 - Diff reports do not perform fuzzy file rename detection in v1.1.

@@ -1687,9 +1687,13 @@ export function parseDfmContent(content: string, filePath: string): DfmAnalysisR
   );
 
   const dataSourceByName = new Map<string, string>();
+  const dataSetTableByName = new Map<string, string>();
   for (const dfmObject of objects) {
     if (/^TDataSource$/i.test(dfmObject.objectType) && dfmObject.properties.DataSet) {
       dataSourceByName.set(dfmObject.objectName.toLowerCase(), dfmObject.properties.DataSet);
+    }
+    if (dfmObject.properties.TableName) {
+      dataSetTableByName.set(dfmObject.objectName.toLowerCase(), dfmObject.properties.TableName);
     }
   }
 
@@ -1701,6 +1705,7 @@ export function parseDfmContent(content: string, filePath: string): DfmAnalysisR
 
     const dataSource = dfmObject.properties.DataSource ?? null;
     const dataSet = dataSource ? (dataSourceByName.get(dataSource.toLowerCase()) ?? null) : null;
+    const resolvedTable = dataSet ? (dataSetTableByName.get(dataSet.toLowerCase()) ?? null) : null;
     const readOnly = parseDfmBoolean(dfmObject.properties.ReadOnly);
     const enabled = parseDfmBoolean(dfmObject.properties.Enabled);
     const visible = parseDfmBoolean(dfmObject.properties.Visible);
@@ -1708,6 +1713,7 @@ export function parseDfmContent(content: string, filePath: string): DfmAnalysisR
     const baseWarnings: string[] = [];
     if (!dataSource) baseWarnings.push("DataSource property not found; runtime assignment may be required.");
     if (dataSource && !dataSet) baseWarnings.push(`DataSource ${dataSource} did not resolve to a DFM DataSet property.`);
+    if (dataSet && !resolvedTable) baseWarnings.push("DataSet component was resolved, but its database table could not be determined statically.");
     if (dfmObject.objectType === "TDBGrid" && dfmObject.columnFieldNames.length === 0) {
       baseWarnings.push("TDBGrid has no static Columns.FieldName entries; fields may be configured at runtime.");
     }
@@ -1720,6 +1726,7 @@ export function parseDfmContent(content: string, filePath: string): DfmAnalysisR
         componentClass: dfmObject.objectType,
         dataSource,
         dataSet,
+        resolvedTable,
         dataField,
         readOnly,
         enabled,

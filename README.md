@@ -146,9 +146,9 @@ Files at the ZIP root:
 
 Analysis runs are immutable in v1.1. The normalized project-scoped tables (`symbols`, `dependencies`, `fields`, `fieldDependencies`, `risks`, and `rules`) remain the latest usable projection for pagination and impact analysis, while every usable run is preserved in `analysisResults.snapshotJson` with a deterministic source fingerprint. Failed reanalysis does not erase or rewrite the previous usable run.
 
-Build Doctor is static and heuristic. It imports Delphi project metadata and reports missing explicit unit paths, unresolved units/packages, absolute or escaping search paths, resources, duplicated unit names, and configuration signals, but it does not compile the project or execute project files, scripts, binaries, MSBuild, or commands.
+Build Doctor is static and heuristic. It imports Delphi project metadata and reports missing explicit unit paths, package resolution classification (`project_local`, `delphi_standard`, `external_unverified`, `missing`, `ambiguous`), unresolved non-standard units, absolute or escaping search paths, resources, duplicated unit names, and configuration signals, but it does not compile the project or execute project files, scripts, binaries, MSBuild, or commands.
 
-UI-to-database flow tracing uses persisted static evidence only: DFM/FMX event bindings, resolved Pascal handlers, call dependencies, SQL evidence, field references, and static data bindings. Dynamic SQL, runtime-created components, runtime event assignment, inherited forms, and runtime data binding can remain incomplete and are reported with lower confidence or warnings.
+UI-to-database flow tracing uses persisted static evidence only: DFM/FMX event bindings, resolved Pascal handlers, confirmed static call dependencies, SQL evidence, field references, and static data bindings. Generic symbol references do not extend call chains. Dynamic SQL, runtime-created components, runtime event assignment, inherited forms, unresolved handler ambiguity, unresolved DataSet-to-table mappings, and runtime data binding can remain incomplete and are reported with lower confidence or warnings.
 
 Minimal excerpt (shape) of `metadata.json`:
 
@@ -637,7 +637,7 @@ Import pipeline is intentionally bounded:
 - SQL extraction handles common table/field and query patterns but is not a complete SQL parser, optimizer, or execution-plan analyzer.
 - Go extraction focuses on structural symbols and dependencies; it does not replace `go/types`, `gopls`, build tags, or module-aware compilation.
 - Go interface dispatch and package-alias-based construction are not resolved with compiler-grade certainty.
-- Complex Delphi inheritance, `with` blocks, runtime component wiring, and dataset ownership can still require manual review.
+- Complex Delphi inheritance, `with` blocks, runtime component wiring, and dataset ownership/table mapping can still require manual review.
 - Dynamic SQL field extraction is incomplete for heavily constructed SQL strings.
 - Results do **not** replace a compiler, runtime tracing, DB execution plan analysis, or a full SQL AST parser.
 - Mixed-language repos are supported; the **Focus language** is the primary report focus language, not an analysis filter.

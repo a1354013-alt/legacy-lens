@@ -1,4 +1,5 @@
-import type { DelphiFlowTrace, SqlStatementEvidence } from "../../shared/contracts";
+import type { DelphiFlowTrace, DelphiFlowTraceRunSummary, SqlStatementEvidence } from "../../shared/contracts";
+import { formatDelphiResolverCandidates, resolveDelphiSymbol } from "./delphiSymbolResolver";
 import type { DelphiDataBinding, DelphiEventMapEntry, SymbolDependency, AnalyzedSymbol } from "./types";
 
 export const FLOW_TRACE_LIMITS = {
@@ -6,10 +7,6 @@ export const FLOW_TRACE_LIMITS = {
   maxStepsPerTrace: 200,
   maxTracesPerRun: 2_000,
 } as const;
-
-function normalize(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase();
-}
 
 function stablePart(value: string | null | undefined) {
   return (value ?? "unknown").replace(/[^\w.-]+/g, "_");
@@ -21,27 +18,29 @@ function confidenceForWarnings(warnings: string[]) {
   return "high" as const;
 }
 
+function baseNameWithoutExtension(path: string | null | undefined) {
+  return (path ?? "").replace(/\\/g, "/").split("/").at(-1)?.replace(/\.[^.]+$/, "").toLowerCase() ?? "";
+}
+
+function sortedUniqueWarnings(warnings: string[]) {
+  return Array.from(new Set(warnings)).sort((left, right) => left.localeCompare(right));
+}
+
+function ownerName(symbol: AnalyzedSymbol | null) {
+  if (!symbol?.qualifiedName || !symbol.qualifiedName.includes(".")) return null;
+  return symbol.qualifiedName.split(".").slice(0, -1).join(".");
+}
+
 export function buildDelphiFlowTraces(input: {
   delphiEventMap: DelphiEventMapEntry[];
   delphiDataBindings: DelphiDataBinding[];
   symbols: AnalyzedSymbol[];
   dependencies: SymbolDependency[];
   sqlStatements: SqlStatementEvidence[];
-}): DelphiFlowTrace[] {
-  const symbolByKey = new Map(input.symbols.map((symbol) => [symbol.stableKey, symbol]));
-  const symbolsByName = new Map<string, AnalyzedSymbol[]>();
-  for (const symbol of input.symbols) {
-    for (const key of [symbol.name, symbol.qualifiedName].filter((value): value is string => Boolean(value))) {
-      const normalized = normalize(key);
-      const bucket = symbolsByName.get(normalized) ?? [];
-      bucket.push(symbol);
-      symbolsByName.set(normalized, bucket);
-    }
-  }
-
+}): { traces: DelphiFlowTrace[]; summary: DelphiFlowTraceRunSummary } {
   const callsBySource = new Map<string, SymbolDependency[]>();
   for (const dependency of input.dependencies) {
-    if (dependency.type !== "calls" && dependency.type !== "references") continue;
+    if (dependency.type !== "calls") continue;
     const bucket = callsBySource.get(dependency.from) ?? [];
     bucket.push(dependency);
     callsBySource.set(dependency.from, bucket);
@@ -55,9 +54,9 @@ export function buildDelphiFlowTraces(input: {
     sqlByOwner.set(statement.ownerSymbolStableKey, bucket);
   }
 
-  const traces: DelphiFlowTrace[] = [];
+  const candidateTraces: DelphiFlowTrace[] = [];
+
   for (const event of input.delphiEventMap) {
-    if (traces.length >= FLOW_TRACE_LIMITS.maxTracesPerRun) break;
     const warnings = [...event.warnings];
     const steps: DelphiFlowTrace["steps"] = [
       {
@@ -85,8 +84,16 @@ export function buildDelphiFlowTraces(input: {
     let truncated = false;
     let unresolvedTransition = event.status === "unresolved";
 
-    const handlerCandidates = event.resolvedMethod ? (symbolsByName.get(normalize(event.resolvedMethod)) ?? []) : [];
-    const handler = handlerCandidates.find((symbol) => symbol.file === event.resolvedFile) ?? handlerCandidates[0] ?? null;
+    const handlerResolution = resolveDelphiSymbol({
+      symbols: input.symbols,
+      qualifiedName: event.resolvedMethod ?? `${event.formClass ?? `T${event.formName}`}.${event.handlerName}`,
+      name: event.handlerName,
+      sourceFile: event.resolvedFile,
+      ownerName: event.formClass ?? `T${event.formName}`,
+      pascalUnit: baseNameWithoutExtension(event.filePath),
+    });
+    const handler = handlerResolution.symbol;
+
     if (handler) {
       steps.push({
         id: `handler:${handler.stableKey}`,
@@ -95,25 +102,32 @@ export function buildDelphiFlowTraces(input: {
         filePath: handler.file,
         lineNumber: handler.startLine,
         confidence: event.warnings.length > 0 ? "medium" : "high",
-        evidence: `Resolved handler for ${event.handlerName}`,
+        evidence: `Resolved handler for ${event.handlerName} via ${handlerResolution.strategy}`,
       });
     } else {
-      warnings.push(`Handler ${event.handlerName} was not resolved to a persisted Pascal symbol.`);
-      steps.push({ id: "handler:unresolved", type: "warning", label: `Unresolved handler ${event.handlerName}`, confidence: "low" });
+      unresolvedTransition = true;
+      const detail = handlerResolution.ambiguous
+        ? `Ambiguous handler ${event.handlerName}: ${formatDelphiResolverCandidates(handlerResolution.candidates).join("; ")}`
+        : `Handler ${event.handlerName} was not resolved to a persisted Pascal symbol.`;
+      warnings.push(detail);
+      steps.push({ id: "handler:unresolved", type: "warning", label: detail, confidence: "low" });
     }
 
     const visit = (symbol: AnalyzedSymbol | null, depth: number) => {
       if (!symbol || visited.has(symbol.stableKey)) return;
       if (depth > FLOW_TRACE_LIMITS.maxCallDepth) {
         truncated = true;
+        unresolvedTransition = true;
         warnings.push(`Call traversal exceeded depth ${FLOW_TRACE_LIMITS.maxCallDepth}.`);
         return;
       }
       visited.add(symbol.stableKey);
 
-      for (const statement of sqlByOwner.get(symbol.stableKey) ?? []) {
+      for (const statement of (sqlByOwner.get(symbol.stableKey) ?? []).sort((left, right) => left.startLine - right.startLine || left.stableKey.localeCompare(right.stableKey))) {
         if (steps.length >= FLOW_TRACE_LIMITS.maxStepsPerTrace) {
           truncated = true;
+          unresolvedTransition = true;
+          warnings.push(`Call traversal exceeded step limit ${FLOW_TRACE_LIMITS.maxStepsPerTrace}.`);
           return;
         }
         steps.push({
@@ -122,18 +136,25 @@ export function buildDelphiFlowTraces(input: {
           label: `${statement.operation.toUpperCase()} ${statement.tables.map((table) => table.name).join(", ") || "unknown table"}`,
           filePath: statement.filePath,
           lineNumber: statement.startLine,
-          operation: statement.operation === "select" ? "read" : statement.operation === "unknown" || statement.operation === "execute" ? "unknown" : "write",
+          operation:
+            statement.operation === "select"
+              ? "read"
+              : statement.operation === "insert" || statement.operation === "update" || statement.operation === "delete"
+                ? "write"
+                : "unknown",
           confidence: statement.confidence,
-          evidence: statement.normalizedSql,
+          evidence: `${statement.startLine}-${statement.endLine}: ${statement.normalizedSql}`,
         });
         if (statement.dynamic) warnings.push("Dynamic SQL lowers flow confidence.");
         for (const table of statement.tables) {
-          affectedTables.add(table.name);
+          if (table.operation !== "unknown") {
+            affectedTables.add(table.name);
+          }
           steps.push({
             id: `table:${statement.stableKey}:${table.name}`,
             type: "table",
             label: table.name,
-            operation: table.operation,
+            operation: table.operation === "unknown" ? "unknown" : table.operation,
             confidence: statement.confidence,
           });
         }
@@ -153,13 +174,27 @@ export function buildDelphiFlowTraces(input: {
       for (const dependency of [...(callsBySource.get(symbol.stableKey) ?? [])].sort((left, right) => left.line - right.line || left.toName.localeCompare(right.toName))) {
         if (steps.length >= FLOW_TRACE_LIMITS.maxStepsPerTrace) {
           truncated = true;
+          unresolvedTransition = true;
+          warnings.push(`Call traversal exceeded step limit ${FLOW_TRACE_LIMITS.maxStepsPerTrace}.`);
           return;
         }
-        const target = dependency.to ? symbolByKey.get(dependency.to) : (symbolsByName.get(normalize(dependency.toName)) ?? [])[0];
+        const resolution = resolveDelphiSymbol({
+          symbols: input.symbols,
+          stableKey: dependency.to,
+          qualifiedName: dependency.toName,
+          name: dependency.toName,
+          ownerName: ownerName(symbol),
+          sourceFile: symbol.file,
+          pascalUnit: baseNameWithoutExtension(symbol.file),
+        });
+        const target = resolution.symbol;
         if (!target) {
           unresolvedTransition = true;
-          warnings.push(`Call target ${dependency.toName} was not resolved.`);
-          steps.push({ id: `call:unresolved:${dependency.line}:${dependency.toName}`, type: "warning", label: `Unresolved call ${dependency.toName}`, lineNumber: dependency.line, confidence: "low" });
+          const detail = resolution.ambiguous
+            ? `Ambiguous call target ${dependency.toName}: ${formatDelphiResolverCandidates(resolution.candidates).join("; ")}`
+            : `Call target ${dependency.toName} was not resolved.`;
+          warnings.push(detail);
+          steps.push({ id: `call:unresolved:${dependency.line}:${dependency.toName}`, type: "warning", label: detail, lineNumber: dependency.line, confidence: "low" });
           continue;
         }
         steps.push({
@@ -168,16 +203,17 @@ export function buildDelphiFlowTraces(input: {
           label: target.qualifiedName ?? target.name,
           filePath: target.file,
           lineNumber: target.startLine,
-          confidence: "medium",
-          evidence: `${dependency.fromName} -> ${dependency.toName}`,
+          confidence: resolution.strategy === "stable_key" || resolution.strategy === "qualified_name" ? "high" : "medium",
+          evidence: `${dependency.fromName} -> ${dependency.toName} (${resolution.strategy})`,
         });
         visit(target, depth + 1);
       }
     };
 
     visit(handler, 0);
-    const status = event.status === "unresolved" ? "unresolved" : unresolvedTransition || warnings.length > event.warnings.length || truncated ? "partial" : "complete";
-    traces.push({
+    const finalWarnings = sortedUniqueWarnings(warnings);
+    const status = event.status === "unresolved" ? "unresolved" : unresolvedTransition || truncated ? "partial" : "complete";
+    candidateTraces.push({
       stableKey: `${stablePart(event.formName)}:${stablePart(event.componentName)}:${stablePart(event.eventName)}:${stablePart(event.handlerName)}`,
       formName: event.formName,
       formClass: event.formClass,
@@ -185,41 +221,75 @@ export function buildDelphiFlowTraces(input: {
       componentClass: event.componentClass,
       eventName: event.eventName,
       handlerName: event.handlerName,
-      resolvedHandler: event.resolvedMethod ?? undefined,
+      resolvedHandler: handler?.qualifiedName ?? event.resolvedMethod ?? undefined,
       status,
-      confidence: status === "complete" ? confidenceForWarnings(warnings) : status === "partial" ? "medium" : "low",
+      confidence: status === "complete" ? confidenceForWarnings(finalWarnings) : status === "partial" ? "medium" : "low",
       steps: steps.slice(0, FLOW_TRACE_LIMITS.maxStepsPerTrace),
       affectedTables: Array.from(affectedTables).sort((left, right) => left.localeCompare(right)),
       affectedFields: Array.from(affectedFieldKeys.values()).sort((left, right) => left.table.localeCompare(right.table) || left.field.localeCompare(right.field) || left.operation.localeCompare(right.operation)),
-      warnings: Array.from(new Set(warnings)),
+      warnings: finalWarnings,
       truncated,
     });
   }
 
   for (const binding of input.delphiDataBindings) {
-    if (traces.length >= FLOW_TRACE_LIMITS.maxTracesPerRun) break;
     const warnings = [...binding.warnings];
-    const affectedFields = binding.dataField
-      ? [{ table: binding.dataSet ?? binding.dataSource ?? "unresolved", field: binding.dataField, operation: binding.accessHint === "read-only" ? "read" as const : "unknown" as const }]
+    const affectedFields = binding.dataField && binding.resolvedTable
+      ? [{ table: binding.resolvedTable, field: binding.dataField, operation: binding.accessHint === "read-only" ? "read" as const : "unknown" as const }]
       : [];
-    traces.push({
-      stableKey: `${stablePart(binding.formName)}:${stablePart(binding.componentName)}:binding:${stablePart(binding.dataField)}`,
+    if (binding.dataSet && !binding.resolvedTable) {
+      warnings.push("DataSet component was resolved, but its database table could not be determined statically.");
+    }
+    candidateTraces.push({
+      stableKey: `${stablePart(binding.formName)}:${stablePart(binding.componentName)}:binding:${stablePart(binding.dataField)}:${stablePart(binding.dataSet)}`,
       formName: binding.formName,
       componentName: binding.componentName,
       componentClass: binding.componentClass,
-      status: binding.confidence === "high" ? "complete" : binding.confidence === "medium" ? "partial" : "unresolved",
-      confidence: binding.confidence,
+      status: binding.confidence === "high" && binding.resolvedTable ? "complete" : binding.confidence === "low" ? "unresolved" : "partial",
+      confidence: binding.resolvedTable ? binding.confidence : binding.confidence === "high" ? "medium" : binding.confidence,
       steps: [
         { id: "component", type: "ui_component", label: `${binding.componentClass}.${binding.componentName}`, filePath: binding.sourceFile, lineNumber: binding.lineNumber, confidence: "high" },
-        { id: "binding", type: "data_binding", label: `DataSource ${binding.dataSource ?? "unresolved"} -> ${binding.dataSet ?? "unresolved"}`, filePath: binding.sourceFile, lineNumber: binding.lineNumber, confidence: binding.confidence },
-        ...(binding.dataField ? [{ id: "field", type: "field" as const, label: `${binding.dataSet ?? binding.dataSource ?? "unresolved"}.${binding.dataField}`, filePath: binding.sourceFile, lineNumber: binding.lineNumber, operation: affectedFields[0]?.operation, confidence: binding.confidence }] : []),
+        { id: "binding", type: "data_binding", label: `DataSource ${binding.dataSource ?? "unresolved"} -> DataSet ${binding.dataSet ?? "unresolved"}`, filePath: binding.sourceFile, lineNumber: binding.lineNumber, confidence: binding.confidence },
+        ...(binding.resolvedTable ? [{ id: "table", type: "table" as const, label: binding.resolvedTable, filePath: binding.sourceFile, lineNumber: binding.lineNumber, operation: "unknown" as const, confidence: binding.confidence }] : []),
+        ...(binding.dataField
+          ? [{
+              id: "field",
+              type: "field" as const,
+              label: binding.resolvedTable ? `${binding.resolvedTable}.${binding.dataField}` : binding.dataField,
+              filePath: binding.sourceFile,
+              lineNumber: binding.lineNumber,
+              operation: affectedFields[0]?.operation ?? "unknown",
+              confidence: binding.resolvedTable ? binding.confidence : "medium" as const,
+            }]
+          : []),
       ],
-      affectedTables: affectedFields.map((field) => field.table),
+      affectedTables: binding.resolvedTable ? [binding.resolvedTable] : [],
       affectedFields,
-      warnings,
+      warnings: sortedUniqueWarnings(warnings),
       truncated: false,
     });
   }
 
-  return traces.sort((left, right) => left.formName.localeCompare(right.formName) || left.componentName.localeCompare(right.componentName) || (left.eventName ?? "").localeCompare(right.eventName ?? ""));
+  const traces: DelphiFlowTrace[] = candidateTraces
+    .sort((left, right) => left.formName.localeCompare(right.formName) || left.componentName.localeCompare(right.componentName) || (left.eventName ?? "").localeCompare(right.eventName ?? "") || left.stableKey.localeCompare(right.stableKey))
+    .slice(0, FLOW_TRACE_LIMITS.maxTracesPerRun)
+    .map((trace, index, all) => {
+      if (candidateTraces.length <= FLOW_TRACE_LIMITS.maxTracesPerRun) return trace;
+      if (index !== all.length - 1 && !trace.warnings.includes("FLOW_TRACE_LIMIT_REACHED")) return trace;
+      return {
+        ...trace,
+        status: (trace.status === "unresolved" ? "unresolved" : "partial") as DelphiFlowTrace["status"],
+        confidence: trace.confidence === "high" ? "medium" : trace.confidence,
+        warnings: sortedUniqueWarnings([...trace.warnings, `FLOW_TRACE_LIMIT_REACHED: persisted ${FLOW_TRACE_LIMITS.maxTracesPerRun} of ${candidateTraces.length} candidate traces.`]),
+      };
+    });
+
+  return {
+    traces,
+    summary: {
+      candidateTraceCount: candidateTraces.length,
+      persistedTraceCount: traces.length,
+      globalTruncated: candidateTraces.length > FLOW_TRACE_LIMITS.maxTracesPerRun,
+    },
+  };
 }

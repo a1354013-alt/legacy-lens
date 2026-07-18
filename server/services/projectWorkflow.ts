@@ -2126,6 +2126,8 @@ function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalys
     `- Platforms: ${doctor.platforms.join(", ") || "none detected"}`,
     `- Defines: ${doctor.defines.join(", ") || "none detected"}`,
     `- Search paths: ${doctor.searchPaths.join(", ") || "none detected"}`,
+    `- Include paths: ${doctor.includePaths.join(", ") || "none detected"}`,
+    `- Output paths: ${doctor.outputPaths.join(", ") || "none detected"}`,
     `- Runtime packages: ${doctor.runtimePackages.join(", ") || "none detected"}`,
     "",
     "## Units And Packages",
@@ -2133,6 +2135,20 @@ function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalys
     `- Missing explicit units: ${doctor.missingUnits.join(", ") || "none detected"}`,
     `- Unresolved units: ${doctor.unresolvedUnits.join(", ") || "none detected"}`,
     `- Required packages: ${doctor.requiredPackages.join(", ") || "none detected"}`,
+    `- Concrete missing packages: ${doctor.missingPackages.join(", ") || "none detected"}`,
+    "",
+    "## Package Resolution",
+    doctor.packageResolutions.length === 0
+      ? "- No Delphi package requirements were recorded."
+      : renderMarkdownTable(
+          ["Package", "Resolution", "Resolved path", "Evidence"],
+          doctor.packageResolutions.map((entry) => [
+            entry.packageName,
+            entry.resolution,
+            entry.resolvedPath ?? "",
+            entry.evidence.join("; "),
+          ])
+        ),
     "",
     "## Findings",
     doctor.findings.length === 0
@@ -2159,6 +2175,7 @@ function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalys
 
 function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisSnapshot>["snapshot"]) {
   const traces = snapshot?.flowTraces ?? [];
+  const traceSummary = snapshot?.flowTraceSummary ?? { candidateTraceCount: traces.length, persistedTraceCount: traces.length, globalTruncated: false };
   const complete = traces.filter((trace) => trace.status === "complete").length;
   const partial = traces.filter((trace) => trace.status === "partial").length;
   const unresolved = traces.filter((trace) => trace.status === "unresolved").length;
@@ -2194,6 +2211,9 @@ function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisS
     "# UI_DATABASE_FLOW",
     "",
     `- Total traces: ${traces.length}`,
+    `- Candidate traces: ${traceSummary.candidateTraceCount}`,
+    `- Persisted traces: ${traceSummary.persistedTraceCount}`,
+    `- Global truncation: ${traceSummary.globalTruncated ? "yes" : "no"}`,
     `- Complete: ${complete}`,
     `- Partial: ${partial}`,
     `- Unresolved: ${unresolved}`,
@@ -2213,6 +2233,8 @@ function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisS
     "",
     "## Limitations",
     "- Flow tracing uses persisted static-analysis evidence only. Runtime-created handlers, dynamic SQL, and runtime data bindings may be incomplete.",
+    "- Generic symbol references do not extend call chains; only confirmed static call edges are traversed.",
+    "- DataSet component names are not treated as confirmed database tables unless static table evidence exists.",
     "- No compiler, executable, script, MSBuild file, or Delphi project command is executed.",
     "",
   ].join("\n");
@@ -2728,7 +2750,12 @@ export async function getFlowTraceForProject(projectId: number, userId: number, 
 export async function getFlowTraceSummaryForProject(projectId: number, userId: number, runId?: number) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
-  const traces = await getFlowTracesFromRun(db, projectId, runId);
+  const run = runId ? await getAnalysisRunDetail(db, projectId, runId) : await getLatestUsableCurrentSourceRun(db, projectId).then(async (latest) => {
+    if (!latest) throw new AppError("REPORT_NOT_READY", "No usable analysis run exists for this project.");
+    return getAnalysisRunDetail(db, projectId, latest.id);
+  });
+  const traces = run.snapshot?.flowTraces ?? [];
+  const traceSummary = run.snapshot?.flowTraceSummary ?? { candidateTraceCount: traces.length, persistedTraceCount: traces.length, globalTruncated: false };
   const affectedTables = new Set(traces.flatMap((trace) => trace.affectedTables));
   return {
     total: traces.length,
@@ -2738,6 +2765,9 @@ export async function getFlowTraceSummaryForProject(projectId: number, userId: n
     readPaths: traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "read")).length,
     writePaths: traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "write")).length,
     affectedTables: affectedTables.size,
+    candidateTraceCount: traceSummary.candidateTraceCount,
+    persistedTraceCount: traceSummary.persistedTraceCount,
+    globalTruncated: traceSummary.globalTruncated,
   };
 }
 
