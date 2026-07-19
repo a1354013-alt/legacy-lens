@@ -75,6 +75,11 @@ interface DelphiMetadataValue {
   condition?: string;
 }
 
+interface XmlWalkContext {
+  condition?: string;
+  parentTags: string[];
+}
+
 function normalizePath(value: string) {
   return value.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
 }
@@ -178,6 +183,14 @@ function metadataValue(value: string, sourceFile: string, lineNumber: number | n
   return { value, sourceFile, lineNumber, ...(condition ? { condition } : {}) };
 }
 
+function metadataEntryKey(entry: DelphiMetadataValue) {
+  return [entry.sourceFile, entry.lineNumber ?? "unknown", entry.condition ?? "", entry.value].join("::");
+}
+
+function dedupeMetadataValues(values: DelphiMetadataValue[]) {
+  return Array.from(new Map(values.map((entry) => [metadataEntryKey(entry), entry])).values());
+}
+
 function metadataEvidence(entry: DelphiMetadataValue, extra?: { resolvedPath?: string | null }) {
   return [
     `sourceFile=${entry.sourceFile}`,
@@ -274,29 +287,32 @@ function safeText(value: unknown): string[] {
 
 function walkXml(
   node: unknown,
-  visit: (tagName: string, value: unknown, attrs: Record<string, string>) => void,
-  inheritedTag?: string
+  visit: (tagName: string, value: unknown, attrs: Record<string, string>, context: XmlWalkContext) => void,
+  context: XmlWalkContext = { parentTags: [] }
 ) {
-  if (Array.isArray(node)) {
-    node.forEach((item) => walkXml(item, visit, inheritedTag));
-    return;
-  }
-
   if (!node || typeof node !== "object") {
     return;
   }
 
-  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-    if (key.startsWith("@_")) continue;
-    const attrs = typeof value === "object" && value && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([childKey]) => childKey.startsWith("@_")).map(([childKey, childValue]) => [childKey.slice(2), String(childValue)]))
-      : {};
-    visit(key, value, attrs);
-    walkXml(value, visit, key);
+  if (Array.isArray(node)) {
+    node.forEach((item) => walkXml(item, visit, context));
+    return;
   }
 
-  if (inheritedTag) {
-    visit(inheritedTag, node, {});
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key.startsWith("@_") || key === "#text") continue;
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      const attrs = typeof item === "object" && item && !Array.isArray(item)
+        ? Object.fromEntries(Object.entries(item as Record<string, unknown>).filter(([childKey]) => childKey.startsWith("@_")).map(([childKey, childValue]) => [childKey.slice(2), String(childValue)]))
+        : {};
+      const nextContext: XmlWalkContext = {
+        condition: typeof attrs.Condition === "string" && attrs.Condition.trim() ? attrs.Condition : context.condition,
+        parentTags: [...context.parentTags, key],
+      };
+      visit(key, item, attrs, nextContext);
+      walkXml(item, visit, nextContext);
+    }
   }
 }
 
@@ -360,15 +376,16 @@ function parseXmlMetadata(file: { path: string; content: string }, findings: Del
       parseAttributeValue: false,
     });
     const xml = parser.parse(file.content);
-    walkXml(xml, (tagName, value, attrs) => {
+    walkXml(xml, (tagName, value, attrs, context) => {
       const normalizedTag = normalizeKey(tagName);
       const texts = safeText(value);
+      const effectiveCondition = typeof attrs.Condition === "string" && attrs.Condition.trim() ? attrs.Condition : context.condition;
       if (CONFIG_TAGS.has(normalizedTag)) result.configurations.push(...texts);
       if (PLATFORM_TAGS.has(normalizedTag)) result.platforms.push(...texts);
       if (DEFINE_TAGS.has(normalizedTag)) {
         result.defines.push(
           ...texts.flatMap((entry) =>
-            splitDelimitedValues(entry.replace(/,/g, ";")).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+            splitDelimitedValues(entry.replace(/,/g, ";")).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), effectiveCondition))
           )
         );
       }
@@ -376,28 +393,28 @@ function parseXmlMetadata(file: { path: string; content: string }, findings: Del
         const target = normalizedTag.includes("include") ? result.includePaths : result.searchPaths;
         target.push(
           ...texts.flatMap((entry) =>
-            splitDelimitedValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+            splitDelimitedValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), effectiveCondition))
           )
         );
       }
       if (OUTPUT_PATH_TAGS.has(normalizedTag)) {
         result.outputPaths.push(
           ...texts.flatMap((entry) =>
-            splitDelimitedValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+            splitDelimitedValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), effectiveCondition))
           )
         );
       }
       if (PACKAGE_TAGS.has(normalizedTag)) {
         result.requiredPackages.push(
           ...texts.flatMap((entry) =>
-            splitPackageValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+            splitPackageValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), effectiveCondition))
           )
         );
       }
       if (RUNTIME_PACKAGE_TAGS.has(normalizedTag)) {
         result.runtimePackages.push(
           ...texts.flatMap((entry) =>
-            splitPackageValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+            splitPackageValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), effectiveCondition))
           )
         );
       }
@@ -415,12 +432,12 @@ function parseXmlMetadata(file: { path: string; content: string }, findings: Del
           result.projectReferences.push({
             path: include,
             lineNumber: lineForLiteral(file.content, include),
-            condition: attrs.Condition,
+            condition: effectiveCondition,
           });
         }
       }
-      if (attrs.Condition) {
-        result.evidence.push(`Condition=${attrs.Condition}`);
+      if (effectiveCondition) {
+        result.evidence.push(`Condition=${effectiveCondition}`);
       }
     });
   } catch {
@@ -436,6 +453,23 @@ function parseXmlMetadata(file: { path: string; content: string }, findings: Del
     });
     result.parseLimited = true;
   }
+
+  result.defines = dedupeMetadataValues(result.defines);
+  result.searchPaths = dedupeMetadataValues(result.searchPaths);
+  result.includePaths = dedupeMetadataValues(result.includePaths);
+  result.outputPaths = dedupeMetadataValues(result.outputPaths);
+  result.requiredPackages = dedupeMetadataValues(result.requiredPackages);
+  result.runtimePackages = dedupeMetadataValues(result.runtimePackages);
+  result.projectReferences = Array.from(
+    new Map(
+      result.projectReferences.map((reference) => [
+        [reference.path, reference.lineNumber ?? "unknown", reference.condition ?? ""].join("::"),
+        reference,
+      ])
+    ).values()
+  );
+  result.evidence = Array.from(new Set(result.evidence));
+  result.personalityEvidence = Array.from(new Set(result.personalityEvidence));
 
   return result;
 }
@@ -769,6 +803,37 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
         sourceFile: reference.sourceFile,
         lineNumber: reference.lineNumber ?? undefined,
         evidence: reference.path,
+      });
+    }
+  }
+
+  const duplicateGroupRefs = new Map<string, Array<typeof groupProjectRefs[number] & { normalizedPath: string }>>();
+  for (const reference of groupProjectRefs) {
+    const resolved = resolveRelativePath(reference.sourceFile, reference.path);
+    if (resolved.unresolvedMacro || !resolved.resolvedPath) continue;
+    const normalizedPath = normalizePath(resolved.resolvedPath);
+    const duplicateKey = normalizedPath.toLowerCase();
+    const bucket = duplicateGroupRefs.get(duplicateKey) ?? [];
+    bucket.push({ ...reference, normalizedPath });
+    duplicateGroupRefs.set(duplicateKey, bucket);
+  }
+
+  for (const entries of duplicateGroupRefs.values()) {
+    if (entries.length < 2) continue;
+    for (const entry of entries) {
+      findings.push({
+        code: "DELPHI_GROUP_PROJECT_REFERENCE_DUPLICATE",
+        severity: "warning",
+        title: "Group project member was listed more than once",
+        description: `${entry.path} resolves to the same GROUPPROJ member as another project entry.`,
+        recommendation: "Remove duplicate GROUPPROJ members so project membership stays deterministic.",
+        confidence: "high",
+        sourceFile: entry.sourceFile,
+        lineNumber: entry.lineNumber ?? undefined,
+        condition: entry.condition,
+        rawValue: entry.path,
+        resolvedPath: entry.normalizedPath,
+        evidence: `rawValue=${entry.path}; normalizedPath=${entry.normalizedPath}`,
       });
     }
   }

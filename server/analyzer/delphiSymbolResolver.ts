@@ -5,7 +5,11 @@ function normalize(value: string | null | undefined) {
 }
 
 function normalizePath(value: string | null | undefined) {
-  return (value ?? "").replace(/\\/g, "/");
+  return (value ?? "").trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+}
+
+function normalizeComparablePath(value: string | null | undefined) {
+  return normalizePath(value).toLowerCase();
 }
 
 function baseNameWithoutExtension(filePath: string | null | undefined) {
@@ -24,7 +28,7 @@ function sortCandidates(symbols: AnalyzedSymbol[]) {
   return [...symbols].sort(
     (left, right) =>
       normalize(left.qualifiedName ?? left.name).localeCompare(normalize(right.qualifiedName ?? right.name))
-      || normalizePath(left.file).localeCompare(normalizePath(right.file))
+      || normalizeComparablePath(left.file).localeCompare(normalizeComparablePath(right.file))
       || left.startLine - right.startLine
       || left.endLine - right.endLine
   );
@@ -103,7 +107,7 @@ export function resolveDelphiSymbol(input: {
   }
 
   if (input.sourceFile) {
-    const sameSource = candidates.filter((symbol) => normalizePath(symbol.file) === normalizePath(input.sourceFile));
+    const sameSource = candidates.filter((symbol) => normalizeComparablePath(symbol.file) === normalizeComparablePath(input.sourceFile));
     const resolved = narrow(sameSource, "same_source_file");
     if (resolved) {
       return { symbol: resolved, ambiguous: false, candidates: [resolved], strategy: "same_source_file" };

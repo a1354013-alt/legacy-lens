@@ -2668,7 +2668,7 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
 }
 
 function renderAnalysisDiffMarkdown(diff: AnalysisDiff) {
-  return [
+  const lines = [
     "# Analysis Diff",
     "",
     `Base run: #${diff.baseRun.runNumber} (id ${diff.baseRun.id})`,
@@ -2687,8 +2687,44 @@ function renderAnalysisDiffMarkdown(diff: AnalysisDiff) {
     `- Delphi events: +${diff.delphiEvents.introduced.total} / -${diff.delphiEvents.removed.total} / ~${diff.delphiEvents.resolutionChanged.total}`,
     `- Build Doctor findings: +${diff.buildDoctor.introduced.total} / -${diff.buildDoctor.resolved.total} / ~${diff.buildDoctor.changed.total}`,
     `- Flow traces: +${diff.flowTraces.introduced.total} / -${diff.flowTraces.removed.total} / ~${diff.flowTraces.changed.total}`,
-    "",
-  ].join("\n");
+  ];
+
+  const appendBucketSection = <T,>(title: string, bucket: { items: T[]; total: number; displayed: number }, renderItem: (item: T) => string) => {
+    lines.push("", `## ${title}`);
+    if (bucket.total === 0) {
+      lines.push("- None");
+      return;
+    }
+    if (bucket.displayed < bucket.total) {
+      lines.push(`Displayed ${bucket.displayed} of ${bucket.total}`);
+    }
+    lines.push(...bucket.items.map(renderItem));
+  };
+
+  appendBucketSection("Added Files", diff.files.added, (item) => `- ${item.path} (${item.sha256.slice(0, 12)})`);
+  appendBucketSection("Removed Files", diff.files.removed, (item) => `- ${item.path} (${item.sha256.slice(0, 12)})`);
+  appendBucketSection("Changed Files", diff.files.changed, (item) => `- ${item.before.path}: ${item.before.sha256.slice(0, 12)} -> ${item.after.sha256.slice(0, 12)}`);
+  appendBucketSection("Introduced Risks", diff.risks.introduced, (item) => `- [${item.severity}] ${item.title} (${item.sourceFile}:${item.lineNumber})`);
+  appendBucketSection("Resolved Risks", diff.risks.resolved, (item) => `- [${item.severity}] ${item.title} (${item.sourceFile}:${item.lineNumber})`);
+  appendBucketSection("Changed Fields", diff.fields.changed, (item) => `- ${item.before.table}.${item.before.field}: ${item.before.fieldType ?? "unknown"} -> ${item.after.fieldType ?? "unknown"}`);
+  appendBucketSection("Field Dependency Changes", diff.fieldDependencies.changed, (item) => {
+    const beforeSymbol = item.before.symbolName ?? item.before.symbolStableKey ?? "unknown";
+    const afterSymbol = item.after.symbolName ?? item.after.symbolStableKey ?? "unknown";
+    return `- ${item.before.table}.${item.before.field}: ${beforeSymbol} (${item.before.type}) -> ${afterSymbol} (${item.after.type})`;
+  });
+  appendBucketSection("Delphi Event Resolution Changes", diff.delphiEvents.resolutionChanged, (item) => {
+    const beforeResolved = item.before.resolvedMethod ?? item.before.handlerName;
+    const afterResolved = item.after.resolvedMethod ?? item.after.handlerName;
+    return `- ${item.before.formName}.${item.before.componentName}.${item.before.eventName}: ${beforeResolved} -> ${afterResolved}`;
+  });
+  appendBucketSection("Build Doctor Changes", diff.buildDoctor.changed, (item) => `- ${item.before.code}: ${item.before.evidence ?? "no evidence"} -> ${item.after.evidence ?? "no evidence"}`);
+  appendBucketSection("Flow Trace Changes", diff.flowTraces.changed, (item) => {
+    const beforeTables = item.before.affectedTables.join(", ") || "none";
+    const afterTables = item.after.affectedTables.join(", ") || "none";
+    return `- ${item.before.stableKey}: ${item.before.status}/${beforeTables} -> ${item.after.status}/${afterTables}`;
+  });
+
+  return lines.join("\n");
 }
 
 export async function buildAnalysisDiffArchiveBuffer(

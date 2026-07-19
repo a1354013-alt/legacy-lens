@@ -8,6 +8,8 @@ export const FLOW_TRACE_LIMITS = {
   maxTracesPerRun: 2_000,
 } as const;
 
+export type FlowTraceLimits = typeof FLOW_TRACE_LIMITS;
+
 const STEP_LIMIT_WARNING_CODE = "FLOW_TRACE_STEP_LIMIT_REACHED";
 const CYCLE_WARNING_CODE = "FLOW_TRACE_CALL_CYCLE";
 
@@ -58,7 +60,7 @@ function compareTraceSortKey(
   return left[0].localeCompare(right[0]) || left[1].localeCompare(right[1]) || left[2].localeCompare(right[2]) || left[3].localeCompare(right[3]);
 }
 
-function createTraceStepBuilder(initialWarnings: string[]) {
+function createTraceStepBuilder(initialWarnings: string[], limits: FlowTraceLimits) {
   const steps: DelphiFlowStep[] = [];
   const warnings = [...initialWarnings];
   const warningSet = new Set(initialWarnings);
@@ -79,21 +81,21 @@ function createTraceStepBuilder(initialWarnings: string[]) {
   const appendStepLimitWarning = () => {
     if (stepLimitWarningAdded) return;
     stepLimitWarningAdded = true;
-    const label = `${STEP_LIMIT_WARNING_CODE}: trace stopped after ${FLOW_TRACE_LIMITS.maxStepsPerTrace} steps.`;
+    const label = `${STEP_LIMIT_WARNING_CODE}: trace stopped after ${limits.maxStepsPerTrace} steps.`;
     addWarning(label);
-    if (steps.length < FLOW_TRACE_LIMITS.maxStepsPerTrace) {
+    if (steps.length < limits.maxStepsPerTrace) {
       appendStep({ id: `warning:${STEP_LIMIT_WARNING_CODE.toLowerCase()}`, type: "warning", label, confidence: "low" });
     }
   };
 
   const pushStep = (step: DelphiFlowStep) => {
-    if (steps.length >= FLOW_TRACE_LIMITS.maxStepsPerTrace) {
+    if (steps.length >= limits.maxStepsPerTrace) {
       truncated = true;
       unresolvedTransition = true;
       appendStepLimitWarning();
       return false;
     }
-    if (!stepLimitWarningAdded && step.type !== "warning" && steps.length === FLOW_TRACE_LIMITS.maxStepsPerTrace - 1) {
+    if (!stepLimitWarningAdded && step.type !== "warning" && steps.length === limits.maxStepsPerTrace - 1) {
       truncated = true;
       unresolvedTransition = true;
       appendStepLimitWarning();
@@ -144,9 +146,10 @@ function buildEventTrace(input: {
   symbols: AnalyzedSymbol[];
   callsBySource: Map<string, SymbolDependency[]>;
   sqlByOwner: Map<string, SqlStatementEvidence[]>;
+  limits: FlowTraceLimits;
 }): DelphiFlowTrace {
-  const { event, symbols, callsBySource, sqlByOwner } = input;
-  const builder = createTraceStepBuilder(event.warnings);
+  const { event, symbols, callsBySource, sqlByOwner, limits } = input;
+  const builder = createTraceStepBuilder(event.warnings, limits);
   const visited = new Set<string>();
   const activePath = new Set<string>();
   const activeStack: string[] = [];
@@ -220,10 +223,10 @@ function buildEventTrace(input: {
     }
 
     if (visited.has(symbol.stableKey)) return;
-    if (depth > FLOW_TRACE_LIMITS.maxCallDepth) {
+    if (depth > limits.maxCallDepth) {
       unresolvedTransition = true;
       builder.markTruncated();
-      builder.addWarningStep(`FLOW_TRACE_MAX_CALL_DEPTH_REACHED: traversal exceeded depth ${FLOW_TRACE_LIMITS.maxCallDepth}.`, {
+      builder.addWarningStep(`FLOW_TRACE_MAX_CALL_DEPTH_REACHED: traversal exceeded depth ${limits.maxCallDepth}.`, {
         id: `warning:max-depth:${symbol.stableKey}`,
         filePath: symbol.file,
         lineNumber: symbol.startLine,
@@ -368,8 +371,8 @@ function buildEventTrace(input: {
   };
 }
 
-function buildBindingTrace(binding: DelphiDataBinding): DelphiFlowTrace {
-  const builder = createTraceStepBuilder(binding.warnings);
+function buildBindingTrace(binding: DelphiDataBinding, limits: FlowTraceLimits): DelphiFlowTrace {
+  const builder = createTraceStepBuilder(binding.warnings, limits);
   const affectedFields = binding.dataField && binding.resolvedTable
     ? [{ table: binding.resolvedTable, field: binding.dataField, operation: binding.accessHint === "read-only" ? "read" as const : "unknown" as const }]
     : [];
@@ -439,7 +442,8 @@ export function buildDelphiFlowTraces(input: {
   symbols: AnalyzedSymbol[];
   dependencies: SymbolDependency[];
   sqlStatements: SqlStatementEvidence[];
-}): { traces: DelphiFlowTrace[]; summary: DelphiFlowTraceRunSummary } {
+}, limits?: Partial<FlowTraceLimits>): { traces: DelphiFlowTrace[]; summary: DelphiFlowTraceRunSummary } {
+  const resolvedLimits: FlowTraceLimits = { ...FLOW_TRACE_LIMITS, ...limits };
   const callsBySource = new Map<string, SymbolDependency[]>();
   for (const dependency of input.dependencies) {
     if (dependency.type !== "calls") continue;
@@ -465,7 +469,7 @@ export function buildDelphiFlowTraces(input: {
         eventName: event.eventName,
         stableKey: `${stablePart(event.formName)}:${stablePart(event.componentName)}:${stablePart(event.eventName)}:${stablePart(event.handlerName)}`,
       }),
-      build: () => buildEventTrace({ event, symbols: input.symbols, callsBySource, sqlByOwner }),
+      build: () => buildEventTrace({ event, symbols: input.symbols, callsBySource, sqlByOwner, limits: resolvedLimits }),
     })),
     ...input.delphiDataBindings.map((binding) => ({
       kind: "binding" as const,
@@ -475,18 +479,18 @@ export function buildDelphiFlowTraces(input: {
         eventName: "",
         stableKey: `${stablePart(binding.formName)}:${stablePart(binding.componentName)}:binding:${stablePart(binding.dataField)}:${stablePart(binding.dataSet)}`,
       }),
-      build: () => buildBindingTrace(binding),
+      build: () => buildBindingTrace(binding, resolvedLimits),
     })),
   ].sort((left, right) => compareTraceSortKey(left.sortKey, right.sortKey) || left.kind.localeCompare(right.kind));
 
   const candidateTraceCount = traceDescriptors.length;
-  const persistedDescriptors = traceDescriptors.slice(0, FLOW_TRACE_LIMITS.maxTracesPerRun);
-  const globalTruncated = candidateTraceCount > FLOW_TRACE_LIMITS.maxTracesPerRun;
+  const persistedDescriptors = traceDescriptors.slice(0, resolvedLimits.maxTracesPerRun);
+  const globalTruncated = candidateTraceCount > resolvedLimits.maxTracesPerRun;
   const traces = persistedDescriptors.map((descriptor) => descriptor.build());
 
   if (globalTruncated && traces.length > 0) {
     const lastTrace = traces[traces.length - 1]!;
-    const warning = `FLOW_TRACE_LIMIT_REACHED: persisted ${FLOW_TRACE_LIMITS.maxTracesPerRun} of ${candidateTraceCount} candidate traces.`;
+    const warning = `FLOW_TRACE_LIMIT_REACHED: persisted ${resolvedLimits.maxTracesPerRun} of ${candidateTraceCount} candidate traces.`;
     traces[traces.length - 1] = {
       ...lastTrace,
       status: lastTrace.status === "unresolved" ? "unresolved" : "partial",

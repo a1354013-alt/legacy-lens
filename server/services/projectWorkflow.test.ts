@@ -3648,4 +3648,110 @@ describe("project workflow", () => {
     await expect(buildReportArchiveBuffer(1, 7)).rejects.toMatchObject({ code: "REPORT_TOO_LARGE" });
     expect(generateSpy).not.toHaveBeenCalled();
   });
+
+  it("exports expanded analysis diff markdown and metadata", async () => {
+    const { buildAnalysisDiffArchiveBuffer } = await import("./projectWorkflow");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "diff-project",
+      language: "go",
+      sourceType: "upload",
+      status: "completed",
+      importWarningsJson: [],
+    });
+    const run1 = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      projectFiles: [{ path: "OldForm.pas", content: "procedure OldSave;\nbegin\nend;", fileType: ".pas" }],
+      result: {
+        status: "completed",
+        schemaFields: [{ table: "ORDERS", field: "STATUS", fieldType: "varchar", file: "OldForm.pas", line: 1 }],
+        fieldReferences: [{ table: "ORDERS", field: "STATUS", type: "read", file: "OldForm.pas", line: 2, symbolStableKey: "old", symbolName: "OldSave", context: "read" }],
+        risks: [{ title: "Old risk", description: "legacy", severity: "high", category: "magic_value", sourceFile: "OldForm.pas", lineNumber: 2 }],
+        buildDoctor: {
+          status: "ready_with_warnings",
+          score: 60,
+          compilerFamily: { value: "Delphi", confidence: "medium", evidence: ["OldForm.pas"] },
+          projectEntries: [],
+          configurations: [],
+          platforms: [],
+          defines: [],
+          searchPaths: [],
+          includePaths: [],
+          outputPaths: [],
+          runtimePackages: [],
+          requiredPackages: [],
+          packageResolutions: [],
+          requiredUnits: [],
+          missingUnits: [],
+          unresolvedUnits: [],
+          missingPackages: [],
+          externalDependencies: [],
+          findings: [{ code: "OLD_FINDING", severity: "warning", title: "Old finding", description: "old", recommendation: "review", confidence: "medium", evidence: "old evidence" }],
+          limitations: [],
+        },
+        flowTraces: [{ stableKey: "trace-1", formName: "OldForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "OldSave", resolvedHandler: "OldSave", status: "complete", confidence: "high", steps: [], affectedTables: ["OLD_ORDER"], affectedFields: [{ table: "OLD_ORDER", field: "ID", operation: "read" }], warnings: [], truncated: false }],
+        delphiEventMap: [{ formName: "OldForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "OldSave", filePath: "OldForm.dfm", lineNumber: 1, resolvedMethod: "OldSave", resolvedFile: "OldForm.pas", status: "resolved", warnings: [] }],
+      },
+    });
+    const run2 = createValidAnalysisRunFixture({
+      id: 2,
+      projectId: 1,
+      runNumber: 2,
+      projectFiles: [{ path: "NewForm.pas", content: "procedure NewSave;\nbegin\nend;", fileType: ".pas" }],
+      result: {
+        status: "completed",
+        schemaFields: [{ table: "ORDERS", field: "STATUS", fieldType: "int", file: "NewForm.pas", line: 1 }],
+        fieldReferences: [{ table: "ORDERS", field: "STATUS", type: "write", file: "NewForm.pas", line: 2, symbolStableKey: "new", symbolName: "NewSave", context: "write" }],
+        risks: [{ title: "New risk", description: "modern", severity: "high", category: "magic_value", sourceFile: "NewForm.pas", lineNumber: 2 }],
+        buildDoctor: {
+          status: "ready_with_warnings",
+          score: 80,
+          compilerFamily: { value: "Delphi", confidence: "medium", evidence: ["NewForm.pas"] },
+          projectEntries: [],
+          configurations: [],
+          platforms: [],
+          defines: [],
+          searchPaths: [],
+          includePaths: [],
+          outputPaths: [],
+          runtimePackages: [],
+          requiredPackages: [],
+          packageResolutions: [],
+          requiredUnits: [],
+          missingUnits: [],
+          unresolvedUnits: [],
+          missingPackages: [],
+          externalDependencies: [],
+          findings: [{ code: "OLD_FINDING", severity: "warning", title: "Old finding", description: "new", recommendation: "review", confidence: "medium", evidence: "new evidence" }],
+          limitations: [],
+        },
+        flowTraces: [{ stableKey: "trace-1", formName: "NewForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "NewSave", resolvedHandler: "NewSave", status: "partial", confidence: "medium", steps: [], affectedTables: ["NEW_ORDER"], affectedFields: [{ table: "NEW_ORDER", field: "ID", operation: "write" }], warnings: ["changed"], truncated: false }],
+        delphiEventMap: [{ formName: "OldForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "NewSave", filePath: "OldForm.dfm", lineNumber: 1, resolvedMethod: "NewSave", resolvedFile: "NewForm.pas", status: "resolved", warnings: [] }],
+      },
+    });
+    fakeDb.store.projects[0].sourceFingerprint = run2.sourceFingerprint;
+    fakeDb.store.analysisResults.push(run1.row, run2.row);
+
+    const archive = await buildAnalysisDiffArchiveBuffer(1, 7, 1, 2);
+    const zip = await JSZip.loadAsync(archive.buffer);
+    const markdown = await zip.file("ANALYSIS_DIFF.md")!.async("text");
+    const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { baseRunNumber?: number; compareRunNumber?: number; truncated?: boolean };
+
+    expect(markdown).toContain("## Added Files");
+    expect(markdown).toContain("## Removed Files");
+    expect(markdown).toContain("## Changed Files");
+    expect(markdown).toContain("## Introduced Risks");
+    expect(markdown).toContain("## Resolved Risks");
+    expect(markdown).toContain("## Changed Fields");
+    expect(markdown).toContain("## Field Dependency Changes");
+    expect(markdown).toContain("## Delphi Event Resolution Changes");
+    expect(markdown).toContain("## Build Doctor Changes");
+    expect(markdown).toContain("## Flow Trace Changes");
+    expect(metadata.baseRunNumber).toBe(1);
+    expect(metadata.compareRunNumber).toBe(2);
+    expect(typeof metadata.truncated).toBe("boolean");
+  });
 });

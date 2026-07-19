@@ -22,19 +22,10 @@ import {
 } from "../analysisResultModel";
 import { analysisResultCopy } from "./copy";
 
-async function downloadReportZip(projectId: number) {
-  const response = await fetch(`/api/projects/${projectId}/report.zip`, {
-    credentials: "include",
-  });
-
-  if (!response.ok) {
-    const payload = await readHttpApiError(response);
-    throw new Error(getReportDownloadErrorMessage(response.status, payload));
-  }
-
+async function downloadBlobFromResponse(response: Response, fallbackFileName: string) {
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") ?? "";
-  const fileName = disposition.match(/filename="([^"]+)"/)?.[1] ?? `legacy-lens-report-${projectId}.zip`;
+  const fileName = disposition.match(/filename="([^"]+)"/)?.[1] ?? fallbackFileName;
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -43,6 +34,33 @@ async function downloadReportZip(projectId: number) {
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+}
+
+async function downloadReportZip(projectId: number, runId?: number) {
+  const query = typeof runId === "number" ? `?runId=${runId}` : "";
+  const response = await fetch(`/api/projects/${projectId}/report.zip${query}`, {
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    const payload = await readHttpApiError(response);
+    throw new Error(getReportDownloadErrorMessage(response.status, payload));
+  }
+
+  await downloadBlobFromResponse(response, `legacy-lens-report-${projectId}${typeof runId === "number" ? `-run-${runId}` : ""}.zip`);
+}
+
+async function downloadAnalysisDiffZip(projectId: number, baseRunId: number, compareRunId: number) {
+  const response = await fetch(`/api/projects/${projectId}/analysis-diff.zip?baseRunId=${baseRunId}&compareRunId=${compareRunId}`, {
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    const payload = await readHttpApiError(response);
+    throw new Error(getReportDownloadErrorMessage(response.status, payload));
+  }
+
+  await downloadBlobFromResponse(response, `legacy-lens-analysis-diff-${projectId}-${baseRunId}-vs-${compareRunId}.zip`);
 }
 
 export function useAnalysisResultModel(projectId: number) {
@@ -82,6 +100,8 @@ export function useAnalysisResultModel(projectId: number) {
   const [flowTraceStatus, setFlowTraceStatus] = useState<string>("all");
   const [flowTracePage, setFlowTracePage] = useState(1);
   const [isReportDownloading, setIsReportDownloading] = useState(false);
+  const [downloadingRunId, setDownloadingRunId] = useState<number | null>(null);
+  const [isDiffDownloading, setIsDiffDownloading] = useState(false);
 
   const utils = trpc.useUtils();
 
@@ -204,7 +224,7 @@ export function useAnalysisResultModel(projectId: number) {
       baseRunId: compareBaseRunId ?? 0,
       compareRunId: compareRunId ?? 0,
     },
-    { enabled: Number.isFinite(projectId) && activeTab === "history" && Boolean(compareBaseRunId && compareRunId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "history" && Boolean(compareBaseRunId && compareRunId && compareBaseRunId !== compareRunId) }
   );
 
   const currentReportId = snapshotQuery.data?.report?.id;
@@ -234,8 +254,24 @@ export function useAnalysisResultModel(projectId: number) {
 
   const setBaselineMutation = trpc.analysis.setBaseline.useMutation({
     onSuccess: async () => {
-      await utils.analysis.listRuns.invalidate({ projectId });
+      await Promise.all([
+        utils.analysis.listRuns.invalidate({ projectId }),
+        selectedRunId ? utils.analysis.getRun.invalidate({ projectId, runId: selectedRunId }) : Promise.resolve(),
+      ]);
       toast.success("Baseline updated.");
+    },
+  });
+
+  const clearBaselineMutation = trpc.analysis.clearBaseline.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.analysis.listRuns.invalidate({ projectId }),
+        selectedRunId ? utils.analysis.getRun.invalidate({ projectId, runId: selectedRunId }) : Promise.resolve(),
+        compareBaseRunId && compareRunId && compareBaseRunId !== compareRunId
+          ? utils.analysis.getDiff.invalidate({ projectId, baseRunId: compareBaseRunId, compareRunId })
+          : Promise.resolve(),
+      ]);
+      toast.success("Baseline cleared.");
     },
   });
 
@@ -286,6 +322,49 @@ export function useAnalysisResultModel(projectId: number) {
       setIsReportDownloading(false);
     }
   };
+
+  const handleDownloadHistoricalReport = async (runId: number) => {
+    setDownloadingRunId(runId);
+    try {
+      await downloadReportZip(projectId, runId);
+      toast.success("Historical report downloaded.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Historical report download failed.");
+    } finally {
+      setDownloadingRunId(null);
+    }
+  };
+
+  const handleDownloadComparison = async () => {
+    if (!compareBaseRunId || !compareRunId || compareBaseRunId === compareRunId) {
+      return;
+    }
+    setIsDiffDownloading(true);
+    try {
+      await downloadAnalysisDiffZip(projectId, compareBaseRunId, compareRunId);
+      toast.success("Comparison downloaded.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Comparison download failed.");
+    } finally {
+      setIsDiffDownloading(false);
+    }
+  };
+
+  const selectCompareBaseRun = (runId: number) => {
+    setCompareBaseRunId(runId);
+    if (compareRunId === runId) {
+      setCompareRunId(null);
+    }
+  };
+
+  const selectCompareRun = (runId: number) => {
+    setCompareRunId(runId);
+    if (compareBaseRunId === runId) {
+      setCompareBaseRunId(null);
+    }
+  };
+
+  const canDownloadComparison = Boolean(compareBaseRunId && compareRunId && compareBaseRunId !== compareRunId && !diffQuery.isLoading && !diffQuery.error);
 
   return {
     activeTab,
@@ -359,6 +438,8 @@ export function useAnalysisResultModel(projectId: number) {
     flowTracePage,
     setFlowTracePage,
     isReportDownloading,
+    downloadingRunId,
+    isDiffDownloading,
     projectQuery,
     snapshotQuery,
     symbolsQuery,
@@ -374,6 +455,7 @@ export function useAnalysisResultModel(projectId: number) {
     flowTraceSummaryQuery,
     flowTracesQuery,
     setBaselineMutation,
+    clearBaselineMutation,
     triggerAnalysisMutation,
     isLoading,
     project,
@@ -388,5 +470,10 @@ export function useAnalysisResultModel(projectId: number) {
     canDownloadReport,
     handleRunAnalysis,
     handleDownloadReport,
+    handleDownloadHistoricalReport,
+    handleDownloadComparison,
+    selectCompareBaseRun,
+    selectCompareRun,
+    canDownloadComparison,
   };
 }

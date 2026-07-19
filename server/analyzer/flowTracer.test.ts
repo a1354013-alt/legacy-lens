@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDelphiFlowTraces, FLOW_TRACE_LIMITS } from "./flowTracer";
+import { buildDelphiFlowTraces } from "./flowTracer";
 import { buildSymbolStableKey, type AnalyzedSymbol } from "./types";
 
 function symbol(name: string, line: number): AnalyzedSymbol {
@@ -217,59 +217,53 @@ describe("Delphi flow tracer", () => {
   });
 
   it("adds a deterministic warning when step limits are reached mid-SQL expansion", () => {
-    const originalStepLimit = FLOW_TRACE_LIMITS.maxStepsPerTrace;
-    (FLOW_TRACE_LIMITS as any).maxStepsPerTrace = 5;
-    try {
-      const btnSaveClick = symbol("btnSaveClick", 10);
-      const saveOrder = symbol("SaveOrder", 20);
-      const result = buildDelphiFlowTraces({
-        delphiEventMap: [
-          {
-            formName: "OrderForm",
-            formClass: "TOrderForm",
-            componentName: "btnSave",
-            componentClass: "TButton",
-            eventName: "OnClick",
-            handlerName: "btnSaveClick",
-            filePath: "MainForm.dfm",
-            lineNumber: 4,
-            resolvedMethod: "TOrderForm.btnSaveClick",
-            resolvedFile: "MainForm.pas",
-            status: "resolved",
-            warnings: [],
-          },
-        ],
-        delphiDataBindings: [],
-        symbols: [btnSaveClick, saveOrder],
-        dependencies: [{ from: btnSaveClick.stableKey, to: saveOrder.stableKey, fromName: "btnSaveClick", toName: "SaveOrder", type: "calls", line: 12 }],
-        sqlStatements: [
-          {
-            stableKey: "sql-1",
-            ownerSymbolStableKey: saveOrder.stableKey,
-            ownerSymbolName: "TOrderForm.SaveOrder",
-            filePath: "MainForm.pas",
-            startLine: 32,
-            endLine: 35,
-            operation: "select",
-            normalizedSql: "SELECT A, B, C FROM dbo.ORDER_M",
-            tables: [{ name: "dbo.ORDER_M", operation: "read" }],
-            fields: [
-              { table: "dbo.ORDER_M", field: "A", operation: "read" },
-              { table: "dbo.ORDER_M", field: "B", operation: "read" },
-              { table: "dbo.ORDER_M", field: "C", operation: "read" },
-            ],
-            dynamic: false,
-            confidence: "high",
-            warnings: [],
-          },
-        ],
-      });
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const saveOrder = symbol("SaveOrder", 20);
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [
+        {
+          formName: "OrderForm",
+          formClass: "TOrderForm",
+          componentName: "btnSave",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "btnSaveClick",
+          filePath: "MainForm.dfm",
+          lineNumber: 4,
+          resolvedMethod: "TOrderForm.btnSaveClick",
+          resolvedFile: "MainForm.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick, saveOrder],
+      dependencies: [{ from: btnSaveClick.stableKey, to: saveOrder.stableKey, fromName: "btnSaveClick", toName: "SaveOrder", type: "calls", line: 12 }],
+      sqlStatements: [
+        {
+          stableKey: "sql-1",
+          ownerSymbolStableKey: saveOrder.stableKey,
+          ownerSymbolName: "TOrderForm.SaveOrder",
+          filePath: "MainForm.pas",
+          startLine: 32,
+          endLine: 35,
+          operation: "select",
+          normalizedSql: "SELECT A, B, C FROM dbo.ORDER_M",
+          tables: [{ name: "dbo.ORDER_M", operation: "read" }],
+          fields: [
+            { table: "dbo.ORDER_M", field: "A", operation: "read" },
+            { table: "dbo.ORDER_M", field: "B", operation: "read" },
+            { table: "dbo.ORDER_M", field: "C", operation: "read" },
+          ],
+          dynamic: false,
+          confidence: "high",
+          warnings: [],
+        },
+      ],
+    }, { maxStepsPerTrace: 5 });
 
-      expect(result.traces[0]?.truncated).toBe(true);
-      expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_STEP_LIMIT_REACHED");
-    } finally {
-      (FLOW_TRACE_LIMITS as any).maxStepsPerTrace = originalStepLimit;
-    }
+    expect(result.traces[0]?.truncated).toBe(true);
+    expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_STEP_LIMIT_REACHED");
   });
 
   it("keeps dataset component bindings out of affected tables when no static table mapping exists", () => {
@@ -336,53 +330,85 @@ describe("Delphi flow tracer", () => {
   });
 
   it("reports global trace truncation when candidate traces exceed the configured limit", () => {
-    const originalLimit = FLOW_TRACE_LIMITS.maxTracesPerRun;
-    (FLOW_TRACE_LIMITS as any).maxTracesPerRun = 1;
-    try {
-      const result = buildDelphiFlowTraces({
-        delphiEventMap: [
-          {
-            formName: "FormA",
-            formClass: "TFormA",
-            componentName: "BtnA",
-            componentClass: "TButton",
-            eventName: "OnClick",
-            handlerName: "BtnAClick",
-            filePath: "FormA.dfm",
-            lineNumber: 1,
-            resolvedMethod: "TFormA.BtnAClick",
-            resolvedFile: "MainForm.pas",
-            status: "resolved",
-            warnings: [],
-          },
-          {
-            formName: "FormB",
-            formClass: "TFormB",
-            componentName: "BtnB",
-            componentClass: "TButton",
-            eventName: "OnClick",
-            handlerName: "BtnBClick",
-            filePath: "FormB.dfm",
-            lineNumber: 1,
-            resolvedMethod: "TFormB.BtnBClick",
-            resolvedFile: "OtherForm.pas",
-            status: "resolved",
-            warnings: [],
-          },
-        ],
-        delphiDataBindings: [],
-        symbols: [
-          { ...symbol("BtnAClick", 10), qualifiedName: "TFormA.BtnAClick" },
-          { ...symbol("BtnBClick", 20), qualifiedName: "TFormB.BtnBClick", file: "OtherForm.pas", stableKey: buildSymbolStableKey({ file: "OtherForm.pas", name: "TFormB.BtnBClick", startLine: 20 }) },
-        ],
-        dependencies: [],
-        sqlStatements: [],
-      });
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [
+        {
+          formName: "FormA",
+          formClass: "TFormA",
+          componentName: "BtnA",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "BtnAClick",
+          filePath: "FormA.dfm",
+          lineNumber: 1,
+          resolvedMethod: "TFormA.BtnAClick",
+          resolvedFile: "MainForm.pas",
+          status: "resolved",
+          warnings: [],
+        },
+        {
+          formName: "FormB",
+          formClass: "TFormB",
+          componentName: "BtnB",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "BtnBClick",
+          filePath: "FormB.dfm",
+          lineNumber: 1,
+          resolvedMethod: "TFormB.BtnBClick",
+          resolvedFile: "OtherForm.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ],
+      delphiDataBindings: [],
+      symbols: [
+        { ...symbol("BtnAClick", 10), qualifiedName: "TFormA.BtnAClick" },
+        { ...symbol("BtnBClick", 20), qualifiedName: "TFormB.BtnBClick", file: "OtherForm.pas", stableKey: buildSymbolStableKey({ file: "OtherForm.pas", name: "TFormB.BtnBClick", startLine: 20 }) },
+      ],
+      dependencies: [],
+      sqlStatements: [],
+    }, { maxTracesPerRun: 1 });
 
-      expect(result.summary).toEqual({ candidateTraceCount: 2, persistedTraceCount: 1, globalTruncated: true });
-      expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_LIMIT_REACHED");
-    } finally {
-      (FLOW_TRACE_LIMITS as any).maxTracesPerRun = originalLimit;
-    }
+    expect(result.summary).toEqual({ candidateTraceCount: 2, persistedTraceCount: 1, globalTruncated: true });
+    expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_LIMIT_REACHED");
+  });
+
+  it("matches source files case-insensitively during handler and call resolution", () => {
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [
+        {
+          formName: "OrderForm",
+          formClass: "TOrderForm",
+          componentName: "btnSave",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "btnSaveClick",
+          filePath: "Forms/MainForm.dfm",
+          lineNumber: 4,
+          resolvedMethod: "TOrderForm.btnSaveClick",
+          resolvedFile: "forms\\mainform.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ],
+      delphiDataBindings: [],
+      symbols: [
+        {
+          stableKey: buildSymbolStableKey({ file: "Forms/MainForm.pas", name: "TOrderForm.btnSaveClick", startLine: 10 }),
+          name: "btnSaveClick",
+          qualifiedName: "TOrderForm.btnSaveClick",
+          type: "method",
+          file: "Forms/MainForm.pas",
+          startLine: 10,
+          endLine: 14,
+        },
+      ],
+      dependencies: [],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.resolvedHandler).toBe("TOrderForm.btnSaveClick");
+    expect(result.traces[0]?.status).toBe("complete");
   });
 });

@@ -227,6 +227,8 @@ export default function AnalysisResult() {
     flowTracePage,
     setFlowTracePage,
     isReportDownloading,
+    downloadingRunId,
+    isDiffDownloading,
     projectQuery,
     snapshotQuery,
     symbolsQuery,
@@ -242,6 +244,7 @@ export default function AnalysisResult() {
     flowTraceSummaryQuery,
     flowTracesQuery,
     setBaselineMutation,
+    clearBaselineMutation,
     triggerAnalysisMutation,
     isLoading,
     project,
@@ -256,6 +259,11 @@ export default function AnalysisResult() {
     canDownloadReport,
     handleRunAnalysis,
     handleDownloadReport,
+    handleDownloadHistoricalReport,
+    handleDownloadComparison,
+    selectCompareBaseRun,
+    selectCompareRun,
+    canDownloadComparison,
   } = useAnalysisResultModel(projectId);
 
   if (!Number.isFinite(projectId)) {
@@ -535,8 +543,15 @@ export default function AnalysisResult() {
                     <div className="flex flex-wrap gap-2">
                       <Button size="sm" variant="outline" onClick={() => setSelectedRunId(run.id)}>View run</Button>
                       <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })}>Set baseline</Button>
-                      <Button size="sm" variant="outline" onClick={() => setCompareBaseRunId(run.id)}>Use as base</Button>
-                      <Button size="sm" variant="outline" onClick={() => setCompareRunId(run.id)}>Compare to</Button>
+                      {run.isBaseline ? (
+                        <Button size="sm" variant="outline" onClick={() => clearBaselineMutation?.mutate(projectId)} disabled={clearBaselineMutation?.isPending}>Clear baseline</Button>
+                      ) : null}
+                      <Button size="sm" variant="outline" onClick={() => selectCompareBaseRun(run.id)}>Use as base</Button>
+                      <Button size="sm" variant="outline" onClick={() => selectCompareRun(run.id)}>Compare to</Button>
+                      <Button size="sm" variant="outline" onClick={() => void handleDownloadHistoricalReport(run.id)} disabled={downloadingRunId === run.id}>
+                        {downloadingRunId === run.id ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+                        Download report
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -568,6 +583,7 @@ export default function AnalysisResult() {
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
                   {diffQuery?.isLoading ? <p className="text-slate-600">Calculating diff...</p> : null}
+                  {diffQuery?.error ? <p className="text-red-600">{diffQuery.error.message}</p> : null}
                   {diffQuery?.data ? (
                     <>
                       <div className="grid gap-2 md:grid-cols-4">
@@ -579,6 +595,12 @@ export default function AnalysisResult() {
                       {diffQuery.data.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Diff truncated</AlertTitle><AlertDescription>Large diff groups were capped. Totals are still shown.</AlertDescription></Alert> : null}
                     </>
                   ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => void handleDownloadComparison()} disabled={!canDownloadComparison || isDiffDownloading}>
+                      {isDiffDownloading ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+                      Download comparison
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             ) : null}

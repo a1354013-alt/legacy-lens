@@ -26,6 +26,7 @@ import type { ProjectJobExecutionState } from "./projectJobLease";
 
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 type ProjectFileRecord = { id?: number | null; filePath: string };
+const RUN_NUMBER_RETRY_LIMIT = 3;
 
 export type AnalysisPersistCheckpoint = {
   operation: string;
@@ -122,7 +123,6 @@ export async function writeSuccessfulAnalysis(
   });
   await materializeLegacySnapshotIfMissing(tx, projectId);
 
-  const runNumber = await allocateNextRunNumber(tx, projectId);
   const [project] = await tx.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   const snapshot = buildAnalysisRunSnapshot(projectFiles, result, {
     projectName: project?.name ?? "unknown",
@@ -144,32 +144,50 @@ export async function writeSuccessfulAnalysis(
     operation: "insert immutable analysis run",
     table: "analysisResults",
   });
-  try {
-    await tx.insert(analysisResults).values({
-      projectId,
-      runNumber,
-      jobId: executionState?.ownership?.jobId ?? null,
-      analyzerVersion: ANALYZER_VERSION,
-      sourceFingerprint: snapshot.sourceFingerprint,
-      snapshotSchemaVersion: 1,
-      snapshotJson: snapshot.snapshotJson,
-      completedAt: new Date(),
-      status: result.status,
-      flowMarkdown: result.flowDocument,
-      dataDependencyMarkdown: result.dataDependencyDocument,
-      risksMarkdown: result.risksDocument,
-      rulesYaml: result.rulesYaml,
-      summaryJson: result.metrics,
-      warningsJson: result.warnings,
-      errorMessage: getAnalysisResultErrorMessage(result),
-    });
-  } catch (error) {
-    throwAnalysisPersistError(error, {
-      projectId,
-      executionState,
-      operation: "insert immutable analysis run",
-      table: "analysisResults",
-    });
+  const isDuplicateRunNumberError = (error: unknown) => {
+    const code = typeof error === "object" && error ? String((error as { code?: unknown }).code ?? "") : "";
+    const message = typeof error === "object" && error ? String((error as { message?: unknown }).message ?? "") : "";
+    return code === "ER_DUP_ENTRY" || /analysisresults_projectid_runnumber_unique|duplicate entry/i.test(message);
+  };
+
+  let inserted = false;
+  for (let attempt = 0; attempt < RUN_NUMBER_RETRY_LIMIT; attempt += 1) {
+    const runNumber = await allocateNextRunNumber(tx, projectId);
+    try {
+      await tx.insert(analysisResults).values({
+        projectId,
+        runNumber,
+        jobId: executionState?.ownership?.jobId ?? null,
+        analyzerVersion: ANALYZER_VERSION,
+        sourceFingerprint: snapshot.sourceFingerprint,
+        snapshotSchemaVersion: 1,
+        snapshotJson: snapshot.snapshotJson,
+        completedAt: new Date(),
+        status: result.status,
+        flowMarkdown: result.flowDocument,
+        dataDependencyMarkdown: result.dataDependencyDocument,
+        risksMarkdown: result.risksDocument,
+        rulesYaml: result.rulesYaml,
+        summaryJson: result.metrics,
+        warningsJson: result.warnings,
+        errorMessage: getAnalysisResultErrorMessage(result),
+      });
+      inserted = true;
+      break;
+    } catch (error) {
+      if (attempt + 1 < RUN_NUMBER_RETRY_LIMIT && isDuplicateRunNumberError(error)) {
+        continue;
+      }
+      throwAnalysisPersistError(error, {
+        projectId,
+        executionState,
+        operation: "insert immutable analysis run",
+        table: "analysisResults",
+      });
+    }
+  }
+  if (!inserted) {
+    throw new Error("Failed to allocate a unique run number within the bounded retry limit.");
   }
 
   const fileByPath = new Map(projectFiles.map((file) => [file.filePath.replace(/\\/g, "/"), file]));

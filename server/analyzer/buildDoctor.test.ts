@@ -100,6 +100,87 @@ describe("Delphi Build Doctor", () => {
     expect(result.findings.map((finding) => finding.code)).toContain("DELPHI_GROUP_PROJECT_REFERENCE_MISSING");
   });
 
+  it("inherits parent PropertyGroup conditions into child metadata values without duplicates", () => {
+    const result = analyzeDelphiBuild([
+      {
+        path: "Project1.dproj",
+        language: "delphi",
+        content: [
+          "<Project>",
+          "  <PropertyGroup Condition=\"'$(Config)'=='Debug'\">",
+          "    <DCC_Define>DEBUG</DCC_Define>",
+          "    <DCC_UnitSearchPath>C:\\DebugUnits</DCC_UnitSearchPath>",
+          "  </PropertyGroup>",
+          "</Project>",
+        ].join("\n"),
+      },
+    ]);
+
+    const pathFindings = result.findings.filter((finding) => finding.code === "DELPHI_ABSOLUTE_SEARCH_PATH");
+
+    expect(result.defines).toEqual(["DEBUG"]);
+    expect(pathFindings).toHaveLength(1);
+    expect(pathFindings[0]).toMatchObject({
+      sourceFile: "Project1.dproj",
+      rawValue: "C:\\DebugUnits",
+      condition: "'$(Config)'=='Debug'",
+    });
+  });
+
+  it("lets child XML conditions override inherited conditions", () => {
+    const result = analyzeDelphiBuild([
+      {
+        path: "Project1.dproj",
+        language: "delphi",
+        content: [
+          "<Project>",
+          "  <PropertyGroup Condition=\"'$(Config)'=='Debug'\">",
+          "    <DCC_UnitSearchPath Condition=\"'$(Platform)'=='Win64'\">C:\\Win64Units</DCC_UnitSearchPath>",
+          "  </PropertyGroup>",
+          "</Project>",
+        ].join("\n"),
+      },
+    ]);
+
+    const pathFinding = result.findings.find((finding) => finding.code === "DELPHI_ABSOLUTE_SEARCH_PATH");
+
+    expect(result.searchPaths).toEqual(["C:\\Win64Units"]);
+    expect(pathFinding).toMatchObject({
+      sourceFile: "Project1.dproj",
+      rawValue: "C:\\Win64Units",
+      condition: "'$(Platform)'=='Win64'",
+    });
+  });
+
+  it("reports duplicate GROUPPROJ members only when their resolved paths are the same", () => {
+    const result = analyzeDelphiBuild([
+      {
+        path: "Suite.groupproj",
+        language: "delphi",
+        content: [
+          "<Project>",
+          "  <ItemGroup>",
+          "    <Projects Include=\"Modules/App.dproj\" />",
+          "    <Projects Include=\"Modules\\\\APP.dproj\" />",
+          "    <Projects Include=\"Other/App.dproj\" />",
+          "  </ItemGroup>",
+          "</Project>",
+        ].join("\n"),
+      },
+      { path: "Modules/App.dproj", language: "delphi", content: "<Project />" },
+      { path: "Other/App.dproj", language: "delphi", content: "<Project />" },
+    ]);
+
+    const duplicateFindings = result.findings.filter((finding) => finding.code === "DELPHI_GROUP_PROJECT_REFERENCE_DUPLICATE");
+
+    expect(duplicateFindings).toHaveLength(2);
+    expect(duplicateFindings[0]).toMatchObject({
+      sourceFile: "Suite.groupproj",
+      rawValue: expect.stringMatching(/Modules/i),
+      resolvedPath: "Modules/App.dproj",
+    });
+  });
+
   it("reports explicit missing package paths as missing packages", () => {
     const result = analyzeDelphiBuild([
       {
