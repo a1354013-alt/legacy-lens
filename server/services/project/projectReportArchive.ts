@@ -17,7 +17,7 @@ function estimateReportArchiveBytes(entries: ReportArchiveEntry[]) {
   return rawBytes + zipOverheadBytes;
 }
 
-export async function buildProjectReportArchiveBuffer(projectId: number, entries: ReportArchiveEntry[], runNumber?: number | null) {
+export async function buildProjectReportArchiveBuffer(projectId: number, entries: ReportArchiveEntry[], runNumber?: number | null, fileName?: string) {
   const estimatedArchiveBytes = estimateReportArchiveBytes(entries);
   if (estimatedArchiveBytes > MAX_REPORT_ARCHIVE_BYTES) {
     throw new AppError(
@@ -38,7 +38,7 @@ export async function buildProjectReportArchiveBuffer(projectId: number, entries
   }
 
   return {
-    fileName: runNumber ? `legacy-lens-project-${projectId}-run-${runNumber}.zip` : buildReportFileName(projectId),
+    fileName: fileName ?? (runNumber ? `legacy-lens-project-${projectId}-run-${runNumber}.zip` : buildReportFileName(projectId)),
     mimeType: "application/zip",
     buffer,
   };

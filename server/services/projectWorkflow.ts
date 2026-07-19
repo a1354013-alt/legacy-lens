@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type {
+  AnalysisDiff,
   AnalysisRunProjectContext,
   AnalysisRunSnapshotV1,
   AnalysisWarning,
@@ -2664,6 +2665,66 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
 
   logger.info("Export completed", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
   return buildProjectReportArchiveBuffer(projectId, [...archiveEntries], readyReport.runNumber ?? 1);
+}
+
+function renderAnalysisDiffMarkdown(diff: AnalysisDiff) {
+  return [
+    "# Analysis Diff",
+    "",
+    `Base run: #${diff.baseRun.runNumber} (id ${diff.baseRun.id})`,
+    `Compare run: #${diff.compareRun.runNumber} (id ${diff.compareRun.id})`,
+    `Truncated: ${diff.truncated ? "yes" : "no"}`,
+    "",
+    "## Metric Delta",
+    ...Object.entries(diff.metricsDelta).map(([key, value]) => `- ${key}: ${value >= 0 ? "+" : ""}${value}`),
+    "",
+    "## Change Summary",
+    `- Files: +${diff.files.added.total} / -${diff.files.removed.total} / ~${diff.files.changed.total}`,
+    `- Fields: +${diff.fields.added.total} / -${diff.fields.removed.total} / ~${diff.fields.changed.total}`,
+    `- Field dependencies: +${diff.fieldDependencies.introduced.total} / -${diff.fieldDependencies.removed.total} / ~${diff.fieldDependencies.changed.total}`,
+    `- Risks: +${diff.risks.introduced.total} / -${diff.risks.resolved.total} / ~${diff.risks.changed.total}`,
+    `- Rules: +${diff.rules.introduced.total} / -${diff.rules.resolved.total} / ~${diff.rules.changed.total}`,
+    `- Delphi events: +${diff.delphiEvents.introduced.total} / -${diff.delphiEvents.removed.total} / ~${diff.delphiEvents.resolutionChanged.total}`,
+    `- Build Doctor findings: +${diff.buildDoctor.introduced.total} / -${diff.buildDoctor.resolved.total} / ~${diff.buildDoctor.changed.total}`,
+    `- Flow traces: +${diff.flowTraces.introduced.total} / -${diff.flowTraces.removed.total} / ~${diff.flowTraces.changed.total}`,
+    "",
+  ].join("\n");
+}
+
+export async function buildAnalysisDiffArchiveBuffer(
+  projectId: number,
+  userId: number,
+  baseRunId: number,
+  compareRunId: number
+): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
+  await getOwnedProject(projectId, userId);
+  const db = await requireDb();
+  const diff = await getAnalysisDiff(db, projectId, baseRunId, compareRunId);
+  const createdAt = new Date().toISOString();
+  const metadata = {
+    projectId,
+    baseRunId: diff.baseRun.id,
+    baseRunNumber: diff.baseRun.runNumber,
+    baseSourceFingerprint: diff.baseRun.sourceFingerprint,
+    baseAnalyzerVersion: diff.baseRun.analyzerVersion,
+    compareRunId: diff.compareRun.id,
+    compareRunNumber: diff.compareRun.runNumber,
+    compareSourceFingerprint: diff.compareRun.sourceFingerprint,
+    compareAnalyzerVersion: diff.compareRun.analyzerVersion,
+    createdAt,
+    truncated: diff.truncated,
+  };
+
+  return buildProjectReportArchiveBuffer(
+    projectId,
+    [
+      { path: "ANALYSIS_DIFF.md", content: renderAnalysisDiffMarkdown(diff) },
+      { path: "analysis-diff.json", content: JSON.stringify(diff, null, 2) },
+      { path: "metadata.json", content: JSON.stringify(metadata, null, 2) },
+    ],
+    null,
+    `legacy-lens-project-${projectId}-analysis-diff-${baseRunId}-vs-${compareRunId}.zip`
+  );
 }
 
 export async function buildReportArchive(projectId: number, userId: number, runId?: number): Promise<ReportArchivePayload> {

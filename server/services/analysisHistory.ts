@@ -35,6 +35,21 @@ export const ANALYZER_VERSION = "1.1.0-rc2";
 export const MAX_SNAPSHOT_BYTES = 15 * 1024 * 1024;
 const DIFF_LIMIT = 200;
 const USABLE_STATUSES = ["completed", "completed_with_warnings", "partial"] as const;
+const ANALYSIS_DIFF_METRIC_KEYS = [
+  "fileCount",
+  "eligibleFileCount",
+  "analyzedFileCount",
+  "skippedFileCount",
+  "heuristicFileCount",
+  "degradedFileCount",
+  "symbolCount",
+  "dependencyCount",
+  "fieldCount",
+  "fieldDependencyCount",
+  "riskCount",
+  "ruleCount",
+  "warningCount",
+] as const;
 const LEGACY_UNKNOWN_PROJECT_CONTEXT: AnalysisRunProjectContext = {
   projectName: "unknown",
   sourceType: "unknown",
@@ -483,17 +498,36 @@ export async function clearAnalysisBaseline(db: DbHandle, projectId: number) {
 }
 
 function bucket<T>(items: T[]) {
-  return { items: items.slice(0, DIFF_LIMIT), total: items.length, displayed: Math.min(items.length, DIFF_LIMIT), truncated: items.length > DIFF_LIMIT };
+  const filtered = items.filter((item): item is T => item !== undefined);
+  return { items: filtered.slice(0, DIFF_LIMIT), total: filtered.length, displayed: Math.min(filtered.length, DIFF_LIMIT), truncated: filtered.length > DIFF_LIMIT };
 }
 
 function keyed<T>(items: T[], key: (item: T) => string) {
   return new Map(items.map((item) => [key(item), item]));
 }
 
-function diffKeys<T>(base: Map<string, T>, compare: Map<string, T>) {
-  const added = Array.from(compare.keys()).filter((key) => !base.has(key)).sort();
-  const removed = Array.from(base.keys()).filter((key) => !compare.has(key)).sort();
-  const changed = Array.from(compare.keys()).filter((key) => base.has(key) && stableJson(base.get(key)) !== stableJson(compare.get(key))).sort();
+function diffEntries<T>(base: Map<string, T>, compare: Map<string, T>) {
+  const keys = Array.from(new Set([...base.keys(), ...compare.keys()])).sort((left, right) => left.localeCompare(right));
+  const added: T[] = [];
+  const removed: T[] = [];
+  const changed: Array<{ key: string; before: T; after: T }> = [];
+
+  for (const key of keys) {
+    const before = base.get(key);
+    const after = compare.get(key);
+    if (before && !after) {
+      removed.push(before);
+      continue;
+    }
+    if (!before && after) {
+      added.push(after);
+      continue;
+    }
+    if (before && after && stableJson(before) !== stableJson(after)) {
+      changed.push({ key, before, after });
+    }
+  }
+
   return { added, removed, changed };
 }
 
@@ -505,39 +539,149 @@ function ruleKey(item: AnalysisRunSnapshotV1["rules"][number]) {
   return `${item.ruleType}:${item.name.toLowerCase()}:${normalizePath(item.sourceFile ?? "").toLowerCase()}`;
 }
 
+function fieldKey(item: AnalysisRunSnapshotV1["fields"][number]) {
+  return `${normalize(item.table)}:${normalize(item.field)}`;
+}
+
+function fileKey(item: AnalysisRunSnapshotV1["sourceManifest"][number]) {
+  return normalizePath(item.path).toLowerCase();
+}
+
+function dependencyKey(item: AnalysisRunSnapshotV1["dependencies"][number]) {
+  return `${item.from}:${item.to ?? item.toName}:${item.type}:${item.line}`;
+}
+
+function eventKey(item: AnalysisRunSnapshotV1["delphiEventMap"][number]) {
+  return `${normalize(item.formName)}:${normalize(item.componentName)}:${normalize(item.eventName)}`;
+}
+
+function bindingKey(item: AnalysisRunSnapshotV1["delphiDataBindings"][number]) {
+  return `${normalize(item.formName)}:${normalize(item.componentName)}:${normalize(item.dataField ?? "")}:${normalize(item.dataSet ?? "")}`;
+}
+
+function buildDoctorFindingKey(item: AnalysisRunSnapshotV1["buildDoctor"]["findings"][number]) {
+  return `${item.code}:${normalize(item.title)}:${normalizePath(item.sourceFile ?? "")}:${item.lineNumber ?? 0}:${normalize(item.rawValue ?? item.evidence ?? "")}`;
+}
+
+function flowTraceKey(item: AnalysisRunSnapshotV1["flowTraces"][number]) {
+  return item.stableKey;
+}
+
+function fieldDependencyKey(item: AnalysisRunSnapshotV1["fieldDependencies"][number]) {
+  const symbolIdentity = normalize(item.symbolStableKey ?? item.symbolName ?? "unknown");
+  return [
+    normalize(item.table),
+    normalize(item.field),
+    symbolIdentity,
+    normalize(item.type),
+    normalizePath(item.file).toLowerCase(),
+  ].join(":");
+}
+
+async function getComparableRunDetail(db: DbHandle, projectId: number, runId: number) {
+  const [run] = await db.select().from(analysisResults).where(eq(analysisResults.id, runId)).limit(1);
+  if (!run) {
+    throw new AppError("PROJECT_NOT_FOUND", "Analysis run not found.");
+  }
+  if (run.projectId !== projectId) {
+    throw new AppError("PROJECT_NOT_FOUND", "Analysis runs from another project cannot be compared here.");
+  }
+  if (!isUsableStatus(run.status)) {
+    throw new AppError("REPORT_NOT_READY", "Historical analysis artifacts are only available for usable immutable runs.");
+  }
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) {
+    throw new AppError("PROJECT_NOT_FOUND", "Project not found.");
+  }
+
+  const baselineId = await getBaselineId(db, projectId);
+  const latest = await getLatestUsableCurrentSourceRun(db, projectId);
+  return {
+    summary: toSummary(run, baselineId, latest?.id ?? null),
+    snapshot: parseAnalysisSnapshotStrict(run.snapshotJson),
+  };
+}
+
 export async function getAnalysisDiff(db: DbHandle, projectId: number, baseRunId: number, compareRunId: number): Promise<AnalysisDiff> {
-  const [base, compare] = await Promise.all([getAnalysisRunDetail(db, projectId, baseRunId), getAnalysisRunDetail(db, projectId, compareRunId)]);
-  if (!base.snapshot || !compare.snapshot) throw new AppError("REPORT_NOT_READY", "Both analysis runs need a valid snapshot before they can be compared.");
+  if (baseRunId === compareRunId) {
+    throw new AppError("REPORT_NOT_READY", "An analysis run cannot be compared with itself.");
+  }
+
+  const [base, compare] = await Promise.all([getComparableRunDetail(db, projectId, baseRunId), getComparableRunDetail(db, projectId, compareRunId)]);
+  if (base.snapshot.schemaVersion !== ANALYSIS_SNAPSHOT_SCHEMA_VERSION || compare.snapshot.schemaVersion !== ANALYSIS_SNAPSHOT_SCHEMA_VERSION) {
+    throw new AppError("UNSUPPORTED_SNAPSHOT_VERSION", "Only immutable snapshot schema version 1 can be compared.");
+  }
+
   const baseSnapshot = base.snapshot;
   const compareSnapshot = compare.snapshot;
-  const fileDiff = diffKeys(keyed(baseSnapshot.sourceManifest, (item) => item.path), keyed(compareSnapshot.sourceManifest, (item) => item.path));
-  const symbolDiff = diffKeys(keyed(baseSnapshot.symbols, (item) => item.stableKey), keyed(compareSnapshot.symbols, (item) => item.stableKey));
-  const dependencyDiff = diffKeys(keyed(baseSnapshot.dependencies, (item) => `${item.from}:${item.to ?? item.toName}:${item.type}`), keyed(compareSnapshot.dependencies, (item) => `${item.from}:${item.to ?? item.toName}:${item.type}`));
-  const fieldDiff = diffKeys(keyed(baseSnapshot.fields, (item) => `${item.table}.${item.field}`.toLowerCase()), keyed(compareSnapshot.fields, (item) => `${item.table}.${item.field}`.toLowerCase()));
-  const riskDiff = diffKeys(keyed(baseSnapshot.risks, riskKey), keyed(compareSnapshot.risks, riskKey));
-  const ruleDiff = diffKeys(keyed(baseSnapshot.rules, ruleKey), keyed(compareSnapshot.rules, ruleKey));
-  const eventDiff = diffKeys(keyed(baseSnapshot.delphiEventMap, (item) => `${item.formName}.${item.componentName}.${item.eventName}`.toLowerCase()), keyed(compareSnapshot.delphiEventMap, (item) => `${item.formName}.${item.componentName}.${item.eventName}`.toLowerCase()));
-  const bindingDiff = diffKeys(keyed(baseSnapshot.delphiDataBindings, (item) => `${item.formName}.${item.componentName}.${item.dataField ?? ""}`.toLowerCase()), keyed(compareSnapshot.delphiDataBindings, (item) => `${item.formName}.${item.componentName}.${item.dataField ?? ""}`.toLowerCase()));
-  const buildDiff = diffKeys(keyed(baseSnapshot.buildDoctor.findings, (item) => `${item.code}:${item.evidence ?? item.title}`.toLowerCase()), keyed(compareSnapshot.buildDoctor.findings, (item) => `${item.code}:${item.evidence ?? item.title}`.toLowerCase()));
-  const flowDiff = diffKeys(keyed(baseSnapshot.flowTraces, (item) => item.stableKey), keyed(compareSnapshot.flowTraces, (item) => item.stableKey));
-  const metricsDelta = Object.fromEntries(["fileCount", "symbolCount", "dependencyCount", "fieldCount", "riskCount", "ruleCount", "warningCount"].map((key) => [key, Number(compareSnapshot.metrics[key as keyof typeof compareSnapshot.metrics] ?? 0) - Number(baseSnapshot.metrics[key as keyof typeof baseSnapshot.metrics] ?? 0)]));
+  const fileDiff = diffEntries(keyed(baseSnapshot.sourceManifest, fileKey), keyed(compareSnapshot.sourceManifest, fileKey));
+  const symbolDiff = diffEntries(keyed(baseSnapshot.symbols, (item) => item.stableKey), keyed(compareSnapshot.symbols, (item) => item.stableKey));
+  const dependencyDiff = diffEntries(keyed(baseSnapshot.dependencies, dependencyKey), keyed(compareSnapshot.dependencies, dependencyKey));
+  const fieldDiff = diffEntries(keyed(baseSnapshot.fields, fieldKey), keyed(compareSnapshot.fields, fieldKey));
+  const fieldDependencyDiff = diffEntries(keyed(baseSnapshot.fieldDependencies, fieldDependencyKey), keyed(compareSnapshot.fieldDependencies, fieldDependencyKey));
+  const riskDiff = diffEntries(keyed(baseSnapshot.risks, riskKey), keyed(compareSnapshot.risks, riskKey));
+  const ruleDiff = diffEntries(keyed(baseSnapshot.rules, ruleKey), keyed(compareSnapshot.rules, ruleKey));
+  const eventDiff = diffEntries(keyed(baseSnapshot.delphiEventMap, eventKey), keyed(compareSnapshot.delphiEventMap, eventKey));
+  const bindingDiff = diffEntries(keyed(baseSnapshot.delphiDataBindings, bindingKey), keyed(compareSnapshot.delphiDataBindings, bindingKey));
+  const buildDiff = diffEntries(keyed(baseSnapshot.buildDoctor.findings, buildDoctorFindingKey), keyed(compareSnapshot.buildDoctor.findings, buildDoctorFindingKey));
+  const flowDiff = diffEntries(keyed(baseSnapshot.flowTraces, flowTraceKey), keyed(compareSnapshot.flowTraces, flowTraceKey));
+  const metricsDelta = Object.fromEntries(
+    ANALYSIS_DIFF_METRIC_KEYS.map((key) => [key, Number(compareSnapshot.metrics[key] ?? 0) - Number(baseSnapshot.metrics[key] ?? 0)])
+  );
+
   const result = {
-    baseRun: base,
-    compareRun: compare,
+    baseRun: base.summary,
+    compareRun: compare.summary,
     metricsDelta,
     files: { added: bucket(fileDiff.added), removed: bucket(fileDiff.removed), changed: bucket(fileDiff.changed) },
     symbols: { added: bucket(symbolDiff.added), removed: bucket(symbolDiff.removed) },
     dependencies: { added: bucket(dependencyDiff.added), removed: bucket(dependencyDiff.removed) },
     fields: { added: bucket(fieldDiff.added), removed: bucket(fieldDiff.removed), changed: bucket(fieldDiff.changed) },
-    risks: { introduced: bucket(riskDiff.added.map((key) => keyed(compareSnapshot.risks, riskKey).get(key))), resolved: bucket(riskDiff.removed.map((key) => keyed(baseSnapshot.risks, riskKey).get(key))), changed: bucket(riskDiff.changed) },
-    rules: { introduced: bucket(ruleDiff.added.map((key) => keyed(compareSnapshot.rules, ruleKey).get(key))), resolved: bucket(ruleDiff.removed.map((key) => keyed(baseSnapshot.rules, ruleKey).get(key))), changed: bucket(ruleDiff.changed) },
+    fieldDependencies: { introduced: bucket(fieldDependencyDiff.added), removed: bucket(fieldDependencyDiff.removed), changed: bucket(fieldDependencyDiff.changed) },
+    risks: { introduced: bucket(riskDiff.added), resolved: bucket(riskDiff.removed), changed: bucket(riskDiff.changed) },
+    rules: { introduced: bucket(ruleDiff.added), resolved: bucket(ruleDiff.removed), changed: bucket(ruleDiff.changed) },
     delphiEvents: { introduced: bucket(eventDiff.added), removed: bucket(eventDiff.removed), resolutionChanged: bucket(eventDiff.changed) },
     dataBindings: { introduced: bucket(bindingDiff.added), removed: bucket(bindingDiff.removed), changed: bucket(bindingDiff.changed) },
     buildDoctor: { introduced: bucket(buildDiff.added), resolved: bucket(buildDiff.removed), changed: bucket(buildDiff.changed), scoreDelta: compareSnapshot.buildDoctor.score - baseSnapshot.buildDoctor.score },
     flowTraces: { introduced: bucket(flowDiff.added), removed: bucket(flowDiff.removed), changed: bucket(flowDiff.changed) },
     truncated: false,
   };
-  result.truncated = stableJson(result).includes('"truncated":true');
+  result.truncated = [
+    result.files.added,
+    result.files.removed,
+    result.files.changed,
+    result.symbols.added,
+    result.symbols.removed,
+    result.dependencies.added,
+    result.dependencies.removed,
+    result.fields.added,
+    result.fields.removed,
+    result.fields.changed,
+    result.fieldDependencies.introduced,
+    result.fieldDependencies.removed,
+    result.fieldDependencies.changed,
+    result.risks.introduced,
+    result.risks.resolved,
+    result.risks.changed,
+    result.rules.introduced,
+    result.rules.resolved,
+    result.rules.changed,
+    result.delphiEvents.introduced,
+    result.delphiEvents.removed,
+    result.delphiEvents.resolutionChanged,
+    result.dataBindings.introduced,
+    result.dataBindings.removed,
+    result.dataBindings.changed,
+    result.buildDoctor.introduced,
+    result.buildDoctor.resolved,
+    result.buildDoctor.changed,
+    result.flowTraces.introduced,
+    result.flowTraces.removed,
+    result.flowTraces.changed,
+  ].some((entry) => entry.truncated)
+    || baseSnapshot.flowTraceSummary.globalTruncated
+    || compareSnapshot.flowTraceSummary.globalTruncated;
   return analysisDiffSchema.parse(result);
 }
 

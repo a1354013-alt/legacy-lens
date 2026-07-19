@@ -68,6 +68,13 @@ const STANDARD_PACKAGES = new Set([
   "designide",
 ]);
 
+interface DelphiMetadataValue {
+  value: string;
+  sourceFile: string;
+  lineNumber: number | null;
+  condition?: string;
+}
+
 function normalizePath(value: string) {
   return value.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
 }
@@ -167,6 +174,20 @@ function splitPackageValues(value: string) {
   return value.split(/[;,]+/).map((part) => part.trim()).filter(Boolean);
 }
 
+function metadataValue(value: string, sourceFile: string, lineNumber: number | null, condition?: string): DelphiMetadataValue {
+  return { value, sourceFile, lineNumber, ...(condition ? { condition } : {}) };
+}
+
+function metadataEvidence(entry: DelphiMetadataValue, extra?: { resolvedPath?: string | null }) {
+  return [
+    `sourceFile=${entry.sourceFile}`,
+    `lineNumber=${entry.lineNumber ?? "unknown"}`,
+    `condition=${entry.condition ?? "none"}`,
+    `rawValue=${entry.value}`,
+    `resolvedPath=${extra?.resolvedPath ?? "unresolved"}`,
+  ].join("; ");
+}
+
 function collapsePath(path: string) {
   const segments: string[] = [];
   const normalized = normalizePath(path).replace(/^["']|["']$/g, "");
@@ -213,6 +234,13 @@ function resolveRelativePath(baseFile: string, rawPath: string) {
 function isStandardUnit(unit: string) {
   const normalized = normalizeKey(unit);
   return STANDARD_UNIT_EXACT.has(normalized) || STANDARD_UNIT_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function isStandardPackage(packageName: string) {
+  const normalized = normalizeKey(packageName);
+  if (STANDARD_PACKAGES.has(normalized)) return true;
+  const match = normalized.match(/^([a-z][a-z0-9]*?)(\d+)$/);
+  return !!match && STANDARD_PACKAGES.has(match[1] ?? "");
 }
 
 function parseRcReferences(content: string) {
@@ -276,12 +304,12 @@ function parseXmlMetadata(file: { path: string; content: string }, findings: Del
   const result = {
     configurations: [] as string[],
     platforms: [] as string[],
-    defines: [] as string[],
-    searchPaths: [] as string[],
-    includePaths: [] as string[],
-    outputPaths: [] as string[],
-    requiredPackages: [] as string[],
-    runtimePackages: [] as string[],
+    defines: [] as DelphiMetadataValue[],
+    searchPaths: [] as DelphiMetadataValue[],
+    includePaths: [] as DelphiMetadataValue[],
+    outputPaths: [] as DelphiMetadataValue[],
+    requiredPackages: [] as DelphiMetadataValue[],
+    runtimePackages: [] as DelphiMetadataValue[],
     projectReferences: [] as Array<{ path: string; lineNumber: number | null; condition?: string }>,
     evidence: [] as string[],
     parseLimited: false,
@@ -337,14 +365,42 @@ function parseXmlMetadata(file: { path: string; content: string }, findings: Del
       const texts = safeText(value);
       if (CONFIG_TAGS.has(normalizedTag)) result.configurations.push(...texts);
       if (PLATFORM_TAGS.has(normalizedTag)) result.platforms.push(...texts);
-      if (DEFINE_TAGS.has(normalizedTag)) result.defines.push(...texts.flatMap((entry) => splitDelimitedValues(entry.replace(/,/g, ";"))));
+      if (DEFINE_TAGS.has(normalizedTag)) {
+        result.defines.push(
+          ...texts.flatMap((entry) =>
+            splitDelimitedValues(entry.replace(/,/g, ";")).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+          )
+        );
+      }
       if (PATH_LIST_TAGS.has(normalizedTag)) {
         const target = normalizedTag.includes("include") ? result.includePaths : result.searchPaths;
-        target.push(...texts.flatMap((entry) => splitDelimitedValues(entry)));
+        target.push(
+          ...texts.flatMap((entry) =>
+            splitDelimitedValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+          )
+        );
       }
-      if (OUTPUT_PATH_TAGS.has(normalizedTag)) result.outputPaths.push(...texts.flatMap((entry) => splitDelimitedValues(entry)));
-      if (PACKAGE_TAGS.has(normalizedTag)) result.requiredPackages.push(...texts.flatMap((entry) => splitPackageValues(entry)));
-      if (RUNTIME_PACKAGE_TAGS.has(normalizedTag)) result.runtimePackages.push(...texts.flatMap((entry) => splitPackageValues(entry)));
+      if (OUTPUT_PATH_TAGS.has(normalizedTag)) {
+        result.outputPaths.push(
+          ...texts.flatMap((entry) =>
+            splitDelimitedValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+          )
+        );
+      }
+      if (PACKAGE_TAGS.has(normalizedTag)) {
+        result.requiredPackages.push(
+          ...texts.flatMap((entry) =>
+            splitPackageValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+          )
+        );
+      }
+      if (RUNTIME_PACKAGE_TAGS.has(normalizedTag)) {
+        result.runtimePackages.push(
+          ...texts.flatMap((entry) =>
+            splitPackageValues(entry).map((part) => metadataValue(part, file.path, lineForLiteral(file.content, part), attrs.Condition))
+          )
+        );
+      }
       if (normalizeKey(attrs.Personality)) result.personalityEvidence.push(`Personality=${attrs.Personality}`);
       if (normalizeKey(attrs.Version)) result.personalityEvidence.push(`Version=${attrs.Version}`);
       if (normalizeKey(tagName) === "mainsource") result.evidence.push(`MainSource=${texts.join(", ")}`);
@@ -460,12 +516,12 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
   const projectEntries: DelphiBuildDoctorResult["projectEntries"] = [];
   const configurations: string[] = [];
   const platforms: string[] = [];
-  const defines: string[] = [];
-  const searchPaths: string[] = [];
-  const includePaths: string[] = [];
-  const outputPaths: string[] = [];
-  const runtimePackages: string[] = [];
-  const requiredPackages: string[] = [];
+  const defines: DelphiMetadataValue[] = [];
+  const searchPaths: DelphiMetadataValue[] = [];
+  const includePaths: DelphiMetadataValue[] = [];
+  const outputPaths: DelphiMetadataValue[] = [];
+  const runtimePackages: DelphiMetadataValue[] = [];
+  const requiredPackages: DelphiMetadataValue[] = [];
   const requiredUnits: string[] = [];
   const explicitMissingUnits: string[] = [];
   const concreteMissingPackages: string[] = [];
@@ -548,7 +604,9 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
       const stemCandidates = localPackageIndex.get(normalizeKey(stem(file.path))) ?? [];
       stemCandidates.push(file.path);
       localPackageIndex.set(normalizeKey(stem(file.path)), stemCandidates);
-      requiredPackages.push(...parseRequiredPackagesFromDpk(file.content));
+      requiredPackages.push(
+        ...parseRequiredPackagesFromDpk(file.content).map((entry) => metadataValue(entry, file.path, lineForLiteral(file.content, entry), undefined))
+      );
     }
 
     if (XML_METADATA_EXTENSIONS.has(file.extension)) {
@@ -570,11 +628,15 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
 
     if ([".cfg", ".dof"].includes(file.extension)) {
       projectEntries.push({ path: file.path, kind: file.extension.slice(1), lineNumber: 1, evidence: "compiler configuration imported" });
-      defines.push(...parseCfgLikeList(file.content, [/(?:^-D|Defines=)([^\r\n]+)/gim]));
-      searchPaths.push(...parseCfgLikeList(file.content, [/(?:^-U|UnitSearchPath=)([^\r\n]+)/gim]));
-      includePaths.push(...parseCfgLikeList(file.content, [/(?:^-I|IncludePath=)([^\r\n]+)/gim]));
-      outputPaths.push(...parseCfgLikeList(file.content, [/(?:^-E|-N0|-N|OutputDir=)([^\r\n]+)/gim]));
-      requiredPackages.push(...parseCfgLikeList(file.content, [/(?:^-LU|UsePackages=)([^\r\n]+)/gim]).flatMap((entry) => splitPackageValues(entry)));
+      defines.push(...parseCfgLikeList(file.content, [/(?:^-D|Defines=)([^\r\n]+)/gim]).map((entry) => metadataValue(entry, file.path, lineForLiteral(file.content, entry), undefined)));
+      searchPaths.push(...parseCfgLikeList(file.content, [/(?:^-U|UnitSearchPath=)([^\r\n]+)/gim]).map((entry) => metadataValue(entry, file.path, lineForLiteral(file.content, entry), undefined)));
+      includePaths.push(...parseCfgLikeList(file.content, [/(?:^-I|IncludePath=)([^\r\n]+)/gim]).map((entry) => metadataValue(entry, file.path, lineForLiteral(file.content, entry), undefined)));
+      outputPaths.push(...parseCfgLikeList(file.content, [/(?:^-E|-N0|-N|OutputDir=)([^\r\n]+)/gim]).map((entry) => metadataValue(entry, file.path, lineForLiteral(file.content, entry), undefined)));
+      requiredPackages.push(
+        ...parseCfgLikeList(file.content, [/(?:^-LU|UsePackages=)([^\r\n]+)/gim])
+          .flatMap((entry) => splitPackageValues(entry))
+          .map((entry) => metadataValue(entry, file.path, lineForLiteral(file.content, entry), undefined))
+      );
     }
 
     if (file.extension === ".rc") {
@@ -638,17 +700,22 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
     externalDependencies.push(unit);
   }
 
-  for (const rawPath of [...searchPaths, ...includePaths, ...outputPaths]) {
-    const resolved = resolveRelativePath(projectEntries[0]?.path ?? "", rawPath);
+  for (const pathEntry of [...searchPaths, ...includePaths, ...outputPaths]) {
+    const resolved = resolveRelativePath(pathEntry.sourceFile, pathEntry.value);
     if (resolved.absolute) {
       findings.push({
         code: "DELPHI_ABSOLUTE_SEARCH_PATH",
         severity: "warning",
         title: "Absolute search path reduces build portability",
-        description: `${rawPath} is machine-specific and may not exist on another workstation or CI agent.`,
+        description: `${pathEntry.value} is machine-specific and may not exist on another workstation or CI agent.`,
         recommendation: "Replace absolute component paths with project-relative paths or documented environment variables.",
         confidence: "high",
-        evidence: rawPath,
+        sourceFile: pathEntry.sourceFile,
+        lineNumber: pathEntry.lineNumber ?? undefined,
+        condition: pathEntry.condition,
+        rawValue: pathEntry.value,
+        resolvedPath: resolved.resolvedPath ?? undefined,
+        evidence: metadataEvidence(pathEntry, { resolvedPath: resolved.resolvedPath }),
       });
     }
     if (resolved.escaping) {
@@ -656,10 +723,15 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
         code: "DELPHI_ESCAPING_SEARCH_PATH",
         severity: "warning",
         title: "Search path escapes the imported project tree",
-        description: `${rawPath} references a parent directory outside the imported project.`,
+        description: `${pathEntry.value} references a parent directory outside the imported project.`,
         recommendation: "Import the referenced shared units or document the required external dependency.",
         confidence: "medium",
-        evidence: rawPath,
+        sourceFile: pathEntry.sourceFile,
+        lineNumber: pathEntry.lineNumber ?? undefined,
+        condition: pathEntry.condition,
+        rawValue: pathEntry.value,
+        resolvedPath: resolved.resolvedPath ?? undefined,
+        evidence: metadataEvidence(pathEntry, { resolvedPath: resolved.resolvedPath }),
       });
     }
   }
@@ -701,15 +773,25 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
     }
   }
 
-  const packageResolutions: DelphiPackageResolutionDetail[] = uniq(requiredPackages).map((pkg) => {
+  const packageGroups = new Map<string, DelphiMetadataValue[]>();
+  for (const pkg of requiredPackages) {
+    const key = normalizeKey(pkg.value);
+    const bucket = packageGroups.get(key) ?? [];
+    bucket.push(pkg);
+    packageGroups.set(key, bucket);
+  }
+
+  const packageResolutions: DelphiPackageResolutionDetail[] = Array.from(packageGroups.entries()).sort(([left], [right]) => left.localeCompare(right)).map(([, entries]) => {
+    const pkg = entries[0]!.value;
     const normalizedPkg = normalizeKey(pkg);
     const localMatches = uniq([
       ...(localPackageIndex.get(normalizedPkg) ?? []),
       ...(localPackageIndex.get(normalizeKey(stem(pkg))) ?? []),
     ]);
-    const explicitPath = /[\\/]|\.dpk$|\.dproj$/i.test(pkg) ? resolveRelativePath(projectEntries[0]?.path ?? "", pkg) : null;
+    const explicitEntries = /[\\/]|\.dpk$|\.dproj$/i.test(pkg) ? entries.map((entry) => ({ entry, resolved: resolveRelativePath(entry.sourceFile, entry.value) })) : [];
 
-    if (explicitPath?.absolute) {
+    for (const explicit of explicitEntries) {
+      if (!explicit.resolved.absolute) continue;
       findings.push({
         code: "DELPHI_ABSOLUTE_SEARCH_PATH",
         severity: "warning",
@@ -717,11 +799,17 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
         description: `${pkg} uses an absolute package path.`,
         recommendation: "Prefer project-relative or macro-based package references.",
         confidence: "high",
-        evidence: pkg,
+        sourceFile: explicit.entry.sourceFile,
+        lineNumber: explicit.entry.lineNumber ?? undefined,
+        condition: explicit.entry.condition,
+        rawValue: explicit.entry.value,
+        resolvedPath: explicit.resolved.resolvedPath ?? undefined,
+        evidence: metadataEvidence(explicit.entry, { resolvedPath: explicit.resolved.resolvedPath }),
       });
     }
 
-    if (explicitPath && !explicitPath.unresolvedMacro && explicitPath.resolvedPath && !knownPaths.has(explicitPath.resolvedPath.toLowerCase())) {
+    const missingExplicit = explicitEntries.find((entry) => !entry.resolved.unresolvedMacro && entry.resolved.resolvedPath && !knownPaths.has(entry.resolved.resolvedPath.toLowerCase()));
+    if (missingExplicit) {
       concreteMissingPackages.push(pkg);
       findings.push({
         code: "DELPHI_PACKAGE_MISSING",
@@ -730,9 +818,14 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
         description: "The project references a statically resolvable package path that was not imported.",
         recommendation: "Import the referenced package/project file or correct the path before compiling.",
         confidence: "high",
-        evidence: pkg,
+        sourceFile: missingExplicit.entry.sourceFile,
+        lineNumber: missingExplicit.entry.lineNumber ?? undefined,
+        condition: missingExplicit.entry.condition,
+        rawValue: missingExplicit.entry.value,
+        resolvedPath: missingExplicit.resolved.resolvedPath ?? undefined,
+        evidence: metadataEvidence(missingExplicit.entry, { resolvedPath: missingExplicit.resolved.resolvedPath }),
       });
-      return { packageName: pkg, resolution: "missing", resolvedPath: explicitPath.resolvedPath, evidence: [pkg] };
+      return { packageName: pkg, resolution: "missing", resolvedPath: missingExplicit.resolved.resolvedPath!, evidence: entries.map((entry) => metadataEvidence(entry, { resolvedPath: resolveRelativePath(entry.sourceFile, entry.value).resolvedPath })) };
     }
 
     if (localMatches.length === 1) {
@@ -753,8 +846,8 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
       return { packageName: pkg, resolution: "ambiguous", evidence: localMatches };
     }
 
-    if (STANDARD_PACKAGES.has(normalizedPkg)) {
-      return { packageName: pkg, resolution: "delphi_standard", evidence: [pkg] };
+    if (isStandardPackage(pkg)) {
+      return { packageName: pkg, resolution: "delphi_standard", evidence: entries.map((entry) => metadataEvidence(entry)) };
     }
 
     findings.push({
@@ -767,7 +860,7 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
       evidence: pkg,
     });
     externalDependencies.push(pkg);
-    return { packageName: pkg, resolution: "external_unverified", evidence: [pkg] };
+    return { packageName: pkg, resolution: "external_unverified", evidence: entries.map((entry) => metadataEvidence(entry)) };
   });
 
   if (runtimePackages.length > 0) {
@@ -778,7 +871,7 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
       description: "Project metadata includes runtime package configuration.",
       recommendation: "Verify BPL/package deployment policy for target environments.",
       confidence: "medium",
-      evidence: uniq(runtimePackages).join(", "),
+      evidence: uniq(runtimePackages.map((entry) => entry.value)).join(", "),
     });
   }
 
@@ -790,7 +883,7 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
       description: "Conditional compilation may change the actual build graph.",
       recommendation: "Review the active Delphi configuration before relying on static path/build findings.",
       confidence: "medium",
-      evidence: uniq(defines).join(", "),
+      evidence: uniq(defines.map((entry) => entry.value)).join(", "),
     });
   }
 
@@ -824,12 +917,12 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
     projectEntries: [...projectEntries].sort((left, right) => left.path.localeCompare(right.path) || left.kind.localeCompare(right.kind)),
     configurations: uniq(configurations),
     platforms: uniq(platforms),
-    defines: uniq(defines),
-    searchPaths: uniq(searchPaths),
-    includePaths: uniq(includePaths),
-    outputPaths: uniq(outputPaths),
-    runtimePackages: uniq(runtimePackages),
-    requiredPackages: uniq(requiredPackages),
+    defines: uniq(defines.map((entry) => entry.value)),
+    searchPaths: uniq(searchPaths.map((entry) => entry.value)),
+    includePaths: uniq(includePaths.map((entry) => entry.value)),
+    outputPaths: uniq(outputPaths.map((entry) => entry.value)),
+    runtimePackages: uniq(runtimePackages.map((entry) => entry.value)),
+    requiredPackages: uniq(requiredPackages.map((entry) => entry.value)),
     packageResolutions: packageResolutions.sort((left, right) => left.packageName.localeCompare(right.packageName)),
     requiredUnits: uniq(requiredUnits),
     missingUnits: uniq(explicitMissingUnits),

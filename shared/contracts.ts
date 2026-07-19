@@ -188,6 +188,9 @@ export const delphiBuildFindingSchema = z.object({
   confidence: confidenceLevelSchema,
   sourceFile: z.string().optional(),
   lineNumber: z.number().int().positive().optional(),
+  condition: z.string().optional(),
+  rawValue: z.string().optional(),
+  resolvedPath: z.string().optional(),
   evidence: z.string().optional(),
   relatedFiles: z.array(z.string()).optional(),
 });
@@ -633,23 +636,98 @@ const diffBucketSchema = <T extends z.ZodTypeAny>(item: T) =>
     truncated: z.boolean(),
   });
 
-const diffStringBucketSchema = diffBucketSchema(z.string());
-const diffUnknownBucketSchema = diffBucketSchema(z.unknown());
+const diffChangedEntrySchema = <T extends z.ZodTypeAny>(item: T) =>
+  z.object({
+    key: z.string(),
+    before: item,
+    after: item,
+  });
+
+const analysisMetricDeltaKeys = [
+  "fileCount",
+  "eligibleFileCount",
+  "analyzedFileCount",
+  "skippedFileCount",
+  "heuristicFileCount",
+  "degradedFileCount",
+  "symbolCount",
+  "dependencyCount",
+  "fieldCount",
+  "fieldDependencyCount",
+  "riskCount",
+  "ruleCount",
+  "warningCount",
+] as const;
+
+const analysisMetricDeltaSchema = z.object(
+  Object.fromEntries(analysisMetricDeltaKeys.map((key) => [key, z.number()])) as Record<(typeof analysisMetricDeltaKeys)[number], z.ZodNumber>
+);
+
+const diffSourceManifestEntrySchema = z.object({
+  path: z.string(),
+  fileType: z.string().nullable(),
+  lineCount: z.number().int().nonnegative().nullable(),
+  sha256: z.string().length(64),
+});
 
 export const analysisDiffSchema = z.object({
   baseRun: analysisRunSummarySchema,
   compareRun: analysisRunSummarySchema,
-  metricsDelta: z.record(z.string(), z.number()),
-  files: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema, changed: diffStringBucketSchema }),
-  symbols: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema }),
-  dependencies: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema }),
-  fields: z.object({ added: diffStringBucketSchema, removed: diffStringBucketSchema, changed: diffStringBucketSchema }),
-  risks: z.object({ introduced: diffUnknownBucketSchema, resolved: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
-  rules: z.object({ introduced: diffUnknownBucketSchema, resolved: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
-  delphiEvents: z.object({ introduced: diffUnknownBucketSchema, removed: diffUnknownBucketSchema, resolutionChanged: diffUnknownBucketSchema }),
-  dataBindings: z.object({ introduced: diffUnknownBucketSchema, removed: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
-  buildDoctor: z.object({ introduced: diffUnknownBucketSchema, resolved: diffUnknownBucketSchema, changed: diffUnknownBucketSchema, scoreDelta: z.number() }),
-  flowTraces: z.object({ introduced: diffUnknownBucketSchema, removed: diffUnknownBucketSchema, changed: diffUnknownBucketSchema }),
+  metricsDelta: analysisMetricDeltaSchema,
+  files: z.object({
+    added: diffBucketSchema(diffSourceManifestEntrySchema),
+    removed: diffBucketSchema(diffSourceManifestEntrySchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(diffSourceManifestEntrySchema)),
+  }),
+  symbols: z.object({
+    added: diffBucketSchema(snapshotSymbolSchema),
+    removed: diffBucketSchema(snapshotSymbolSchema),
+  }),
+  dependencies: z.object({
+    added: diffBucketSchema(snapshotDependencySchema),
+    removed: diffBucketSchema(snapshotDependencySchema),
+  }),
+  fields: z.object({
+    added: diffBucketSchema(snapshotSchemaFieldSchema),
+    removed: diffBucketSchema(snapshotSchemaFieldSchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(snapshotSchemaFieldSchema)),
+  }),
+  fieldDependencies: z.object({
+    introduced: diffBucketSchema(snapshotFieldReferenceSchema),
+    removed: diffBucketSchema(snapshotFieldReferenceSchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(snapshotFieldReferenceSchema)),
+  }),
+  risks: z.object({
+    introduced: diffBucketSchema(snapshotRiskSchema),
+    resolved: diffBucketSchema(snapshotRiskSchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(snapshotRiskSchema)),
+  }),
+  rules: z.object({
+    introduced: diffBucketSchema(snapshotRuleSchema),
+    resolved: diffBucketSchema(snapshotRuleSchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(snapshotRuleSchema)),
+  }),
+  delphiEvents: z.object({
+    introduced: diffBucketSchema(delphiEventMapEntrySchema),
+    removed: diffBucketSchema(delphiEventMapEntrySchema),
+    resolutionChanged: diffBucketSchema(diffChangedEntrySchema(delphiEventMapEntrySchema)),
+  }),
+  dataBindings: z.object({
+    introduced: diffBucketSchema(delphiDataBindingSchema),
+    removed: diffBucketSchema(delphiDataBindingSchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(delphiDataBindingSchema)),
+  }),
+  buildDoctor: z.object({
+    introduced: diffBucketSchema(delphiBuildFindingSchema),
+    resolved: diffBucketSchema(delphiBuildFindingSchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(delphiBuildFindingSchema)),
+    scoreDelta: z.number(),
+  }),
+  flowTraces: z.object({
+    introduced: diffBucketSchema(delphiFlowTraceSchema),
+    removed: diffBucketSchema(delphiFlowTraceSchema),
+    changed: diffBucketSchema(diffChangedEntrySchema(delphiFlowTraceSchema)),
+  }),
   truncated: z.boolean(),
 });
 export type AnalysisDiff = z.infer<typeof analysisDiffSchema>;

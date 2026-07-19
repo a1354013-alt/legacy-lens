@@ -558,7 +558,7 @@ describe("project workflow", () => {
       flowMarkdown: "# OLD FLOW",
       warningsJson: [],
     });
-    fakeDb.store.analysisBaselines.push({ id: 1, projectId: 1, baseRunId: 1, compareRunId: 1, createdAt: new Date("2026-01-01T00:00:00.000Z") });
+    fakeDb.store.analysisBaselines.push({ projectId: 1, analysisResultId: 1, createdAt: new Date("2026-01-01T00:00:00.000Z"), updatedAt: new Date("2026-01-01T00:00:00.000Z") });
     zipFiles = [{ path: "new.go", fileName: "new.go", content: "package new", language: "go", size: 11 }];
 
     await importProjectZip(1, 7, "encoded");
@@ -3170,7 +3170,7 @@ describe("project workflow", () => {
     fakeDb.store.risks.push({ id: 1, projectId: 1, riskType: "magic_value", severity: "medium", title: "Risk" });
     fakeDb.store.rules.push({ id: 1, projectId: 1, ruleType: "validation", name: "Rule" });
     fakeDb.store.analysisResults.push({ id: 1, projectId: 1, status: "completed", warningsJson: [] });
-    fakeDb.store.analysisBaselines.push({ id: 1, projectId: 1, baseRunId: 1, compareRunId: 1 });
+    fakeDb.store.analysisBaselines.push({ projectId: 1, analysisResultId: 1, createdAt: new Date("2026-01-01T00:00:00.000Z"), updatedAt: new Date("2026-01-01T00:00:00.000Z") });
     fakeDb.store.projectJobs.push({
       id: 1,
       projectId: 1,

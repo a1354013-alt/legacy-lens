@@ -12,7 +12,10 @@ Legacy Lens v1.1 stores every usable analysis result as an immutable `analysisRe
 
 The project-scoped normalized tables (`symbols`, `dependencies`, `fields`, `fieldDependencies`, `risks`, and `rules`) are still the latest usable materialized projection. They power pagination, current impact analysis, and current report summaries. Historical APIs read the selected run snapshot rather than reconstructing history from the current projection.
 
-`analysisBaselines` stores one movable baseline pointer per project for comparison. Baseline ownership is enforced by checking that both the project and run belong to the current user.
+`analysisBaselines` stores one movable baseline pointer per project through `analysisResultId`. Baseline ownership is enforced by checking that both the project and run belong to the current user.
+- Comparison APIs read immutable snapshots only. They reject self-comparison, cross-project comparisons, unusable runs, missing snapshots, and unsupported snapshot schema versions through controlled application errors.
+- Diff output is structured. Added and removed buckets return underlying snapshot records, while changed buckets return stable `key + before + after` entries for files, fields, field dependencies, risks, rules, Delphi events, Build Doctor findings, and flow traces.
+- Flow trace resolution progressively narrows same-name Delphi symbols by exact stable key, exact qualified name, owner, same source file, Pascal unit, and finally unique project candidate. Active recursion cycles are reported explicitly, and both per-trace step limits and global persisted-trace limits are surfaced in snapshot metadata.
 - Enqueue writes the job row and project status in the same transaction.
 - Only one active job per project is allowed through the `(projectId, activeKey)` unique index and transaction-time conflict checks.
 - The worker claims queued jobs from MySQL instead of relying on process-local promises.

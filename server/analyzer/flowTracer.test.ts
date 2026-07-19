@@ -113,7 +113,7 @@ describe("Delphi flow tracer", () => {
     expect(result.traces[0]?.steps.map((step) => step.label)).not.toContain("TOrderForm.ReferencedOnly");
   });
 
-  it("marks ambiguous same-name call targets as partial instead of silently choosing one", () => {
+  it("resolves same-name call targets progressively by source file", () => {
     const btnSaveClick = symbol("btnSaveClick", 10);
     const duplicateA = symbol("LoadOrder", 20);
     const duplicateB: AnalyzedSymbol = { ...symbol("LoadOrder", 40), file: "OtherForm.pas", stableKey: buildSymbolStableKey({ file: "OtherForm.pas", name: "TOrderForm.LoadOrder", startLine: 40 }) };
@@ -143,8 +143,133 @@ describe("Delphi flow tracer", () => {
       sqlStatements: [],
     });
 
+    expect(result.traces[0]?.status).toBe("complete");
+    expect(result.traces[0]?.steps.map((step) => step.label)).toContain("TOrderForm.LoadOrder");
+    expect(result.traces[0]?.warnings.join(" ")).not.toContain("Ambiguous call target LoadOrder");
+  });
+
+  it("keeps truly ambiguous call targets unresolved after applying every discriminator", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const duplicateA = symbol("LoadOrder", 20);
+    const duplicateB: AnalyzedSymbol = { ...symbol("LoadOrder", 40), startLine: 40, endLine: 43, stableKey: buildSymbolStableKey({ file: "MainForm.pas", name: "TOrderForm.LoadOrder", startLine: 40 }) };
+
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [
+        {
+          formName: "OrderForm",
+          formClass: "TOrderForm",
+          componentName: "btnSave",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "btnSaveClick",
+          filePath: "MainForm.dfm",
+          lineNumber: 4,
+          resolvedMethod: "TOrderForm.btnSaveClick",
+          resolvedFile: "MainForm.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick, duplicateA, duplicateB],
+      dependencies: [
+        { from: btnSaveClick.stableKey, fromName: "btnSaveClick", toName: "LoadOrder", type: "calls", line: 12 },
+      ],
+      sqlStatements: [],
+    });
+
     expect(result.traces[0]?.status).toBe("partial");
     expect(result.traces[0]?.warnings.join(" ")).toContain("Ambiguous call target LoadOrder");
+  });
+
+  it("discloses direct call cycles as structured warnings", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const saveOrder = symbol("SaveOrder", 20);
+
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [
+        {
+          formName: "OrderForm",
+          formClass: "TOrderForm",
+          componentName: "btnSave",
+          componentClass: "TButton",
+          eventName: "OnClick",
+          handlerName: "btnSaveClick",
+          filePath: "MainForm.dfm",
+          lineNumber: 4,
+          resolvedMethod: "TOrderForm.btnSaveClick",
+          resolvedFile: "MainForm.pas",
+          status: "resolved",
+          warnings: [],
+        },
+      ],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick, saveOrder],
+      dependencies: [
+        { from: btnSaveClick.stableKey, to: saveOrder.stableKey, fromName: "btnSaveClick", toName: "SaveOrder", type: "calls", line: 12 },
+        { from: saveOrder.stableKey, to: btnSaveClick.stableKey, fromName: "SaveOrder", toName: "btnSaveClick", type: "calls", line: 22 },
+      ],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.status).toBe("partial");
+    expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_CALL_CYCLE");
+  });
+
+  it("adds a deterministic warning when step limits are reached mid-SQL expansion", () => {
+    const originalStepLimit = FLOW_TRACE_LIMITS.maxStepsPerTrace;
+    (FLOW_TRACE_LIMITS as any).maxStepsPerTrace = 5;
+    try {
+      const btnSaveClick = symbol("btnSaveClick", 10);
+      const saveOrder = symbol("SaveOrder", 20);
+      const result = buildDelphiFlowTraces({
+        delphiEventMap: [
+          {
+            formName: "OrderForm",
+            formClass: "TOrderForm",
+            componentName: "btnSave",
+            componentClass: "TButton",
+            eventName: "OnClick",
+            handlerName: "btnSaveClick",
+            filePath: "MainForm.dfm",
+            lineNumber: 4,
+            resolvedMethod: "TOrderForm.btnSaveClick",
+            resolvedFile: "MainForm.pas",
+            status: "resolved",
+            warnings: [],
+          },
+        ],
+        delphiDataBindings: [],
+        symbols: [btnSaveClick, saveOrder],
+        dependencies: [{ from: btnSaveClick.stableKey, to: saveOrder.stableKey, fromName: "btnSaveClick", toName: "SaveOrder", type: "calls", line: 12 }],
+        sqlStatements: [
+          {
+            stableKey: "sql-1",
+            ownerSymbolStableKey: saveOrder.stableKey,
+            ownerSymbolName: "TOrderForm.SaveOrder",
+            filePath: "MainForm.pas",
+            startLine: 32,
+            endLine: 35,
+            operation: "select",
+            normalizedSql: "SELECT A, B, C FROM dbo.ORDER_M",
+            tables: [{ name: "dbo.ORDER_M", operation: "read" }],
+            fields: [
+              { table: "dbo.ORDER_M", field: "A", operation: "read" },
+              { table: "dbo.ORDER_M", field: "B", operation: "read" },
+              { table: "dbo.ORDER_M", field: "C", operation: "read" },
+            ],
+            dynamic: false,
+            confidence: "high",
+            warnings: [],
+          },
+        ],
+      });
+
+      expect(result.traces[0]?.truncated).toBe(true);
+      expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_STEP_LIMIT_REACHED");
+    } finally {
+      (FLOW_TRACE_LIMITS as any).maxStepsPerTrace = originalStepLimit;
+    }
   });
 
   it("keeps dataset component bindings out of affected tables when no static table mapping exists", () => {

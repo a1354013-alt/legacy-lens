@@ -17,6 +17,11 @@ vi.mock("../services/projectWorkflow", () => ({
     mimeType: "application/zip",
     buffer: Buffer.from("zip-bytes"),
   })),
+  buildAnalysisDiffArchiveBuffer: vi.fn(async (projectId: number, _userId: number, baseRunId: number, compareRunId: number) => ({
+    fileName: `legacy-lens-report-${projectId}-diff-${baseRunId}-${compareRunId}.zip`,
+    mimeType: "application/zip",
+    buffer: Buffer.from("diff-zip-bytes"),
+  })),
 }));
 
 async function withReportServer<T>(callback: (baseUrl: string) => Promise<T>) {
@@ -47,6 +52,17 @@ describe("reportRoute", () => {
       expect(response.headers.get("content-type")).toContain("application/zip");
       expect(response.headers.get("content-disposition")).toBe('attachment; filename="legacy-lens-report-42.zip"');
       expect(await response.text()).toBe("zip-bytes");
+    });
+  });
+
+  it("downloads the analysis diff ZIP with validated ids", async () => {
+    await withReportServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=1&compareRunId=2`);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/zip");
+      expect(response.headers.get("content-disposition")).toBe('attachment; filename="legacy-lens-report-42-diff-1-2.zip"');
+      expect(await response.text()).toBe("diff-zip-bytes");
     });
   });
 

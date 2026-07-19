@@ -146,9 +146,11 @@ Files at the ZIP root:
 
 Analysis runs are immutable in v1.1. The normalized project-scoped tables (`symbols`, `dependencies`, `fields`, `fieldDependencies`, `risks`, and `rules`) remain the latest usable projection for pagination and impact analysis, while every usable run is preserved in `analysisResults.snapshotJson` with a deterministic source fingerprint. Failed reanalysis does not erase or rewrite the previous usable run.
 
-Build Doctor is static and heuristic. It imports Delphi project metadata and reports missing explicit unit paths, package resolution classification (`project_local`, `delphi_standard`, `external_unverified`, `missing`, `ambiguous`), unresolved non-standard units, absolute or escaping search paths, resources, duplicated unit names, and configuration signals, but it does not compile the project or execute project files, scripts, binaries, MSBuild, or commands.
+Build Doctor is static and heuristic. It imports Delphi project metadata and reports missing explicit unit paths, source-aware package resolution classification (`project_local`, `delphi_standard`, `external_unverified`, `missing`, `ambiguous`), unresolved non-standard units, absolute or escaping search paths, resources, duplicated unit names, and configuration signals. Relative search/include/output/package/resource paths are resolved against the file that declared them, and findings preserve source file, line, raw value, resolved path, and condition evidence when available. It does not compile the project or execute project files, scripts, binaries, MSBuild, or commands.
 
-UI-to-database flow tracing uses persisted static evidence only: DFM/FMX event bindings, resolved Pascal handlers, confirmed static call dependencies, SQL evidence, field references, and static data bindings. Generic symbol references do not extend call chains. Dynamic SQL, runtime-created components, runtime event assignment, inherited forms, unresolved handler ambiguity, unresolved DataSet-to-table mappings, and runtime data binding can remain incomplete and are reported with lower confidence or warnings.
+UI-to-database flow tracing uses persisted static evidence only: DFM/FMX event bindings, progressively resolved Pascal handlers, confirmed static call dependencies, SQL evidence, field references, and static data bindings. Generic symbol references do not extend call chains. Dynamic SQL, runtime-created components, runtime event assignment, inherited forms, unresolved handler ambiguity, unresolved DataSet-to-table mappings, recursion cycles, and runtime data binding can remain incomplete and are reported with lower confidence or warnings. Step limits and global trace caps are disclosed in persisted summary metadata rather than silently sliced away.
+
+Analysis diff and snapshot comparison are implemented in v1.1. Immutable run snapshots can be compared through the API, exported as a deterministic comparison ZIP, and reviewed with structured before/after records for files, fields, field dependencies, risks, rules, Delphi events, Build Doctor findings, and flow traces.
 
 Minimal excerpt (shape) of `metadata.json`:
 
@@ -698,10 +700,9 @@ Impact Analysis helps developers understand what may break before changing legac
 GET /api/trpc/analysis.getImpact?batch=1&input={"0":{"projectId":1,"target":"EB_SPECI","type":"auto"}}
 ```
 
-## Roadmap (Not Implemented Yet)
+## Roadmap
 
-These are intentionally not half-shipped in code:
-- analysis diff / snapshot compare
+These remain intentionally unfinished:
 - interactive dependency graph
 - custom rule packs
 - ingestion preflight report

@@ -68,48 +68,66 @@ export function resolveDelphiSymbol(input: {
     }
   }
 
-  if (input.qualifiedName) {
-    const exactQualified = sortCandidates(allCandidates.filter((symbol) => normalize(symbol.qualifiedName) === normalize(input.qualifiedName)));
-    if (exactQualified.length === 1) {
-      return { symbol: exactQualified[0] ?? null, ambiguous: false, candidates: exactQualified, strategy: "qualified_name" };
+  let candidates = allCandidates;
+  let narrowedStrategy: DelphiSymbolResolutionResult["strategy"] | null = null;
+
+  const narrow = (
+    nextCandidates: AnalyzedSymbol[],
+    strategy: Exclude<DelphiSymbolResolutionResult["strategy"], "stable_key" | "unresolved" | "ambiguous">
+  ): AnalyzedSymbol | null => {
+    if (nextCandidates.length === 0) {
+      return null;
     }
-    if (exactQualified.length > 1) {
-      return { symbol: null, ambiguous: true, candidates: exactQualified, strategy: "ambiguous" };
+    candidates = sortCandidates(nextCandidates);
+    narrowedStrategy = strategy;
+    if (candidates.length === 1) {
+      return candidates[0] ?? null;
+    }
+    return null;
+  };
+
+  if (input.qualifiedName) {
+    const exactQualified = candidates.filter((symbol) => normalize(symbol.qualifiedName) === normalize(input.qualifiedName));
+    const resolved = narrow(exactQualified, "qualified_name");
+    if (resolved) {
+      return { symbol: resolved, ambiguous: false, candidates: [resolved], strategy: "qualified_name" };
     }
   }
 
   if (input.ownerName) {
-    const ownerMatches = sortCandidates(allCandidates.filter((symbol) => normalize(ownerNameOf(symbol)) === normalize(input.ownerName)));
-    if (ownerMatches.length === 1) {
-      return { symbol: ownerMatches[0] ?? null, ambiguous: false, candidates: ownerMatches, strategy: "owner_match" };
-    }
-    if (ownerMatches.length > 1) {
-      return { symbol: null, ambiguous: true, candidates: ownerMatches, strategy: "ambiguous" };
+    const ownerMatches = candidates.filter((symbol) => normalize(ownerNameOf(symbol)) === normalize(input.ownerName));
+    const resolved = narrow(ownerMatches, "owner_match");
+    if (resolved) {
+      return { symbol: resolved, ambiguous: false, candidates: [resolved], strategy: "owner_match" };
     }
   }
 
   if (input.sourceFile) {
-    const sameSource = sortCandidates(allCandidates.filter((symbol) => normalizePath(symbol.file) === normalizePath(input.sourceFile)));
-    if (sameSource.length === 1) {
-      return { symbol: sameSource[0] ?? null, ambiguous: false, candidates: sameSource, strategy: "same_source_file" };
-    }
-    if (sameSource.length > 1) {
-      return { symbol: null, ambiguous: true, candidates: sameSource, strategy: "ambiguous" };
+    const sameSource = candidates.filter((symbol) => normalizePath(symbol.file) === normalizePath(input.sourceFile));
+    const resolved = narrow(sameSource, "same_source_file");
+    if (resolved) {
+      return { symbol: resolved, ambiguous: false, candidates: [resolved], strategy: "same_source_file" };
     }
   }
 
   if (input.pascalUnit) {
-    const sameUnit = sortCandidates(allCandidates.filter((symbol) => baseNameWithoutExtension(symbol.file) === normalize(input.pascalUnit)));
-    if (sameUnit.length === 1) {
-      return { symbol: sameUnit[0] ?? null, ambiguous: false, candidates: sameUnit, strategy: "same_pascal_unit" };
+    const sameUnit = candidates.filter((symbol) => baseNameWithoutExtension(symbol.file) === normalize(input.pascalUnit));
+    const resolved = narrow(sameUnit, "same_pascal_unit");
+    if (resolved) {
+      return { symbol: resolved, ambiguous: false, candidates: [resolved], strategy: "same_pascal_unit" };
     }
-    if (sameUnit.length > 1) {
-      return { symbol: null, ambiguous: true, candidates: sameUnit, strategy: "ambiguous" };
-    }
+  }
+
+  if (candidates.length === 1) {
+    return { symbol: candidates[0] ?? null, ambiguous: false, candidates, strategy: narrowedStrategy ?? "unique_project_candidate" };
   }
 
   if (allCandidates.length === 1) {
     return { symbol: allCandidates[0] ?? null, ambiguous: false, candidates: allCandidates, strategy: "unique_project_candidate" };
+  }
+
+  if (candidates.length > 1) {
+    return { symbol: null, ambiguous: true, candidates, strategy: "ambiguous" };
   }
 
   if (allCandidates.length > 1) {
