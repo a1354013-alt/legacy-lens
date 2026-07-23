@@ -66,6 +66,63 @@ describe("reportRoute", () => {
     });
   });
 
+  it("rejects invalid analysis diff ids before calling the service", async () => {
+    const { buildAnalysisDiffArchiveBuffer } = await import("../services/projectWorkflow");
+
+    await withReportServer(async (baseUrl) => {
+      const responses = await Promise.all([
+        fetch(`${baseUrl}/api/projects/not-a-number/analysis-diff.zip?baseRunId=1&compareRunId=2`),
+        fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=0&compareRunId=2`),
+        fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=1&compareRunId=-1`),
+      ]);
+
+      for (const response of responses) {
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({ code: "BAD_REQUEST" });
+      }
+      expect(buildAnalysisDiffArchiveBuffer).not.toHaveBeenCalled();
+    });
+  });
+
+  it("returns 401 for unauthorized analysis diff downloads", async () => {
+    const { sdk } = await import("./sdk");
+    vi.mocked(sdk.authenticateRequest).mockRejectedValueOnce(new Error("Invalid session."));
+
+    await withReportServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=1&compareRunId=2`);
+
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "UNAUTHORIZED",
+        error: "Invalid session.",
+      });
+    });
+  });
+
+  it("surfaces real analysis diff route failures from the service", async () => {
+    const { buildAnalysisDiffArchiveBuffer } = await import("../services/projectWorkflow");
+    vi.mocked(buildAnalysisDiffArchiveBuffer).mockRejectedValueOnce(new AppError("REPORT_NOT_READY", "An analysis run cannot be compared with itself."));
+    vi.mocked(buildAnalysisDiffArchiveBuffer).mockRejectedValueOnce(new AppError("PROJECT_NOT_FOUND", "Analysis runs from another project cannot be compared here."));
+    vi.mocked(buildAnalysisDiffArchiveBuffer).mockRejectedValueOnce(new AppError("REPORT_TOO_LARGE", "Analysis diff ZIP exceeds the size limit."));
+    vi.mocked(buildAnalysisDiffArchiveBuffer).mockRejectedValueOnce(new AppError("UNSUPPORTED_SNAPSHOT_VERSION", "Snapshot schema version 99 is not supported by this Legacy Lens build."));
+
+    await withReportServer(async (baseUrl) => {
+      const sameRun = await fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=1&compareRunId=1`);
+      const crossProject = await fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=1&compareRunId=2`);
+      const tooLarge = await fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=3&compareRunId=4`);
+      const unsupported = await fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=5&compareRunId=6`);
+
+      expect(sameRun.status).toBe(409);
+      await expect(sameRun.json()).resolves.toMatchObject({ code: "REPORT_NOT_READY" });
+      expect(crossProject.status).toBe(404);
+      await expect(crossProject.json()).resolves.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+      expect(tooLarge.status).toBe(413);
+      await expect(tooLarge.json()).resolves.toMatchObject({ code: "REPORT_TOO_LARGE" });
+      expect(unsupported.status).toBe(409);
+      await expect(unsupported.json()).resolves.toMatchObject({ code: "UNSUPPORTED_SNAPSHOT_VERSION" });
+    });
+  });
+
   it("returns 404 when the project does not exist", async () => {
     const { buildReportArchiveBuffer } = await import("../services/projectWorkflow");
     vi.mocked(buildReportArchiveBuffer).mockRejectedValueOnce(new AppError("PROJECT_NOT_FOUND", "Project not found."));

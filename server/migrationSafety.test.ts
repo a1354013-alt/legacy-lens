@@ -262,4 +262,63 @@ maybeDescribe("Drizzle migration smoke", () => {
     },
     MIGRATION_TEST_TIMEOUT_MS
   );
+
+  it(
+    "keeps project sourceFingerprint safe on fresh databases and 0014 -> 0015 upgrades",
+    async () => {
+      const freshDbName = await createDatabase(DATABASE_URL as string, "sourcefp_fresh");
+      const freshConnection = await connectToDatabase(DATABASE_URL as string, freshDbName);
+
+      try {
+        await applyMigrationFiles(freshConnection, getMigrationFiles());
+
+        const [freshColumns] = await freshConnection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'sourceFingerprint'");
+        expect(freshColumns).toHaveLength(1);
+        expect(String(freshColumns[0]?.Type ?? "")).toBe("varchar(64)");
+      } finally {
+        await freshConnection.end();
+        await dropDatabase(DATABASE_URL as string, freshDbName);
+      }
+
+      const upgradeDbName = await createDatabase(DATABASE_URL as string, "sourcefp_upgrade");
+      const upgradeConnection = await connectToDatabase(DATABASE_URL as string, upgradeDbName);
+
+      try {
+        await applyMigrationFiles(upgradeConnection, getMigrationFiles().slice(0, 15));
+
+        await upgradeConnection.query("INSERT INTO `users` (`id`, `openId`, `role`) VALUES (1, 'user-sourcefp', 'user')");
+        await upgradeConnection.query(
+          "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (1, 1, 'legacy-project', 'delphi', 'upload', 'completed', 100, 100)"
+        );
+        await upgradeConnection.query(
+          "INSERT INTO `files` (`id`, `projectId`, `filePath`, `fileName`, `fileType`, `status`, `content`) VALUES (1, 1, 'src/Main.pas', 'Main.pas', '.pas', 'stored', 'unit Main;'), (2, 1, 'src/Main.dfm', 'Main.dfm', '.dfm', 'stored', 'object MainForm: TMainForm end')"
+        );
+
+        await applyMigrationFiles(upgradeConnection, getMigrationFiles().slice(15));
+
+        const [projectRows] = await upgradeConnection.query<mysql.RowDataPacket[]>("SELECT `id`, `name`, `sourceFingerprint` FROM `projects` WHERE `id` = 1");
+        const [fileRows] = await upgradeConnection.query<mysql.RowDataPacket[]>("SELECT `id`, `filePath` FROM `files` WHERE `projectId` = 1 ORDER BY `id` ASC");
+        const [sourceFingerprintColumns] = await upgradeConnection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'sourceFingerprint'");
+
+        expect(projectRows).toEqual([
+          expect.objectContaining({
+            id: 1,
+            name: "legacy-project",
+            sourceFingerprint: null,
+          }),
+        ]);
+        expect(fileRows).toEqual([
+          expect.objectContaining({ id: 1, filePath: "src/Main.pas" }),
+          expect.objectContaining({ id: 2, filePath: "src/Main.dfm" }),
+        ]);
+        expect(sourceFingerprintColumns).toHaveLength(1);
+        expect(String(sourceFingerprintColumns[0]?.Type ?? "")).toBe("varchar(64)");
+        expect(String(sourceFingerprintColumns[0]?.Null ?? "")).toBe("YES");
+      } finally {
+        await upgradeConnection.end();
+        await dropDatabase(DATABASE_URL as string, upgradeDbName);
+      }
+    },
+    MIGRATION_TEST_TIMEOUT_MS
+  );
 });

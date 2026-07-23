@@ -3202,6 +3202,288 @@ describe("project workflow", () => {
     expect(fakeDb.store.analysisBaselines).toHaveLength(0);
   });
 
+  it("manages baselines directly across set, replace, clear, idempotent set, and history summary state", async () => {
+    const { clearAnalysisBaseline, getAnalysisRunDetail, listAnalysisRuns, setAnalysisBaseline } = await import("./analysisHistory");
+    seedProject(1, { status: "completed" });
+    const run1 = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      projectFiles: [{ path: "old.go", content: "package old" }],
+    });
+    const run2 = createValidAnalysisRunFixture({
+      id: 2,
+      projectId: 1,
+      runNumber: 2,
+      projectFiles: [{ path: "new.go", content: "package new" }],
+    });
+    fakeDb.store.projects[0].sourceFingerprint = run2.sourceFingerprint;
+    fakeDb.store.analysisResults.push(run1.row, run2.row);
+
+    await expect(setAnalysisBaseline(fakeDb, 1, 1)).resolves.toEqual({ success: true });
+    expect(fakeDb.store.analysisBaselines).toEqual([
+      expect.objectContaining({ projectId: 1, analysisResultId: 1 }),
+    ]);
+    await expect(setAnalysisBaseline(fakeDb, 1, 1)).resolves.toEqual({ success: true });
+    expect(fakeDb.store.analysisBaselines).toHaveLength(1);
+    expect(fakeDb.store.analysisBaselines[0]).toEqual(expect.objectContaining({ projectId: 1, analysisResultId: 1 }));
+
+    await expect(setAnalysisBaseline(fakeDb, 1, 2)).resolves.toEqual({ success: true });
+    expect(fakeDb.store.analysisBaselines).toEqual([
+      expect.objectContaining({ projectId: 1, analysisResultId: 2 }),
+    ]);
+
+    const history = await listAnalysisRuns(fakeDb, 1, 1, 10);
+    expect(history.items).toEqual([
+      expect.objectContaining({ id: 2, runNumber: 2, isBaseline: true, isLatestUsable: true }),
+      expect.objectContaining({ id: 1, runNumber: 1, isBaseline: false, isLatestUsable: false }),
+    ]);
+    const detail = await getAnalysisRunDetail(fakeDb, 1, 2);
+    expect(detail).toEqual(expect.objectContaining({ id: 2, runNumber: 2, isBaseline: true }));
+
+    await expect(clearAnalysisBaseline(fakeDb, 1)).resolves.toEqual({ success: true });
+    expect(fakeDb.store.analysisBaselines).toEqual([]);
+    const clearedHistory = await listAnalysisRuns(fakeDb, 1, 1, 10);
+    expect(clearedHistory.items).toEqual([
+      expect.objectContaining({ id: 2, isBaseline: false }),
+      expect.objectContaining({ id: 1, isBaseline: false }),
+    ]);
+  });
+
+  it("rejects cross-project and unusable baseline selections", async () => {
+    const { setAnalysisBaseline } = await import("./analysisHistory");
+    seedProject(1, { status: "completed" });
+    seedProject(2, { status: "completed", userId: 7 });
+    const run1 = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      projectFiles: [{ path: "main.go", content: "package main" }],
+    });
+    const run2 = createValidAnalysisRunFixture({
+      id: 2,
+      projectId: 2,
+      runNumber: 1,
+      projectFiles: [{ path: "other.go", content: "package other" }],
+    });
+    fakeDb.store.analysisResults.push(run1.row, run2.row, { ...run1.row, id: 3, runNumber: 2, status: "failed" });
+
+    await expect(setAnalysisBaseline(fakeDb, 1, 2)).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    await expect(setAnalysisBaseline(fakeDb, 1, 3)).rejects.toMatchObject({ code: "REPORT_NOT_READY" });
+    expect(fakeDb.store.analysisBaselines).toEqual([]);
+  });
+
+  it("derives and backfills the current source fingerprint idempotently from current files", async () => {
+    const { ensureProjectSourceFingerprint } = await import("./analysisHistory");
+    seedProject(1, { status: "completed", sourceFingerprint: null });
+    fakeDb.store.files.push(
+      { id: 1, projectId: 1, filePath: "src/B.pas", fileName: "B.pas", fileType: ".pas", lineCount: 10, status: "stored", content: "unit B;" },
+      { id: 2, projectId: 1, filePath: "src/A.pas", fileName: "A.pas", fileType: ".pas", lineCount: 5, status: "stored", content: "unit A;" }
+    );
+
+    const first = await ensureProjectSourceFingerprint(fakeDb, 1);
+    const second = await ensureProjectSourceFingerprint(fakeDb, 1);
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(second).toBe(first);
+    expect(fakeDb.store.projects[0].sourceFingerprint).toBe(first);
+
+    const original = first;
+    fakeDb.store.files.reverse();
+    expect(await ensureProjectSourceFingerprint(fakeDb, 1)).toBe(original);
+    fakeDb.store.files[0].lineCount = 999;
+    fakeDb.store.files[0].fileType = "pascal";
+    expect(await ensureProjectSourceFingerprint(fakeDb, 1)).toBe(original);
+    fakeDb.store.projects[0].sourceFingerprint = null;
+    fakeDb.store.files[0].filePath = "src/C.pas";
+    const changedPath = await ensureProjectSourceFingerprint(fakeDb, 1);
+    expect(changedPath).not.toBe(original);
+    fakeDb.store.projects[0].sourceFingerprint = null;
+    fakeDb.store.files[0].filePath = "src/B.pas";
+    fakeDb.store.files[0].content = "unit B; interface";
+    const changedContent = await ensureProjectSourceFingerprint(fakeDb, 1);
+    expect(changedContent).not.toBe(original);
+  });
+
+  it("retries duplicate run-number allocation once and uses the next available run number", async () => {
+    const { writeSuccessfulAnalysis } = await import("./project/projectAnalysisPersistence");
+    seedProject(1, { status: "completed" });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", lineCount: 1, status: "stored", content: "package main" });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      status: "completed",
+      sourceFingerprint: "old-source",
+      snapshotJson: "{}",
+      warningsJson: [],
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const originalInsert = fakeDb.insert.bind(fakeDb);
+    let duplicateCount = 0;
+    fakeDb.insert = (table: object) => {
+      const tableName = getTableName(table);
+      const base = originalInsert(table);
+      if (tableName !== "analysisResults") {
+        return base;
+      }
+      return {
+        values: async (payload: Row | Row[]) => {
+          const row = Array.isArray(payload) ? payload[0] : payload;
+          if (Number(row.runNumber) === 2 && duplicateCount === 0) {
+            duplicateCount += 1;
+            fakeDb.store.analysisResults.push({
+              id: 99,
+              projectId: 1,
+              runNumber: 2,
+              status: "completed",
+              sourceFingerprint: "raced-source",
+              snapshotJson: "{}",
+              warningsJson: [],
+              createdAt: new Date("2026-01-01T00:00:00.000Z"),
+              updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+            });
+            const error = new Error("Duplicate entry '1-2' for key 'analysisResults_projectId_runNumber_unique'") as Error & { code?: string };
+            error.code = "ER_DUP_ENTRY";
+            throw error;
+          }
+          return base.values(payload);
+        },
+      };
+    };
+
+    await writeSuccessfulAnalysis(
+      {
+        tx: fakeDb,
+        projectId: 1,
+        projectFiles: [{ id: 1, filePath: "main.go" }],
+        result: createPersistenceAnalysisResult(),
+        persistCheckpoint: { operation: "start", table: "analysisResults" },
+      },
+      {
+        assertProjectJobExecutionActive: async () => undefined,
+        getAnalysisResultErrorMessage: () => null,
+        throwAnalysisPersistError: (error) => {
+          throw error;
+        },
+        insertInChunks: async (db, table, rows) => {
+          await db.insert(table as any).values(rows as Row[]);
+        },
+        resolveOwningSymbol: (symbolsForProject, file, line) =>
+          symbolsForProject.find((symbol) => symbol.file === file && symbol.startLine <= line && symbol.endLine >= line),
+        resolveInsertedTargetSymbolId: () => undefined,
+        transitionProjectState: async () => undefined,
+      }
+    );
+
+    const runNumbers = fakeDb.store.analysisResults.map((row: Row) => Number(row.runNumber)).sort((left: number, right: number) => left - right);
+    expect(runNumbers).toEqual([1, 2, 3]);
+    expect(fakeDb.store.analysisResults.find((row: Row) => Number(row.runNumber) === 3)).toEqual(
+      expect.objectContaining({ status: "completed", projectId: 1 })
+    );
+  });
+
+  it("keeps retries bounded, does not retry non-duplicate failures, and leaves no partial immutable run on final failure", async () => {
+    const { writeSuccessfulAnalysis } = await import("./project/projectAnalysisPersistence");
+    seedProject(1, { status: "completed" });
+    fakeDb.store.files.push({ id: 1, projectId: 1, filePath: "main.go", fileName: "main.go", fileType: ".go", lineCount: 1, status: "stored", content: "package main" });
+    fakeDb.store.analysisResults.push({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      status: "completed",
+      sourceFingerprint: "stable-source",
+      snapshotJson: "{}",
+      warningsJson: [],
+      flowMarkdown: "# OLD FLOW",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const makeDeps = () => ({
+      assertProjectJobExecutionActive: async () => undefined,
+      getAnalysisResultErrorMessage: () => null,
+      throwAnalysisPersistError: (error: unknown) => {
+        throw error;
+      },
+      insertInChunks: async (db: typeof fakeDb, table: object, rows: Row[]) => {
+        await db.insert(table as any).values(rows);
+      },
+      resolveOwningSymbol: (symbolsForProject: ProjectAnalysisResult["symbols"], file: string, line: number) =>
+        symbolsForProject.find((symbol) => symbol.file === file && symbol.startLine <= line && symbol.endLine >= line),
+      resolveInsertedTargetSymbolId: () => undefined,
+      transitionProjectState: async () => undefined,
+    });
+
+    const originalInsert = fakeDb.insert.bind(fakeDb);
+    let duplicateAttempts = 0;
+    fakeDb.insert = (table: object) => {
+      const tableName = getTableName(table);
+      const base = originalInsert(table);
+      if (tableName !== "analysisResults") {
+        return base;
+      }
+      return {
+        values: async (_payload: Row | Row[]) => {
+          duplicateAttempts += 1;
+          const error = new Error("Duplicate entry for key 'analysisResults_projectId_runNumber_unique'") as Error & { code?: string };
+          error.code = "ER_DUP_ENTRY";
+          throw error;
+        },
+      };
+    };
+
+    await expect(
+      writeSuccessfulAnalysis(
+        {
+          tx: fakeDb,
+          projectId: 1,
+          projectFiles: [{ id: 1, filePath: "main.go" }],
+          result: createPersistenceAnalysisResult(),
+          persistCheckpoint: { operation: "start", table: "analysisResults" },
+        },
+        makeDeps()
+      )
+    ).rejects.toThrow("Duplicate entry for key 'analysisResults_projectId_runNumber_unique'");
+    expect(duplicateAttempts).toBe(3);
+    expect(fakeDb.store.analysisResults).toEqual([
+      expect.objectContaining({ runNumber: 1, flowMarkdown: "# OLD FLOW", sourceFingerprint: "stable-source" }),
+    ]);
+
+    let nonDuplicateAttempts = 0;
+    fakeDb.insert = (table: object) => {
+      const tableName = getTableName(table);
+      const base = originalInsert(table);
+      if (tableName !== "analysisResults") {
+        return base;
+      }
+      return {
+        values: async (_payload: Row | Row[]) => {
+          nonDuplicateAttempts += 1;
+          throw new Error("database connection lost");
+        },
+      };
+    };
+
+    await expect(
+      writeSuccessfulAnalysis(
+        {
+          tx: fakeDb,
+          projectId: 1,
+          projectFiles: [{ id: 1, filePath: "main.go" }],
+          result: createPersistenceAnalysisResult(),
+          persistCheckpoint: { operation: "start", table: "analysisResults" },
+        },
+        makeDeps()
+      )
+    ).rejects.toThrow("database connection lost");
+    expect(nonDuplicateAttempts).toBe(1);
+    expect(fakeDb.store.analysisResults).toEqual([
+      expect.objectContaining({ runNumber: 1, flowMarkdown: "# OLD FLOW", sourceFingerprint: "stable-source" }),
+    ]);
+  });
+
   it("enforces ownership on paged reads and job reads", async () => {
     const { getProjectJob, getSymbolsPage, queueAnalyzeProject, waitForProjectJobForTests } = await import("./projectWorkflow");
     seedProject(1, { userId: 7 });
@@ -3753,5 +4035,331 @@ describe("project workflow", () => {
     expect(metadata.baseRunNumber).toBe(1);
     expect(metadata.compareRunNumber).toBe(2);
     expect(typeof metadata.truncated).toBe("boolean");
+  });
+
+  it("computes direct analysis diffs with deterministic ordering, evidence deltas, and truncation metadata", async () => {
+    const { getAnalysisDiff } = await import("./analysisHistory");
+    fakeDb.store.projects.push({
+      id: 1,
+      userId: 7,
+      name: "direct-diff-project",
+      language: "delphi",
+      sourceType: "upload",
+      status: "completed",
+      importWarningsJson: [],
+      sourceFingerprint: null,
+    });
+    const run1 = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 7,
+      projectFiles: [
+        { path: "src/Alpha.pas", content: "procedure SaveAlpha;\nbegin\nend;", fileType: ".pas" },
+        { path: "src/Removed.pas", content: "procedure Removed;\nbegin\nend;", fileType: ".pas" },
+        { path: "src/Shared.pas", content: "procedure SharedOld;\nbegin\nend;", fileType: ".pas" },
+      ],
+      result: {
+        status: "completed",
+        symbols: [
+          { stableKey: "src/Alpha.pas::SaveAlpha::1", name: "SaveAlpha", type: "procedure", file: "src/Alpha.pas", startLine: 1, endLine: 3 },
+        ],
+        dependencies: [
+          { from: "src/Alpha.pas::SaveAlpha::1", toName: "QueryAlpha", fromName: "SaveAlpha", type: "calls", line: 2 },
+        ],
+        schemaFields: [
+          { table: "ORDERS", field: "STATUS", fieldType: "varchar", file: "src/Shared.pas", line: 1 },
+          { table: "ORDERS", field: "LEGACY_ONLY", fieldType: "int", file: "src/Removed.pas", line: 1 },
+        ],
+        fieldReferences: [
+          { table: "ORDERS", field: "STATUS", type: "read", file: "src/Shared.pas", line: 2, symbolStableKey: "src/Alpha.pas::SaveAlpha::1", symbolName: "SaveAlpha", context: "read old status" },
+          { table: "ORDERS", field: "LEGACY_ONLY", type: "read", file: "src/Removed.pas", line: 3, symbolStableKey: "src/Alpha.pas::SaveAlpha::1", symbolName: "SaveAlpha", context: "legacy only" },
+        ],
+        risks: [
+          { title: "Legacy risk", description: "resolved later", severity: "high", category: "magic_value", sourceFile: "src/Removed.pas", lineNumber: 5 },
+          { title: "Shared risk", description: "changed evidence", severity: "medium", category: "missing_condition", sourceFile: "src/Shared.pas", lineNumber: 8 },
+        ],
+        rules: [
+          { ruleType: "validation", name: "require_status", description: "old rule", condition: "status required", sourceFile: "src/Shared.pas", lineNumber: 7 },
+          { ruleType: "format", name: "legacy_rule", description: "resolved rule", sourceFile: "src/Removed.pas", lineNumber: 2 },
+        ],
+        delphiEventMap: [
+          { formName: "OrderForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "SaveAlpha", filePath: "forms/OrderForm.dfm", lineNumber: 10, resolvedMethod: "SaveAlpha", resolvedFile: "src/Alpha.pas", status: "resolved", warnings: [] },
+        ],
+        delphiDataBindings: [
+          { formName: "OrderForm", componentName: "StatusEdit", componentClass: "TDBEdit", dataSource: "OrderSource", dataSet: "ORDERS", dataField: "STATUS", readOnly: false, enabled: true, visible: true, accessHint: "read-write", confidence: "high", sourceFile: "forms/OrderForm.dfm", lineNumber: 20, warnings: [] },
+        ],
+        buildDoctor: {
+          status: "ready_with_warnings",
+          score: 58,
+          compilerFamily: { value: "Delphi", confidence: "high", evidence: ["dcc32"] },
+          projectEntries: [],
+          configurations: [],
+          platforms: [],
+          defines: [],
+          searchPaths: [],
+          includePaths: [],
+          outputPaths: [],
+          runtimePackages: [],
+          requiredPackages: [],
+          packageResolutions: [],
+          requiredUnits: [],
+          missingUnits: [],
+          unresolvedUnits: [],
+          missingPackages: [],
+          externalDependencies: [],
+          findings: [
+            { code: "SHARED_FINDING", severity: "warning", title: "Shared finding", description: "old", recommendation: "review", confidence: "medium", evidence: "Old evidence" },
+            { code: "REMOVED_FINDING", severity: "error", title: "Removed finding", description: "removed", recommendation: "fix", confidence: "high", evidence: "Removed evidence" },
+          ],
+          limitations: [],
+        },
+        flowTraces: [
+          { stableKey: "shared-trace", formName: "OrderForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "SaveAlpha", resolvedHandler: "SaveAlpha", status: "partial", confidence: "medium", steps: [{ id: "old-step", type: "handler", label: "SaveAlpha", filePath: "src/Alpha.pas", lineNumber: 1, confidence: "medium" }], affectedTables: ["ORDERS"], affectedFields: [{ table: "ORDERS", field: "STATUS", operation: "read" }], warnings: ["old-warning"], truncated: false },
+        ],
+        flowTraceSummary: { candidateTraceCount: 3, persistedTraceCount: 1, globalTruncated: true },
+        metrics: {
+          fileCount: 3,
+          eligibleFileCount: 3,
+          analyzedFileCount: 2,
+          skippedFileCount: 1,
+          heuristicFileCount: 1,
+          degradedFileCount: 1,
+          symbolCount: 1,
+          dependencyCount: 1,
+          fieldCount: 2,
+          fieldDependencyCount: 2,
+          riskCount: 2,
+          ruleCount: 2,
+          warningCount: 1,
+        },
+      },
+    });
+    const run2 = createValidAnalysisRunFixture({
+      id: 2,
+      projectId: 1,
+      runNumber: 8,
+      projectFiles: [
+        { path: "src/Added.pas", content: "procedure Added;\nbegin\nend;", fileType: ".pas" },
+        { path: "src/Alpha.pas", content: "procedure SaveAlpha;\nbegin\nDoWork;\nend;", fileType: ".pas" },
+        { path: "src/Shared.pas", content: "procedure SharedNew;\nbegin\nend;", fileType: ".pas" },
+      ],
+      result: {
+        status: "completed_with_warnings",
+        symbols: [
+          { stableKey: "src/Alpha.pas::SaveAlpha::1", name: "SaveAlpha", type: "procedure", file: "src/Alpha.pas", startLine: 1, endLine: 4 },
+        ],
+        dependencies: [
+          { from: "src/Alpha.pas::SaveAlpha::1", toName: "QueryAlpha", fromName: "SaveAlpha", type: "calls", line: 3 },
+        ],
+        schemaFields: [
+          { table: "ORDERS", field: "ADDED_ONLY", fieldType: "date", file: "src/Added.pas", line: 1 },
+          { table: "ORDERS", field: "STATUS", fieldType: "nvarchar", file: "src/Shared.pas", line: 1 },
+        ],
+        fieldReferences: [
+          { table: "ORDERS", field: "ADDED_ONLY", type: "write", file: "src/Added.pas", line: 2, symbolStableKey: "src/Alpha.pas::SaveAlpha::1", symbolName: "SaveAlpha", context: "added dependency" },
+          { table: "ORDERS", field: "STATUS", type: "write", file: "src/Shared.pas", line: 3, symbolStableKey: "src/Alpha.pas::SaveAlpha::1", symbolName: "SaveAlpha", context: "changed dependency" },
+        ],
+        risks: [
+          { title: "Shared risk", description: "changed evidence", severity: "high", category: "missing_condition", sourceFile: "src/Shared.pas", lineNumber: 10 },
+          { title: "New risk", description: "introduced", severity: "critical", category: "multiple_writes", sourceFile: "src/Added.pas", lineNumber: 4 },
+        ],
+        rules: [
+          { ruleType: "validation", name: "require_status", description: "new rule text", condition: "status normalized", sourceFile: "src/Shared.pas", lineNumber: 9 },
+          { ruleType: "calculation", name: "new_rule", description: "introduced rule", sourceFile: "src/Added.pas", lineNumber: 6 },
+        ],
+        delphiEventMap: [
+          { formName: "OrderForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "SaveAlpha", filePath: "forms/OrderForm.dfm", lineNumber: 10, resolvedMethod: "SaveAlphaV2", resolvedFile: "src/Alpha.pas", status: "resolved", warnings: [] },
+        ],
+        delphiDataBindings: [
+          { formName: "OrderForm", componentName: "StatusEdit", componentClass: "TDBEdit", dataSource: "OrderSource", dataSet: "ORDERS", dataField: "STATUS", readOnly: true, enabled: true, visible: true, accessHint: "read-only", confidence: "medium", sourceFile: "forms/OrderForm.dfm", lineNumber: 20, warnings: ["changed"] },
+          { formName: "OrderForm", componentName: "AddedEdit", componentClass: "TDBEdit", dataSource: "OrderSource", dataSet: "ORDERS", dataField: "ADDED_ONLY", readOnly: false, enabled: true, visible: true, accessHint: "read-write", confidence: "high", sourceFile: "forms/OrderForm.dfm", lineNumber: 21, warnings: [] },
+        ],
+        buildDoctor: {
+          status: "blocked",
+          score: 91,
+          compilerFamily: { value: "Delphi", confidence: "high", evidence: ["dcc64"] },
+          projectEntries: [],
+          configurations: [],
+          platforms: [],
+          defines: [],
+          searchPaths: [],
+          includePaths: [],
+          outputPaths: [],
+          runtimePackages: [],
+          requiredPackages: [],
+          packageResolutions: [],
+          requiredUnits: [],
+          missingUnits: [],
+          unresolvedUnits: [],
+          missingPackages: [],
+          externalDependencies: [],
+          findings: [
+            { code: "ADDED_FINDING", severity: "warning", title: "Added finding", description: "added", recommendation: "review", confidence: "medium", evidence: "Added evidence" },
+            { code: "SHARED_FINDING", severity: "warning", title: "Shared finding", description: "new", recommendation: "review", confidence: "medium", evidence: "New evidence" },
+          ],
+          limitations: [],
+        },
+        flowTraces: [
+          { stableKey: "shared-trace", formName: "OrderForm", componentName: "SaveButton", componentClass: "TButton", eventName: "OnClick", handlerName: "SaveAlpha", resolvedHandler: "SaveAlphaV2", status: "complete", confidence: "high", steps: [{ id: "new-step", type: "handler", label: "SaveAlphaV2", filePath: "src/Alpha.pas", lineNumber: 1, confidence: "high" }], affectedTables: ["ORDERS", "ORDERS_AUDIT"], affectedFields: [{ table: "ORDERS", field: "STATUS", operation: "write" }], warnings: ["new-warning"], truncated: false },
+        ],
+        flowTraceSummary: { candidateTraceCount: 1, persistedTraceCount: 1, globalTruncated: false },
+        metrics: {
+          fileCount: 3,
+          eligibleFileCount: 2,
+          analyzedFileCount: 2,
+          skippedFileCount: 0,
+          heuristicFileCount: 0,
+          degradedFileCount: 0,
+          symbolCount: 1,
+          dependencyCount: 1,
+          fieldCount: 2,
+          fieldDependencyCount: 2,
+          riskCount: 2,
+          ruleCount: 2,
+          warningCount: 2,
+        },
+      },
+    });
+    fakeDb.store.projects[0].sourceFingerprint = run2.sourceFingerprint;
+    fakeDb.store.analysisResults.push(run1.row, run2.row);
+
+    const diff = await getAnalysisDiff(fakeDb, 1, 1, 2);
+    const repeated = await getAnalysisDiff(fakeDb, 1, 1, 2);
+
+    expect(diff).toEqual(repeated);
+    expect(diff.files.added.items.map((item) => item.path)).toEqual(["src/Added.pas"]);
+    expect(diff.files.removed.items.map((item) => item.path)).toEqual(["src/Removed.pas"]);
+    expect(diff.files.changed.items.map((item) => item.before.path)).toEqual(["src/Alpha.pas", "src/Shared.pas"]);
+    expect(diff.metricsDelta).toEqual({
+      fileCount: 0,
+      eligibleFileCount: -1,
+      analyzedFileCount: 0,
+      skippedFileCount: -1,
+      heuristicFileCount: -1,
+      degradedFileCount: -1,
+      symbolCount: 0,
+      dependencyCount: 0,
+      fieldCount: 0,
+      fieldDependencyCount: 0,
+      riskCount: 0,
+      ruleCount: 0,
+      warningCount: 1,
+    });
+    expect(diff.fields.added.items).toEqual([expect.objectContaining({ table: "ORDERS", field: "ADDED_ONLY" })]);
+    expect(diff.fields.removed.items).toEqual([expect.objectContaining({ table: "ORDERS", field: "LEGACY_ONLY" })]);
+    expect(diff.fields.changed.items).toEqual([
+      expect.objectContaining({
+        before: expect.objectContaining({ table: "ORDERS", field: "STATUS", fieldType: "varchar" }),
+        after: expect.objectContaining({ table: "ORDERS", field: "STATUS", fieldType: "nvarchar" }),
+      }),
+    ]);
+    expect(diff.fieldDependencies.introduced.items).toEqual([
+      expect.objectContaining({ table: "ORDERS", field: "ADDED_ONLY", type: "write" }),
+      expect.objectContaining({ table: "ORDERS", field: "STATUS", type: "write" }),
+    ]);
+    expect(diff.fieldDependencies.removed.items).toEqual([
+      expect.objectContaining({ table: "ORDERS", field: "LEGACY_ONLY", type: "read" }),
+      expect.objectContaining({ table: "ORDERS", field: "STATUS", type: "read" }),
+    ]);
+    expect(diff.fieldDependencies.changed.items).toEqual([]);
+    expect(diff.risks.introduced.items).toEqual([expect.objectContaining({ title: "New risk" })]);
+    expect(diff.risks.resolved.items).toEqual([expect.objectContaining({ title: "Legacy risk" })]);
+    expect(diff.risks.changed.items).toEqual([
+      expect.objectContaining({
+        before: expect.objectContaining({ title: "Shared risk", severity: "medium" }),
+        after: expect.objectContaining({ title: "Shared risk", severity: "high" }),
+      }),
+    ]);
+    expect(diff.rules.introduced.items).toEqual([expect.objectContaining({ name: "new_rule" })]);
+    expect(diff.rules.resolved.items).toEqual([expect.objectContaining({ name: "legacy_rule" })]);
+    expect(diff.rules.changed.items).toEqual([
+      expect.objectContaining({
+        before: expect.objectContaining({ name: "require_status", condition: "status required" }),
+        after: expect.objectContaining({ name: "require_status", condition: "status normalized" }),
+      }),
+    ]);
+    expect(diff.delphiEvents.resolutionChanged.items).toEqual([
+      expect.objectContaining({
+        before: expect.objectContaining({ resolvedMethod: "SaveAlpha" }),
+        after: expect.objectContaining({ resolvedMethod: "SaveAlphaV2" }),
+      }),
+    ]);
+    expect(diff.dataBindings.introduced.items).toEqual([expect.objectContaining({ componentName: "AddedEdit" })]);
+    expect(diff.dataBindings.changed.items).toEqual([
+      expect.objectContaining({
+        before: expect.objectContaining({ componentName: "StatusEdit", readOnly: false, accessHint: "read-write" }),
+        after: expect.objectContaining({ componentName: "StatusEdit", readOnly: true, accessHint: "read-only" }),
+      }),
+    ]);
+    expect(diff.buildDoctor.scoreDelta).toBe(33);
+    expect(diff.buildDoctor.introduced.items).toEqual([
+      expect.objectContaining({ code: "ADDED_FINDING" }),
+      expect.objectContaining({ code: "SHARED_FINDING", evidence: "New evidence" }),
+    ]);
+    expect(diff.buildDoctor.resolved.items).toEqual([
+      expect.objectContaining({ code: "REMOVED_FINDING" }),
+      expect.objectContaining({ code: "SHARED_FINDING", evidence: "Old evidence" }),
+    ]);
+    expect(diff.buildDoctor.changed.items).toEqual([]);
+    expect(diff.flowTraces.changed.items).toEqual([
+      expect.objectContaining({
+        before: expect.objectContaining({ stableKey: "shared-trace", status: "partial" }),
+        after: expect.objectContaining({ stableKey: "shared-trace", status: "complete" }),
+      }),
+    ]);
+    expect(diff.truncated).toBe(true);
+  });
+
+  it("rejects invalid direct analysis diff comparisons", async () => {
+    const { getAnalysisDiff } = await import("./analysisHistory");
+    fakeDb.store.projects.push(
+      { id: 1, userId: 7, name: "a", language: "go", sourceType: "upload", status: "completed", importWarningsJson: [], sourceFingerprint: null },
+      { id: 2, userId: 7, name: "b", language: "go", sourceType: "upload", status: "completed", importWarningsJson: [], sourceFingerprint: null }
+    );
+    const usable = createValidAnalysisRunFixture({
+      id: 1,
+      projectId: 1,
+      runNumber: 1,
+      projectFiles: [{ path: "main.go", content: "package main" }],
+    });
+    const otherProject = createValidAnalysisRunFixture({
+      id: 2,
+      projectId: 2,
+      runNumber: 1,
+      projectFiles: [{ path: "other.go", content: "package other" }],
+    });
+    const missingSnapshot = createValidAnalysisRunFixture({
+      id: 3,
+      projectId: 1,
+      runNumber: 2,
+      projectFiles: [{ path: "missing.go", content: "package missing" }],
+    });
+    const invalidSnapshot = createValidAnalysisRunFixture({
+      id: 4,
+      projectId: 1,
+      runNumber: 3,
+      projectFiles: [{ path: "invalid.go", content: "package invalid" }],
+    });
+    const futureSnapshot = createValidAnalysisRunFixture({
+      id: 5,
+      projectId: 1,
+      runNumber: 4,
+      projectFiles: [{ path: "future.go", content: "package future" }],
+    });
+    fakeDb.store.analysisResults.push(
+      usable.row,
+      otherProject.row,
+      { ...missingSnapshot.row, snapshotJson: null },
+      { ...invalidSnapshot.row, snapshotJson: "{not-json}" },
+      { ...futureSnapshot.row, snapshotJson: JSON.stringify({ schemaVersion: 99 }) },
+      { ...createValidAnalysisRunFixture({ id: 6, projectId: 1, runNumber: 5, projectFiles: [{ path: "pending.go", content: "package pending" }] }).row, status: "processing" }
+    );
+
+    await expect(getAnalysisDiff(fakeDb, 1, 1, 1)).rejects.toMatchObject({ code: "REPORT_NOT_READY" });
+    await expect(getAnalysisDiff(fakeDb, 1, 1, 2)).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    await expect(getAnalysisDiff(fakeDb, 1, 1, 6)).rejects.toMatchObject({ code: "REPORT_NOT_READY" });
+    await expect(getAnalysisDiff(fakeDb, 1, 1, 3)).rejects.toMatchObject({ code: "REPORT_NOT_READY" });
+    await expect(getAnalysisDiff(fakeDb, 1, 1, 4)).rejects.toMatchObject({ code: "REPORT_NOT_READY" });
+    await expect(getAnalysisDiff(fakeDb, 1, 1, 5)).rejects.toMatchObject({ code: "UNSUPPORTED_SNAPSHOT_VERSION" });
   });
 });
