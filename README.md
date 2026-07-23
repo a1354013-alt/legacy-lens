@@ -279,19 +279,41 @@ This repo ships a Dockerfile plus separate compose files for demo and production
 
 #### One-click Demo Start
 
-On Windows, double-click:
+Open the repository root in VS Code and press `F5`.
+
+Normal startup flow:
+- validate Docker and Docker Compose
+- start `docker compose -f docker-compose.demo.yml up -d --build`
+- wait for `GET /ready`
+- open the default browser automatically
+
+During a successful startup, the VS Code terminal stays concise:
+
+```text
+Checking Docker...
+Starting Legacy Lens...
+Waiting for the application...
+Legacy Lens is ready.
+Opening http://localhost:3000
+```
+
+Detailed Docker build and container output is written to `.tmp/f5-start.log` instead of flooding the terminal.
+
+If Legacy Lens is already healthy on the configured port, pressing `F5` skips the rebuild, reports that the app is already running, and opens the browser immediately.
+
+Windows launcher alternative:
 
 ```text
 start-demo.cmd
 ```
 
-This starts the local demo stack with Docker Compose:
+This reuses the same one-click startup flow and starts the local demo stack with Docker Compose:
 - MySQL
 - migrations
 - Legacy Lens app
 - dev-only auth bypass
 
-Open:
+By default the launcher opens:
 
 ```text
 http://localhost:3000
@@ -307,17 +329,37 @@ pnpm demo
 
 This runs the same Docker Compose demo stack from a terminal.
 
-To stop the demo stack:
+To stop the demo stack without deleting demo data, use:
 
 ```bash
 pnpm demo:down
 ```
 
-To reset the demo database and remove its volume:
+Or in VS Code:
+
+```text
+Terminal -> Run Task -> Legacy Lens: Stop Demo
+```
+
+To view detailed container logs on demand, use:
+
+```text
+Terminal -> Run Task -> Legacy Lens: Show Demo Logs
+```
+
+To reset the demo database and remove its volume, use:
 
 ```bash
 pnpm demo:reset
 ```
+
+Or in VS Code:
+
+```text
+Terminal -> Run Task -> Legacy Lens: Reset Demo DB
+```
+
+`Reset Demo DB` is intentionally separate from `F5` because it deletes the local Docker database volume.
 
 The demo compose file brings up MySQL, waits for the one-shot `migrate` service to finish, and only then starts `app`.
 
@@ -357,13 +399,21 @@ Port notes:
 - Demo compose defaults to `3000` for the app and `3306` for MySQL.
 - Production-like compose binds only the app port and expects `DATABASE_URL` to point at an existing MySQL-compatible database.
 - You can override host ports with `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT`, which is what the smoke test does in CI to avoid collisions.
-- On Windows, set alternate ports before starting the demo with:
+- On Windows, set alternate ports before pressing `F5` or running the launcher with:
 
 ```powershell
 $env:LEGACY_LENS_PORT=3100
 $env:LEGACY_LENS_DB_PORT=3310
 .\start-demo.cmd
 ```
+
+- The launcher uses the configured `LEGACY_LENS_PORT` value for Docker port binding, `/ready` polling, progress messages, and the browser URL.
+
+Common problems:
+- Docker Desktop is not running. Start Docker Desktop fully before pressing `F5`.
+- Port `3000` or `3306` is already occupied. Stop the conflicting process or set `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT` first.
+- First startup can take longer because Docker may need to build images.
+- Successful `F5` startup intentionally hides detailed Docker logs; use `Legacy Lens: Show Demo Logs` when you want the verbose output.
 
 ### Docker Smoke / CI Environment Variables
 
@@ -518,7 +568,7 @@ Example:
 4. Download the report
 
 Demo walkthrough:
-1. Start the app with `pnpm dev` or `docker compose -f docker-compose.demo.yml up --build`
+1. Start the app with `pnpm dev`, press `F5`, or run `start-demo.cmd`
 2. Sign in with dev auth bypass
 3. Create a project and import `samples/go/`, `samples/sql/`, or `samples/delphi/`
 4. Run analysis
@@ -558,6 +608,8 @@ Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `p
 | `pnpm demo` | Start the local Docker demo stack with MySQL and dev auth bypass |
 | `pnpm demo:down` | Stop the local Docker demo stack |
 | `pnpm demo:reset` | Stop the local Docker demo stack and remove its demo database volume |
+| `scripts/f5-start.ps1` | VS Code F5 launcher: detached Docker startup, readiness wait, browser open, concise diagnostics |
+| `scripts/f5-stop.ps1` | VS Code stop helper for the Docker demo stack |
 | `start-demo.cmd` | Windows one-click launcher for the local Docker demo stack |
 | `pnpm db:migrate` | Apply Drizzle migrations |
 
@@ -575,6 +627,7 @@ Docker equivalents:
 - `pnpm demo` or `docker compose -f docker-compose.demo.yml up --build` -> local demo stack with MySQL and dev auth bypass
 - `pnpm demo:down` or `docker compose -f docker-compose.demo.yml down` -> stop the local demo stack
 - `pnpm demo:reset` or `docker compose -f docker-compose.demo.yml down -v` -> reset the local demo database
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\f5-start.ps1` -> detached demo startup, readiness wait, browser open
 - `docker compose up --build` -> production-like app/migrate flow using external `DATABASE_URL`
 - `docker compose -f docker-compose.demo.yml run --rm migrate` -> run demo migrations only
 - `pnpm docker:smoke` -> build the compose stack, verify `/health`, `/ready`, `/api/health`, and demo dev-login redirect, then tear it down

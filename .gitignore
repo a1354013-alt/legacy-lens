@@ -52,6 +52,7 @@ playwright-report/
 .uploads/
 .extracted/
 .tmp/
+.tmp/f5-start.log
 
 # temp
 tmp/

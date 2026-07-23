@@ -25,6 +25,7 @@ pnpm docker:smoke
 - Analysis persistence and report export
 - Strict env integer parsing, including invalid production env fail-fast behavior
 - Dependency `targetKind` separation for `internal`, `external`, and `unresolved`
+- Static F5 launcher validation for `.vscode/launch.json`, `.vscode/tasks.json`, detached Docker startup, `/ready` polling, bounded timeout, browser opening, and ignored temporary logs
 
 ## Clean-Environment Expectations
 
@@ -61,3 +62,26 @@ pnpm docker:smoke
 ```
 
 History, Build Doctor, and flow-tracing tests should keep strict assertions for immutable run creation, legacy backfill, deterministic fingerprints, baseline ownership, diff truncation, Build Doctor scoring/finding codes, and trace confidence/truncation.
+
+## Windows F5 Validation
+
+The static launcher tests do not require Docker Desktop. They verify:
+- `.vscode/launch.json` stays valid JSON with exactly one primary `F5` configuration
+- the `F5` command calls `scripts/f5-start.ps1`
+- the launcher starts Docker Compose with `up -d --build`
+- the launcher polls `/ready`, opens the configured application URL, and uses a bounded timeout
+- reset remains a separate explicit task
+- temporary startup logs remain ignored by Git
+
+When Docker Desktop is available on Windows, also validate the live launcher manually:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\f5-start.ps1
+```
+
+Expected behavior:
+- the terminal shows concise progress messages instead of continuous Docker logs
+- the browser opens automatically after `/ready` succeeds
+- a second run detects an already healthy app and opens the browser without rebuilding
+- `Legacy Lens: Stop Demo` stops containers without deleting data
+- `Legacy Lens: Reset Demo DB` remains a separate destructive action

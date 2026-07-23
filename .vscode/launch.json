@@ -2,24 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Legacy Lens: Start Demo",
+      "name": "Legacy Lens: Start and Open",
       "type": "node-terminal",
       "request": "launch",
-      "command": "docker compose -f docker-compose.demo.yml up --build",
-      "cwd": "${workspaceFolder}"
-    },
-    {
-      "name": "Legacy Lens: Stop Demo",
-      "type": "node-terminal",
-      "request": "launch",
-      "command": "docker compose -f docker-compose.demo.yml down",
-      "cwd": "${workspaceFolder}"
-    },
-    {
-      "name": "Legacy Lens: Reset Demo DB",
-      "type": "node-terminal",
-      "request": "launch",
-      "command": "docker compose -f docker-compose.demo.yml down -v",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}\\scripts\\f5-start.ps1\"",
       "cwd": "${workspaceFolder}"
     }
   ]

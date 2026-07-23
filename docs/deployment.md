@@ -79,6 +79,23 @@ curl -X POST "http://localhost:3000/api/projects/import" \
 - pnpm: `10.4.1`
 - Database: MySQL 8+
 
+## Windows Demo Startup
+
+For the local demo stack in VS Code:
+- open the repository root as the workspace
+- press `F5`
+- wait for the launcher to pass the Docker checks and the `/ready` probe
+- Legacy Lens opens in the default browser automatically
+
+The launcher uses `scripts/f5-start.ps1`, starts the demo stack in detached mode, waits up to 180 seconds for `http://localhost:$LEGACY_LENS_PORT/ready`, and writes verbose Docker output to `.tmp/f5-start.log`.
+
+Operational notes:
+- `Terminal -> Run Task -> Legacy Lens: Stop Demo` stops containers without deleting the demo database volume.
+- `Terminal -> Run Task -> Legacy Lens: Show Demo Logs` streams `app`, `migrate`, and `db` logs only when you ask for them.
+- `Terminal -> Run Task -> Legacy Lens: Reset Demo DB` runs `docker compose -f docker-compose.demo.yml down -v` and deletes the local demo database volume.
+- `LEGACY_LENS_PORT` and `LEGACY_LENS_DB_PORT` can be set before launch to move the app or MySQL host ports.
+- If Docker Desktop is not running or the configured ports are occupied, the launcher fails fast with concise diagnostics plus compose status and recent logs.
+
 For reproducible installs in a clean environment:
 
 ```bash
