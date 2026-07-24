@@ -6,6 +6,7 @@ Set-Location $repoRoot
 
 $composeArgs = @("compose", "-f", "docker-compose.demo.yml")
 $startupTimeoutSeconds = 180
+$recoveryWindowSeconds = 20
 $pollIntervalSeconds = 2
 $readyRequestTimeoutSeconds = 5
 $script:dockerCommandAvailable = $false
@@ -281,14 +282,34 @@ function Start-ComposeDetached {
   }
 }
 
+function Restart-AppServiceForRecovery {
+  Write-Step "Legacy Lens app is running but not ready. Recreating only the app service once..."
+
+  $command = $composeArgs + @("up", "-d", "--build", "--force-recreate", "app")
+  if ($script:logPath) {
+    Add-Content -Path $script:logPath -Encoding utf8 -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), (Get-ComposeCommandText $command))
+  }
+
+  try {
+    Invoke-DockerChecked -Arguments $command | Out-File -FilePath $script:logPath -Append -Encoding utf8
+  } catch {
+    Fail-Startup (Get-StartupFailureReason)
+  }
+}
+
 function Wait-ForReadiness {
+  param(
+    [int] $TimeoutSeconds = $startupTimeoutSeconds,
+    [switch] $AllowTimeout
+  )
+
   Write-Step "Waiting for the application..."
 
-  $deadline = (Get-Date).AddSeconds($startupTimeoutSeconds)
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $readyUrl = Get-ReadyUrl
   while ((Get-Date) -lt $deadline) {
     if (Invoke-ReadyCheck -Url $readyUrl) {
-      return
+      return $true
     }
 
     $appState = Get-ComposeServiceState -ServiceName "app"
@@ -309,7 +330,11 @@ function Wait-ForReadiness {
     Start-Sleep -Seconds $pollIntervalSeconds
   }
 
-  Fail-Startup "Timed out waiting for /ready after $startupTimeoutSeconds seconds."
+  if ($AllowTimeout) {
+    return $false
+  }
+
+  Fail-Startup "Timed out waiting for /ready after $TimeoutSeconds seconds."
 }
 
 Initialize-DefaultEnvironment
@@ -333,7 +358,34 @@ try {
 
   Assert-PortsAvailableForStartup
   Start-ComposeDetached
-  Wait-ForReadiness
+  $readyAfterStartup = Wait-ForReadiness -TimeoutSeconds $recoveryWindowSeconds -AllowTimeout
+
+  if (-not $readyAfterStartup) {
+    $appState = Get-ComposeServiceState -ServiceName "app"
+    $migrateState = Get-ComposeServiceState -ServiceName "migrate"
+    $appStatus = ""
+    $migrateStatus = ""
+    $migrateExitCode = 0
+    if ($null -ne $appState) {
+      $appStatus = [string] $appState.Status
+    }
+    if ($null -ne $migrateState) {
+      $migrateStatus = [string] $migrateState.Status
+      $migrateExitCode = [int] $migrateState.ExitCode
+    }
+    $recoveryAction = Get-F5RecoveryAction `
+      -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl) `
+      -AppStatus $appStatus `
+      -MigrateStatus $migrateStatus `
+      -MigrateExitCode $migrateExitCode `
+      -RecoveryAlreadyAttempted $false
+
+    if ($recoveryAction -eq "ForceRecreateApp") {
+      Restart-AppServiceForRecovery
+    }
+
+    Wait-ForReadiness
+  }
 
   Write-Step "Legacy Lens is ready."
   Write-Step "Opening $appUrl"

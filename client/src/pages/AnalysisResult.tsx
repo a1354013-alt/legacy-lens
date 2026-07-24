@@ -9,8 +9,10 @@ import {
   riskTypes,
   ruleTypes,
   symbolKinds,
+  type AnalysisDiff,
 } from "@shared/contracts";
 import { ImpactAnalysisPanel } from "@/components/ImpactAnalysisPanel";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -217,7 +219,9 @@ export default function AnalysisResult() {
     setRunPage,
     setSelectedRunId,
     inspectedRunId,
-    setInspectedRunId,
+    inspectRun,
+    returnToCurrentSource,
+    isInspectingHistoricalRun,
     compareBaseRunId,
     compareRunId,
     flowTraceSearch,
@@ -533,11 +537,11 @@ export default function AnalysisResult() {
           <TabsContent value="history" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={inspectedRunId ? "outline" : "default"}>{inspectedRunId ? "Historical" : "Current source"}</Badge>
+                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>{isInspectingHistoricalRun ? "Historical" : "Current source"}</Badge>
                 <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
               </div>
-              {inspectedRunId ? (
-                <Button size="sm" variant="outline" onClick={() => setInspectedRunId(null)}>
+              {isInspectingHistoricalRun ? (
+                <Button size="sm" variant="outline" onClick={returnToCurrentSource}>
                   Return to current source
                 </Button>
               ) : null}
@@ -549,6 +553,12 @@ export default function AnalysisResult() {
               onPrev={() => setRunPage((value) => Math.max(1, value - 1))}
               onNext={() => setRunPage((value) => value + 1)}
             />
+            {analysisRunsQuery?.error ? (
+              <Alert variant="destructive">
+                <AlertTitle>Unable to load analysis history</AlertTitle>
+                <AlertDescription>{analysisRunsQuery.error.message}</AlertDescription>
+              </Alert>
+            ) : null}
             <div className="space-y-3">
               {runs.map((run) => (
                 <Card key={run.id}>
@@ -577,9 +587,9 @@ export default function AnalysisResult() {
                       <span>Confidence: {run.confidence ? `${run.confidence.score}/100 ${run.confidence.level}` : "unknown"}</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); setInspectedRunId(run.id); }}>View Run details</Button>
-                      <Button size="sm" variant="outline" onClick={() => { setInspectedRunId(run.id); setActiveTab("buildDoctor"); }}>View Build Doctor</Button>
-                      <Button size="sm" variant="outline" onClick={() => { setInspectedRunId(run.id); setFlowTracePage(1); setActiveTab("flow"); }}>View UI → DB Flow</Button>
+                      <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); inspectRun(run.id); }}>View Run details</Button>
+                      <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setActiveTab("buildDoctor"); }}>View Build Doctor</Button>
+                      <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setFlowTracePage(1); setActiveTab("flow"); }}>View UI → DB Flow</Button>
                       <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })} disabled={setBaselineMutation?.isPending}>Set baseline</Button>
                       {run.isBaseline ? (
                         <Button size="sm" variant="outline" onClick={() => clearBaselineMutation?.mutate(projectId)} disabled={clearBaselineMutation?.isPending}>Clear baseline</Button>
@@ -594,10 +604,16 @@ export default function AnalysisResult() {
                   </CardContent>
                 </Card>
               ))}
-              {!analysisRunsQuery?.isLoading && (analysisRunsQuery?.data?.items.length ?? 0) === 0 ? (
+              {!analysisRunsQuery?.isLoading && !analysisRunsQuery?.error && (analysisRunsQuery?.data?.items.length ?? 0) === 0 ? (
                 <Card><CardContent className="py-8 text-center text-sm text-slate-600">No analysis history is available yet.</CardContent></Card>
               ) : null}
             </div>
+            {selectedRunQuery?.error ? (
+              <Alert variant="destructive">
+                <AlertTitle>Unable to load selected Run</AlertTitle>
+                <AlertDescription>{selectedRunQuery.error.message}</AlertDescription>
+              </Alert>
+            ) : null}
             {selectedRunQuery?.data ? (
               <Card>
                 <CardHeader>
@@ -631,12 +647,7 @@ export default function AnalysisResult() {
                   {diffQuery?.error ? <p className="text-red-600">{diffQuery.error.message}</p> : null}
                   {diffQuery?.data ? (
                     <>
-                      <div className="grid gap-2 md:grid-cols-4">
-                        <span>Files +{diffQuery.data.files.added.total} / -{diffQuery.data.files.removed.total} / changed {diffQuery.data.files.changed.total}</span>
-                        <span>Risks introduced {diffQuery.data.risks.introduced.total}</span>
-                        <span>Risks resolved {diffQuery.data.risks.resolved.total}</span>
-                        <span>Build score delta {diffQuery.data.buildDoctor.scoreDelta}</span>
-                      </div>
+                      <AnalysisDiffPanel diff={diffQuery.data} />
                       {diffQuery.data.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Diff truncated</AlertTitle><AlertDescription>Large diff groups were capped. Totals are still shown.</AlertDescription></Alert> : null}
                     </>
                   ) : null}
@@ -654,16 +665,22 @@ export default function AnalysisResult() {
           <TabsContent value="buildDoctor" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={inspectedRunId ? "outline" : "default"}>{inspectedRunId ? "Historical" : "Current source"}</Badge>
+                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>{isInspectingHistoricalRun ? "Historical" : "Current source"}</Badge>
                 <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
               </div>
-              {inspectedRunId ? (
-                <Button size="sm" variant="outline" onClick={() => setInspectedRunId(null)}>
+              {isInspectingHistoricalRun ? (
+                <Button size="sm" variant="outline" onClick={returnToCurrentSource}>
                   Return to current source
                 </Button>
               ) : null}
             </div>
             {buildDoctorRunQuery?.isLoading ? <div className="flex justify-center py-10"><Loader2 className="size-6 animate-spin text-slate-600" /></div> : null}
+            {buildDoctorRunQuery?.error ? (
+              <Alert variant="destructive">
+                <AlertTitle>Unable to load Build Doctor</AlertTitle>
+                <AlertDescription>{buildDoctorRunQuery.error.message}</AlertDescription>
+              </Alert>
+            ) : null}
             {buildDoctorRunQuery?.data?.snapshot?.buildDoctor ? (
               <Card>
                 <CardHeader>
@@ -712,7 +729,7 @@ export default function AnalysisResult() {
                             <span className="font-medium text-slate-950">{entry.packageName}</span>
                             <Badge variant={entry.resolution === "missing" ? "destructive" : "outline"}>{entry.resolution}</Badge>
                           </div>
-                          <p className="mt-1 text-slate-600">Source file: {entry.evidence[0] ?? "unknown"}</p>
+                          <p className="mt-1 text-slate-600">Evidence: {entry.evidence[0] ?? "unknown"}</p>
                           <p className="text-slate-600">Resolved path: {entry.resolvedPath ?? "none"}</p>
                           <p className="text-slate-500">Evidence: {entry.evidence.join(" | ") || "none"}</p>
                         </div>
@@ -745,19 +762,19 @@ export default function AnalysisResult() {
                   <BuildDoctorList title="Limitations" items={buildDoctorRunQuery.data.snapshot.buildDoctor.limitations} />
                 </CardContent>
               </Card>
-            ) : (
+            ) : !buildDoctorRunQuery?.isLoading && !buildDoctorRunQuery?.error ? (
               <Card><CardContent className="py-8 text-center text-sm text-slate-600">Build Doctor data is not available for this run.</CardContent></Card>
-            )}
+            ) : null}
           </TabsContent>
 
           <TabsContent value="flow" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={inspectedRunId ? "outline" : "default"}>{inspectedRunId ? "Historical" : "Current source"}</Badge>
+                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>{isInspectingHistoricalRun ? "Historical" : "Current source"}</Badge>
                 <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
               </div>
-              {inspectedRunId ? (
-                <Button size="sm" variant="outline" onClick={() => { setInspectedRunId(null); setFlowTracePage(1); }}>
+              {isInspectingHistoricalRun ? (
+                <Button size="sm" variant="outline" onClick={returnToCurrentSource}>
                   Return to current source
                 </Button>
               ) : null}
@@ -885,7 +902,7 @@ export default function AnalysisResult() {
                   </CardContent>
                 </Card>
               ))}
-              {!flowTracesQuery?.isLoading && (flowTracesQuery?.data?.items.length ?? 0) === 0 ? (
+              {!flowTracesQuery?.isLoading && !flowTracesQuery?.error && (flowTracesQuery?.data?.items.length ?? 0) === 0 ? (
                 <Card><CardContent className="py-8 text-center text-sm text-slate-600">No flow traces match the current filters.</CardContent></Card>
               ) : null}
             </div>
@@ -1167,6 +1184,194 @@ function MetricCard({
       </CardContent>
     </Card>
   );
+}
+
+type DiffBucket = {
+  items: unknown[];
+  total: number;
+  displayed: number;
+  truncated: boolean;
+};
+
+function AnalysisDiffPanel({ diff }: { diff: AnalysisDiff }) {
+  const metricEntries = Object.entries(diff.metricsDelta).filter(([, value]) => value !== 0);
+  const sections: Array<{ title: string; buckets: Array<{ label: string; bucket: DiffBucket; changed?: boolean }> }> = [
+    {
+      title: "Files",
+      buckets: [
+        { label: "Added", bucket: diff.files.added },
+        { label: "Removed", bucket: diff.files.removed },
+        { label: "Changed", bucket: diff.files.changed, changed: true },
+      ],
+    },
+    {
+      title: "Fields",
+      buckets: [
+        { label: "Added", bucket: diff.fields.added },
+        { label: "Removed", bucket: diff.fields.removed },
+        { label: "Changed", bucket: diff.fields.changed, changed: true },
+      ],
+    },
+    {
+      title: "Field dependencies",
+      buckets: [
+        { label: "Introduced", bucket: diff.fieldDependencies.introduced },
+        { label: "Removed", bucket: diff.fieldDependencies.removed },
+        { label: "Changed", bucket: diff.fieldDependencies.changed, changed: true },
+      ],
+    },
+    {
+      title: "Risks",
+      buckets: [
+        { label: "Introduced", bucket: diff.risks.introduced },
+        { label: "Resolved", bucket: diff.risks.resolved },
+        { label: "Changed", bucket: diff.risks.changed, changed: true },
+      ],
+    },
+    {
+      title: "Rules",
+      buckets: [
+        { label: "Introduced", bucket: diff.rules.introduced },
+        { label: "Resolved", bucket: diff.rules.resolved },
+        { label: "Changed", bucket: diff.rules.changed, changed: true },
+      ],
+    },
+    {
+      title: "Delphi events",
+      buckets: [
+        { label: "Introduced", bucket: diff.delphiEvents.introduced },
+        { label: "Removed", bucket: diff.delphiEvents.removed },
+        { label: "Resolution changed", bucket: diff.delphiEvents.resolutionChanged, changed: true },
+      ],
+    },
+    {
+      title: "Data bindings",
+      buckets: [
+        { label: "Introduced", bucket: diff.dataBindings.introduced },
+        { label: "Removed", bucket: diff.dataBindings.removed },
+        { label: "Changed", bucket: diff.dataBindings.changed, changed: true },
+      ],
+    },
+    {
+      title: "Build Doctor",
+      buckets: [
+        { label: "Introduced", bucket: diff.buildDoctor.introduced },
+        { label: "Resolved", bucket: diff.buildDoctor.resolved },
+        { label: "Changed", bucket: diff.buildDoctor.changed, changed: true },
+      ],
+    },
+    {
+      title: "Flow traces",
+      buckets: [
+        { label: "Introduced", bucket: diff.flowTraces.introduced },
+        { label: "Removed", bucket: diff.flowTraces.removed },
+        { label: "Changed", bucket: diff.flowTraces.changed, changed: true },
+      ],
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-2 md:grid-cols-3">
+        <span>Base Run #{diff.baseRun.runNumber}</span>
+        <span>Compare Run #{diff.compareRun.runNumber}</span>
+        <span>Build score delta {diff.buildDoctor.scoreDelta}</span>
+      </div>
+      <DiffMetricSection entries={metricEntries} />
+      <Accordion type="multiple" className="space-y-3">
+        {sections.map((section) => (
+          <AccordionItem key={section.title} value={section.title} className="rounded-lg border bg-white px-4">
+            <AccordionTrigger className="py-3 hover:no-underline">
+              <span className="font-medium text-slate-950">{section.title}</span>
+            </AccordionTrigger>
+            <AccordionContent className="space-y-3 pb-4">
+              {section.buckets.map((bucket) => (
+                <DiffBucketSection key={`${section.title}:${bucket.label}`} label={bucket.label} bucket={bucket.bucket} changed={bucket.changed} />
+              ))}
+            </AccordionContent>
+          </AccordionItem>
+        ))}
+      </Accordion>
+    </div>
+  );
+}
+
+function DiffMetricSection({ entries }: { entries: Array<[string, number]> }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Metric deltas</CardTitle>
+        <CardDescription>Total {entries.length} / Displayed {entries.length}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {entries.length ? (
+          entries.map(([key, value]) => (
+            <div key={key} className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
+              <span className="font-medium text-slate-950">{key}</span>
+              <Badge variant={value > 0 ? "default" : "secondary"}>{value > 0 ? `+${value}` : value}</Badge>
+            </div>
+          ))
+        ) : (
+          <p className="text-slate-500">No metric deltas.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DiffBucketSection({ label, bucket, changed = false }: { label: string; bucket: DiffBucket; changed?: boolean }) {
+  return (
+    <div className="space-y-2 rounded-lg border px-3 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h4 className="font-medium text-slate-950">{label}</h4>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="outline">Total {bucket.total}</Badge>
+          <Badge variant="outline">Displayed {bucket.displayed}</Badge>
+          {bucket.truncated ? <Badge variant="secondary">Truncated</Badge> : null}
+        </div>
+      </div>
+      {bucket.items.length ? (
+        <div className="space-y-2">
+          {bucket.items.map((item, index) => (
+            <DiffEntry key={`${label}:${index}`} item={item} changed={changed} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-slate-500">No entries in this bucket.</p>
+      )}
+    </div>
+  );
+}
+
+function DiffEntry({ item, changed }: { item: unknown; changed: boolean }) {
+  if (changed && isChangedDiffEntry(item)) {
+    return (
+      <div className="grid gap-2 rounded-lg bg-slate-50 p-3 md:grid-cols-2">
+        <div>
+          <p className="mb-1 font-medium text-slate-950">before</p>
+          <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-slate-700">{formatDiffValue(item.before)}</pre>
+        </div>
+        <div>
+          <p className="mb-1 font-medium text-slate-950">after</p>
+          <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-slate-700">{formatDiffValue(item.after)}</pre>
+        </div>
+      </div>
+    );
+  }
+
+  return <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs text-slate-700">{formatDiffValue(item)}</pre>;
+}
+
+function isChangedDiffEntry(item: unknown): item is { before: unknown; after: unknown } {
+  return typeof item === "object" && item !== null && "before" in item && "after" in item;
+}
+
+function formatDiffValue(value: unknown) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value, null, 2);
 }
 
 function FilterCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {

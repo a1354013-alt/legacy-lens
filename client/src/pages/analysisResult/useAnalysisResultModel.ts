@@ -235,24 +235,32 @@ export function useAnalysisResultModel(projectId: number) {
   );
 
   const currentReportId = snapshotQuery.data?.report?.id;
-  const inspectedPositiveRunId = inspectedRunId ?? undefined;
+  const inspectedHistoricalRunId = inspectedRunId && inspectedRunId !== currentReportId ? inspectedRunId : undefined;
+  const isInspectingHistoricalRun = Boolean(inspectedHistoricalRunId);
+  const inspectRun = (runId: number) => {
+    setInspectedRunId(runId === currentReportId ? null : runId);
+  };
+  const returnToCurrentSource = () => {
+    setInspectedRunId(null);
+    setFlowTracePage(1);
+  };
   const buildDoctorRunQuery = trpc.analysis.getRun.useQuery(
     {
       projectId,
-      runId: inspectedRunId ?? currentReportId ?? 0,
+      runId: inspectedHistoricalRunId ?? currentReportId ?? 0,
     },
-    { enabled: Number.isFinite(projectId) && activeTab === "buildDoctor" && Boolean(inspectedRunId ?? currentReportId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "buildDoctor" && Boolean(inspectedHistoricalRunId ?? currentReportId) }
   );
 
   const flowTraceSummaryQuery = trpc.analysis.getFlowTraceSummary.useQuery(
-    { projectId, runId: inspectedPositiveRunId },
+    { projectId, runId: inspectedHistoricalRunId },
     { enabled: Number.isFinite(projectId) && activeTab === "flow" }
   );
 
   const flowTracesQuery = trpc.analysis.getFlowTracesPage.useQuery(
     {
       projectId,
-      runId: inspectedPositiveRunId,
+      runId: inspectedHistoricalRunId,
       page: flowTracePage,
       pageSize: RESULT_LIST_PAGE_SIZE,
       search: flowTraceSearch || undefined,
@@ -275,6 +283,9 @@ export function useAnalysisResultModel(projectId: number) {
       ]);
     toast.success("Baseline updated.");
     },
+    onError: (error) => {
+      toast.error(error.message || "Set baseline failed.");
+    },
   });
 
   const clearBaselineMutation = trpc.analysis.clearBaseline.useMutation({
@@ -287,6 +298,9 @@ export function useAnalysisResultModel(projectId: number) {
           : Promise.resolve(),
       ]);
     toast.success("Baseline cleared.");
+    },
+    onError: (error) => {
+      toast.error(error.message || "Clear baseline failed.");
     },
   });
 
@@ -455,7 +469,9 @@ export function useAnalysisResultModel(projectId: number) {
     selectedRunId,
     setSelectedRunId,
     inspectedRunId,
-    setInspectedRunId,
+    inspectRun,
+    returnToCurrentSource,
+    isInspectingHistoricalRun,
     compareBaseRunId,
     setCompareBaseRunId,
     compareRunId,

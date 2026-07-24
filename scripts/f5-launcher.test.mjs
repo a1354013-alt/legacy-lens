@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -8,6 +9,31 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 
 function readProjectFile(relativePath) {
   return readFileSync(path.join(projectRoot, relativePath), "utf8");
+}
+
+function resolvePowerShellExecutable() {
+  if (process.platform === "win32") {
+    return "powershell.exe";
+  }
+
+  return "pwsh";
+}
+
+function runPowerShellCommand(command) {
+  const executable = resolvePowerShellExecutable();
+
+  try {
+    return execFileSync(executable, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      cwd: projectRoot,
+      encoding: "utf8",
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(`PowerShell executable '${executable}' was not found on PATH. Install PowerShell Core as 'pwsh' for Linux CI.`);
+    }
+
+    throw error;
+  }
 }
 
 describe("VS Code F5 launcher", () => {
@@ -74,7 +100,8 @@ describe("shared launcher implementation", () => {
 
     expect(launcher).toContain("$startupAction = Get-F5StartupAction -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl)");
     expect(launcher).toContain('if ($startupAction -eq "OpenExisting")');
-    expect(launcher).toMatch(/Assert-PortsAvailableForStartup\s+Start-ComposeDetached\s+Wait-ForReadiness/s);
+    expect(launcher).toMatch(/Assert-PortsAvailableForStartup\s+Start-ComposeDetached\s+\$readyAfterStartup = Wait-ForReadiness/s);
+    expect(launcher).toMatch(/Restart-AppServiceForRecovery\s+}\s+Wait-ForReadiness/s);
   });
 
   it("repairs DB-only, DB+migrate, and unhealthy-app stacks with exactly one compose up decision", () => {
@@ -87,10 +114,7 @@ describe("shared launcher implementation", () => {
       "UnhealthyApp = Get-F5StartupAction -ReadyHealthy $false",
       "} | ConvertTo-Json -Compress",
     ].join("; ");
-    const output = execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
-      cwd: projectRoot,
-      encoding: "utf8",
-    });
+    const output = runPowerShellCommand(command);
     const decisions = JSON.parse(output);
 
     expect(decisions.Ready).toBe("OpenExisting");
@@ -100,6 +124,60 @@ describe("shared launcher implementation", () => {
 
     const launcher = readProjectFile("scripts/f5-start.ps1");
     expect((launcher.match(/Start-ComposeDetached/g) ?? []).length).toBe(2);
+  });
+
+  it("selects app-only recovery only for a running unhealthy app and never after migrate failure or a prior attempt", () => {
+    const policyPath = path.join(projectRoot, "scripts", "f5-startup-policy.ps1");
+    const command = [
+      `. '${policyPath.replaceAll("'", "''")}'`,
+      "[pscustomobject]@{ Ready = Get-F5RecoveryAction -ReadyHealthy $true -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
+      "DbOnly = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus '' -MigrateStatus '' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
+      "MissingApp = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus '' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
+      "StoppedApp = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'exited' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
+      "RunningUnhealthyApp = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
+      "MigrateFailure = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 1 -RecoveryAlreadyAttempted $false",
+      "SecondAttempt = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $true",
+      "} | ConvertTo-Json -Compress",
+    ].join("; ");
+    const output = runPowerShellCommand(command);
+    const decisions = JSON.parse(output);
+
+    expect(decisions.Ready).toBe("None");
+    expect(decisions.DbOnly).toBe("None");
+    expect(decisions.MissingApp).toBe("None");
+    expect(decisions.StoppedApp).toBe("None");
+    expect(decisions.RunningUnhealthyApp).toBe("ForceRecreateApp");
+    expect(decisions.MigrateFailure).toBe("None");
+    expect(decisions.SecondAttempt).toBe("None");
+
+    const launcher = readProjectFile("scripts/f5-start.ps1");
+    expect((launcher.match(/Restart-AppServiceForRecovery/g) ?? []).length).toBe(2);
+    expect(launcher).toContain('"--force-recreate", "app"');
+  });
+
+  it("parses every PowerShell launcher script and reports all syntax errors together", () => {
+    const scriptPaths = [
+      "scripts/f5-start.ps1",
+      "scripts/f5-stop.ps1",
+      "scripts/start-demo.ps1",
+      "scripts/f5-startup-policy.ps1",
+    ].map((relativePath) => path.join(projectRoot, relativePath));
+    const quotedScriptPaths = scriptPaths.map((scriptPath) => `'${scriptPath.replaceAll("'", "''")}'`).join(", ");
+    const command = [
+      "$parseFailures = @()",
+      `foreach ($scriptPath in @(${quotedScriptPaths})) {`,
+      "  $tokens = $null",
+      "  $parseErrors = $null",
+      "  [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref] $tokens, [ref] $parseErrors) | Out-Null",
+      "  foreach ($parseError in $parseErrors) {",
+      "    $parseFailures += \"$($scriptPath): $($parseError.Message)\"",
+      "  }",
+      "}",
+      "if ($parseFailures.Count -gt 0) { throw ($parseFailures -join \"`n\") }",
+      "'OK'",
+    ].join("; ");
+
+    expect(runPowerShellCommand(command).trim()).toBe("OK");
   });
 
   it("keeps the legacy Windows entrypoints delegating to the shared launcher", () => {
