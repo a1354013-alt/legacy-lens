@@ -59,6 +59,10 @@ describe("shared launcher implementation", () => {
     expect(launcher).toContain("$startupTimeoutSeconds = 180");
     expect(launcher).toContain("Timed out waiting for /ready");
     expect(launcher).toContain("Legacy Lens is already running.");
+    expect(launcher).toContain('Get-PackageVersion');
+    expect(launcher).toContain('must be an integer between 1 and 65535');
+    expect(launcher).toContain('Get-ValidatedPortValue -VariableName "LEGACY_LENS_PORT"');
+    expect(launcher).toContain('Get-ValidatedPortValue -VariableName "LEGACY_LENS_DB_PORT"');
   });
 
   it("keeps the legacy Windows entrypoints delegating to the shared launcher", () => {
@@ -73,5 +77,6 @@ describe("shared launcher implementation", () => {
   it("keeps temporary launcher logs ignored by git", () => {
     const gitignore = readProjectFile(".gitignore");
     expect(gitignore).toContain(".tmp/");
+    expect(gitignore).toContain("!.vscode/launch.json");
   });
 });

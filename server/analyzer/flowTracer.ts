@@ -8,7 +8,11 @@ export const FLOW_TRACE_LIMITS = {
   maxTracesPerRun: 2_000,
 } as const;
 
-export type FlowTraceLimits = typeof FLOW_TRACE_LIMITS;
+export type FlowTraceLimits = {
+  maxCallDepth: number;
+  maxStepsPerTrace: number;
+  maxTracesPerRun: number;
+};
 
 const STEP_LIMIT_WARNING_CODE = "FLOW_TRACE_STEP_LIMIT_REACHED";
 const CYCLE_WARNING_CODE = "FLOW_TRACE_CALL_CYCLE";

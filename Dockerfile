@@ -8,9 +8,6 @@ FROM node:22.18.0-alpine AS builder
 
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@10.4.1 --activate
-
 # Vite build-time variables (only the VITE_* subset is embedded into the client bundle)
 ARG VITE_DEV_AUTH_BYPASS=0
 ARG APP_VERSION=unknown
@@ -20,6 +17,10 @@ ENV APP_VERSION=$APP_VERSION
 # Copy package files and patches (patches must be copied before install)
 COPY package.json pnpm-lock.yaml ./
 COPY patches/ ./patches/
+
+# Install pnpm from package.json#packageManager
+RUN corepack enable && \
+    corepack prepare "pnpm@$(node -p "const spec=require('./package.json').packageManager ?? ''; const match=spec.match(/^pnpm@([^+]+)/); if (!match) throw new Error('packageManager must declare pnpm@<version>'); match[1]")" --activate
 
 # Install all dependencies (including devDependencies for build)
 RUN pnpm install --frozen-lockfile
@@ -46,12 +47,14 @@ FROM node:22.18.0-alpine AS production
 
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@10.4.1 --activate
-
 # Copy package files and install production dependencies only
 COPY package.json pnpm-lock.yaml ./
 COPY patches/ ./patches/
+
+# Install pnpm from package.json#packageManager
+RUN corepack enable && \
+    corepack prepare "pnpm@$(node -p "const spec=require('./package.json').packageManager ?? ''; const match=spec.match(/^pnpm@([^+]+)/); if (!match) throw new Error('packageManager must declare pnpm@<version>'); match[1]")" --activate
+
 RUN pnpm install --frozen-lockfile --prod
 
 # Copy built assets from builder stage

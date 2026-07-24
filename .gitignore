@@ -70,6 +70,7 @@ Desktop.ini
 .idea/
 .vscode/
 !.vscode/
+!.vscode/launch.json
 !.vscode/tasks.json
 .vs/
 *.swp

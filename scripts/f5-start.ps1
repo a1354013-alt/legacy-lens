@@ -7,6 +7,7 @@ $composeArgs = @("compose", "-f", "docker-compose.demo.yml")
 $startupTimeoutSeconds = 180
 $pollIntervalSeconds = 2
 $readyRequestTimeoutSeconds = 5
+$script:dockerCommandAvailable = $false
 
 function Write-Step([string] $Message) {
   Write-Host $Message
@@ -30,8 +31,24 @@ function Initialize-DefaultEnvironment {
   }
 
   if (-not $env:APP_VERSION) {
-    $env:APP_VERSION = "1.1.0-rc2"
+    $env:APP_VERSION = Get-PackageVersion
   }
+}
+
+function Get-PackageVersion {
+  $packageJsonPath = Join-Path $repoRoot "package.json"
+
+  try {
+    $packageJson = Get-Content -Path $packageJsonPath -Raw | ConvertFrom-Json
+  } catch {
+    Fail-Startup "Unable to read package.json to determine the default APP_VERSION."
+  }
+
+  if (-not $packageJson.version -or [string]::IsNullOrWhiteSpace([string] $packageJson.version)) {
+    Fail-Startup "package.json does not define a usable version for the default APP_VERSION."
+  }
+
+  return [string] $packageJson.version
 }
 
 function Get-ReadyUrl {
@@ -90,7 +107,7 @@ function Initialize-LogFile {
 }
 
 function Get-LogText {
-  if (-not (Test-Path $script:logPath)) {
+  if (-not $script:logPath -or -not (Test-Path $script:logPath)) {
     return ""
   }
 
@@ -98,7 +115,7 @@ function Get-LogText {
 }
 
 function Show-LogTail {
-  if (-not (Test-Path $script:logPath)) {
+  if (-not $script:logPath -or -not (Test-Path $script:logPath)) {
     return
   }
 
@@ -108,6 +125,10 @@ function Show-LogTail {
 }
 
 function Show-ComposeDiagnostics {
+  if (-not $script:dockerCommandAvailable) {
+    return
+  }
+
   Write-Host ""
   Write-Host "docker compose -f docker-compose.demo.yml ps"
   Invoke-DockerChecked -Arguments ($composeArgs + @("ps")) -IgnoreFailure | Write-Host
@@ -120,6 +141,16 @@ function Show-ComposeDiagnostics {
 function Get-ComposeServiceContainerId([string] $ServiceName) {
   $result = Invoke-DockerChecked -Arguments ($composeArgs + @("ps", "-q", $ServiceName)) -IgnoreFailure
   return $result.Trim()
+}
+
+function Test-ComposeStackActive {
+  foreach ($serviceName in @("app", "migrate", "db")) {
+    if (Get-ComposeServiceContainerId -ServiceName $serviceName) {
+      return $true
+    }
+  }
+
+  return $false
 }
 
 function Get-ComposeServiceState([string] $ServiceName) {
@@ -176,6 +207,8 @@ function Assert-Prerequisites {
     Fail-Startup "Docker is not installed or is not available on PATH."
   }
 
+  $script:dockerCommandAvailable = $true
+
   try {
     Invoke-DockerChecked -Arguments @("compose", "version") | Out-Null
   } catch {
@@ -187,6 +220,21 @@ function Assert-Prerequisites {
   } catch {
     Fail-Startup "Docker Desktop is not running. Start Docker Desktop and wait for it to finish starting."
   }
+}
+
+function Get-ValidatedPortValue {
+  param(
+    [string] $VariableName,
+    [string] $DisplayName
+  )
+
+  $rawValue = [string] (Get-Item -Path "Env:$VariableName").Value
+  $parsed = 0
+  if (-not [int]::TryParse($rawValue, [ref] $parsed) -or $parsed -lt 1 -or $parsed -gt 65535) {
+    Fail-Startup "$DisplayName must be an integer between 1 and 65535. Received '$rawValue'."
+  }
+
+  return $parsed
 }
 
 function Assert-PortsAvailableForStartup {
@@ -202,12 +250,12 @@ function Assert-PortsAvailableForStartup {
     }
   }
 
-  $appPort = [int] $env:LEGACY_LENS_PORT
+  $appPort = Get-ValidatedPortValue -VariableName "LEGACY_LENS_PORT" -DisplayName "LEGACY_LENS_PORT"
   if ((Test-HostPortInUse -Port $appPort) -and -not $runningSet.ContainsKey("app")) {
     Fail-Startup "Application port $appPort is already in use. Stop the conflicting process or set LEGACY_LENS_PORT to another port."
   }
 
-  $dbPort = [int] $env:LEGACY_LENS_DB_PORT
+  $dbPort = Get-ValidatedPortValue -VariableName "LEGACY_LENS_DB_PORT" -DisplayName "LEGACY_LENS_DB_PORT"
   if ((Test-HostPortInUse -Port $dbPort) -and -not $runningSet.ContainsKey("db")) {
     Fail-Startup "Database port $dbPort is already in use. Stop the conflicting process or set LEGACY_LENS_DB_PORT to another port."
   }
@@ -276,6 +324,8 @@ function Wait-ForReadiness {
 Initialize-DefaultEnvironment
 
 try {
+  Get-ValidatedPortValue -VariableName "LEGACY_LENS_PORT" -DisplayName "LEGACY_LENS_PORT" | Out-Null
+  Get-ValidatedPortValue -VariableName "LEGACY_LENS_DB_PORT" -DisplayName "LEGACY_LENS_DB_PORT" | Out-Null
   Assert-Prerequisites
 
   $appUrl = Get-AppUrl
@@ -289,7 +339,9 @@ try {
   }
 
   Assert-PortsAvailableForStartup
-  Start-ComposeDetached
+  if (-not (Test-ComposeStackActive)) {
+    Start-ComposeDetached
+  }
   Wait-ForReadiness
 
   Write-Step "Legacy Lens is ready."
@@ -297,10 +349,27 @@ try {
   Start-Process $appUrl
   exit 0
 } catch {
+  $originalErrorMessage = $_.Exception.Message
+
   Write-Host ""
   Write-Host "Legacy Lens failed to start."
-  Write-Host $_.Exception.Message
-  Show-LogTail
-  Show-ComposeDiagnostics
+  Write-Host $originalErrorMessage
+
+  try {
+    Show-LogTail
+  } catch {
+    Write-Host ""
+    Write-Host "Unable to read startup log:"
+    Write-Host $_.Exception.Message
+  }
+
+  try {
+    Show-ComposeDiagnostics
+  } catch {
+    Write-Host ""
+    Write-Host "Unable to collect Docker diagnostics:"
+    Write-Host $_.Exception.Message
+  }
+
   exit 1
 }

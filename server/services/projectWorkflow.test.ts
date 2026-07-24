@@ -3425,7 +3425,7 @@ describe("project workflow", () => {
         return base;
       }
       return {
-        values: async (_payload: Row | Row[]) => {
+        values: async () => {
           duplicateAttempts += 1;
           const error = new Error("Duplicate entry for key 'analysisResults_projectId_runNumber_unique'") as Error & { code?: string };
           error.code = "ER_DUP_ENTRY";
@@ -3459,7 +3459,7 @@ describe("project workflow", () => {
         return base;
       }
       return {
-        values: async (_payload: Row | Row[]) => {
+        values: async () => {
           nonDuplicateAttempts += 1;
           throw new Error("database connection lost");
         },

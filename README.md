@@ -378,7 +378,7 @@ DATABASE_URL=mysql://root:password@127.0.0.1:3306/legacy_lens_dev pnpm test:migr
 `docker-compose.yml` extends `docker-compose.prod.yml` and does not enable demo auth, weak demo secrets, or fake users. It expects production-like environment values:
 
 ```bash
-APP_VERSION=1.0.0 \
+APP_VERSION=1.1.0-rc2 \
 DATABASE_URL=mysql://user:password@host:3306/legacy_lens \
 JWT_SECRET=replace-with-at-least-32-characters \
 VITE_APP_ID=your-app-id \
