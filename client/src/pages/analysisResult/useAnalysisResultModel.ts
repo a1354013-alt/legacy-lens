@@ -94,10 +94,17 @@ export function useAnalysisResultModel(projectId: number) {
   const [fieldDependencyPage, setFieldDependencyPage] = useState(1);
   const [runPage, setRunPage] = useState(1);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const [inspectedRunId, setInspectedRunId] = useState<number | null>(null);
   const [compareBaseRunId, setCompareBaseRunId] = useState<number | null>(null);
   const [compareRunId, setCompareRunId] = useState<number | null>(null);
   const [flowTraceSearch, setFlowTraceSearch] = useState("");
+  const [flowTraceForm, setFlowTraceForm] = useState("");
+  const [flowTraceComponent, setFlowTraceComponent] = useState("");
+  const [flowTraceEvent, setFlowTraceEvent] = useState("");
   const [flowTraceStatus, setFlowTraceStatus] = useState<string>("all");
+  const [flowTraceTable, setFlowTraceTable] = useState("");
+  const [flowTraceOperation, setFlowTraceOperation] = useState<string>("all");
+  const [flowTraceConfidence, setFlowTraceConfidence] = useState<string>("all");
   const [flowTracePage, setFlowTracePage] = useState(1);
   const [isReportDownloading, setIsReportDownloading] = useState(false);
   const [downloadingRunId, setDownloadingRunId] = useState<number | null>(null);
@@ -228,26 +235,34 @@ export function useAnalysisResultModel(projectId: number) {
   );
 
   const currentReportId = snapshotQuery.data?.report?.id;
+  const inspectedPositiveRunId = inspectedRunId ?? undefined;
   const buildDoctorRunQuery = trpc.analysis.getRun.useQuery(
     {
       projectId,
-      runId: currentReportId ?? 0,
+      runId: inspectedRunId ?? currentReportId ?? 0,
     },
-    { enabled: Number.isFinite(projectId) && activeTab === "buildDoctor" && Boolean(currentReportId) }
+    { enabled: Number.isFinite(projectId) && activeTab === "buildDoctor" && Boolean(inspectedRunId ?? currentReportId) }
   );
 
   const flowTraceSummaryQuery = trpc.analysis.getFlowTraceSummary.useQuery(
-    { projectId },
+    { projectId, runId: inspectedPositiveRunId },
     { enabled: Number.isFinite(projectId) && activeTab === "flow" }
   );
 
   const flowTracesQuery = trpc.analysis.getFlowTracesPage.useQuery(
     {
       projectId,
+      runId: inspectedPositiveRunId,
       page: flowTracePage,
       pageSize: RESULT_LIST_PAGE_SIZE,
       search: flowTraceSearch || undefined,
+      form: flowTraceForm || undefined,
+      component: flowTraceComponent || undefined,
+      event: flowTraceEvent || undefined,
       status: flowTraceStatus === "all" ? undefined : (flowTraceStatus as "complete" | "partial" | "unresolved"),
+      table: flowTraceTable || undefined,
+      operation: flowTraceOperation === "all" ? undefined : (flowTraceOperation as "read" | "write" | "calculate" | "unknown"),
+      confidence: flowTraceConfidence === "all" ? undefined : (flowTraceConfidence as "high" | "medium" | "low"),
     },
     { enabled: Number.isFinite(projectId) && activeTab === "flow" }
   );
@@ -258,7 +273,7 @@ export function useAnalysisResultModel(projectId: number) {
         utils.analysis.listRuns.invalidate({ projectId }),
         selectedRunId ? utils.analysis.getRun.invalidate({ projectId, runId: selectedRunId }) : Promise.resolve(),
       ]);
-      toast.success("Baseline updated.");
+    toast.success("Baseline updated.");
     },
   });
 
@@ -271,7 +286,7 @@ export function useAnalysisResultModel(projectId: number) {
           ? utils.analysis.getDiff.invalidate({ projectId, baseRunId: compareBaseRunId, compareRunId })
           : Promise.resolve(),
       ]);
-      toast.success("Baseline cleared.");
+    toast.success("Baseline cleared.");
     },
   });
 
@@ -327,9 +342,9 @@ export function useAnalysisResultModel(projectId: number) {
     setDownloadingRunId(runId);
     try {
       await downloadReportZip(projectId, runId);
-      toast.success("Historical report downloaded.");
+    toast.success("Historical report downloaded.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Historical report download failed.");
+    toast.error(error instanceof Error ? error.message : "Historical report download failed.");
     } finally {
       setDownloadingRunId(null);
     }
@@ -342,7 +357,7 @@ export function useAnalysisResultModel(projectId: number) {
     setIsDiffDownloading(true);
     try {
       await downloadAnalysisDiffZip(projectId, compareBaseRunId, compareRunId);
-      toast.success("Comparison downloaded.");
+    toast.success("Comparison downloaded.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Comparison download failed.");
     } finally {
@@ -365,6 +380,18 @@ export function useAnalysisResultModel(projectId: number) {
   };
 
   const canDownloadComparison = Boolean(compareBaseRunId && compareRunId && compareBaseRunId !== compareRunId && !diffQuery.isLoading && !diffQuery.error);
+
+  const resetFlowTraceFilters = () => {
+    setFlowTraceSearch("");
+    setFlowTraceForm("");
+    setFlowTraceComponent("");
+    setFlowTraceEvent("");
+    setFlowTraceStatus("all");
+    setFlowTraceTable("");
+    setFlowTraceOperation("all");
+    setFlowTraceConfidence("all");
+    setFlowTracePage(1);
+  };
 
   return {
     activeTab,
@@ -427,16 +454,31 @@ export function useAnalysisResultModel(projectId: number) {
     setRunPage,
     selectedRunId,
     setSelectedRunId,
+    inspectedRunId,
+    setInspectedRunId,
     compareBaseRunId,
     setCompareBaseRunId,
     compareRunId,
     setCompareRunId,
     flowTraceSearch,
     setFlowTraceSearch,
+    flowTraceForm,
+    setFlowTraceForm,
+    flowTraceComponent,
+    setFlowTraceComponent,
+    flowTraceEvent,
+    setFlowTraceEvent,
     flowTraceStatus,
     setFlowTraceStatus,
+    flowTraceTable,
+    setFlowTraceTable,
+    flowTraceOperation,
+    setFlowTraceOperation,
+    flowTraceConfidence,
+    setFlowTraceConfidence,
     flowTracePage,
     setFlowTracePage,
+    resetFlowTraceFilters,
     isReportDownloading,
     downloadingRunId,
     isDiffDownloading,

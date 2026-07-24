@@ -2577,7 +2577,8 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
   }
   const projectContext = snapshotProjectContext ?? getSnapshotProjectContext(selectedSnapshot);
 
-  const version = getAppVersion();
+  const exporterVersion = getAppVersion();
+  const analyzerVersion = readyReport.analyzerVersion ?? "legacy";
   const metrics = readyReport.summaryJson ?? null;
   const createdAtSource = readyReport.createdAt ?? readyReport.updatedAt ?? new Date(0);
   const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
@@ -2588,7 +2589,8 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
 
   const metadata = {
     projectName: projectContext.projectName,
-    analysisVersion: version,
+    analysisVersion: analyzerVersion,
+    exporterVersion,
     createdAt: createdAtIso,
     focusLanguage: projectContext.focusLanguage,
     fileCount: metrics?.fileCount ?? 0,
@@ -2632,7 +2634,8 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
           analysisResultId: readyReport.id,
           runNumber: readyReport.runNumber ?? 1,
           sourceFingerprint: readyReport.sourceFingerprint ?? selectedSnapshot.sourceManifest.map((file) => file.sha256).join(":"),
-          analyzerVersion: readyReport.analyzerVersion ?? "legacy",
+          analyzerVersion,
+          exporterVersion,
           snapshotSchemaVersion: readyReport.snapshotSchemaVersion ?? selectedSnapshot.schemaVersion,
           createdAt: createdAtIso,
           completedAt: completedAtIso,

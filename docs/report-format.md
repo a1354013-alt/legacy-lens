@@ -282,11 +282,13 @@ Purpose: Provides report metadata for audit, replay, and indexing.
 
 Audience: Integrations, auditors, engineers, and report consumers.
 
-Data sources: Persisted project metadata, report metadata, metrics, import warning count, and final confidence.
+Data sources: Persisted project metadata, immutable Run metadata, metrics, import warning count, final confidence, and current exporter metadata.
 
 Contents:
 - Project name
-- Analysis version
+- `analysisVersion`: analyzer version that produced the immutable selected Run
+- `analyzerVersion`: analyzer version that produced the immutable selected Run
+- `exporterVersion`: current application version producing this ZIP
 - Analyzed at timestamp
 - Focus language
 - File, symbol, dependency, and warning counts

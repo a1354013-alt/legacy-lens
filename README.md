@@ -108,7 +108,7 @@ warningCount: 12
 
 ## Report ZIP Contents (Persisted + Deterministic)
 
-The exported ZIP is generated **only** from the persisted server-side snapshot (DB), and the same snapshot yields the same ZIP output.
+The analysis content in an exported ZIP is generated **only** from the selected persisted server-side snapshot (DB). ZIP entries use fixed timestamps to improve deterministic output, but byte-identical reproducibility is not guaranteed across exporter versions because exporter metadata, archive formatting, or comparison export time can legitimately differ.
 
 See [docs/report-format.md](docs/report-format.md) for the purpose, intended readers, and data sources for every report file.
 
@@ -150,7 +150,7 @@ Build Doctor is static and heuristic. It imports Delphi project metadata and rep
 
 UI-to-database flow tracing uses persisted static evidence only: DFM/FMX event bindings, progressively resolved Pascal handlers, confirmed static call dependencies, SQL evidence, field references, and static data bindings. Generic symbol references do not extend call chains. Dynamic SQL, runtime-created components, runtime event assignment, inherited forms, unresolved handler ambiguity, unresolved DataSet-to-table mappings, recursion cycles, and runtime data binding can remain incomplete and are reported with lower confidence or warnings. Step limits and global trace caps are disclosed in persisted summary metadata rather than silently sliced away.
 
-Analysis diff and snapshot comparison are implemented in v1.1. Immutable run snapshots can be compared through the API, exported as a deterministic comparison ZIP, and reviewed with structured before/after records for files, fields, field dependencies, risks, rules, Delphi events, Build Doctor findings, and flow traces.
+Analysis diff and snapshot comparison are implemented in v1.1. Immutable run snapshots can be compared through the API, exported as a comparison ZIP, and reviewed with structured before/after records for files, fields, field dependencies, risks, rules, Delphi events, Build Doctor findings, and flow traces. Diff content comes from the two selected snapshots; export metadata and export timestamps may differ between downloads.
 
 Minimal excerpt (shape) of `metadata.json`:
 
@@ -273,7 +273,7 @@ This repo ships a Dockerfile plus separate compose files for demo and production
 - `DEV_AUTH_BYPASS=1` (server enables `/api/dev/login`)
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1` (explicitly allows bypass even when the container runs with `NODE_ENV=production` for static serving)
 - `VITE_DEV_AUTH_BYPASS=1` (client builds the "Sign in" button to hit `/api/dev/login`)
-- `CSP_ALLOW_UNSAFE_EVAL=true` (demo-only CSP relaxation so production-built frontend bundles that use `eval` / `new Function` are not blocked)
+- `CSP_ALLOW_UNSAFE_EVAL` (optional explicit escape hatch for local bundles that require `eval` / `new Function`; unset by default)
 - OAuth URLs are still required as placeholders (`VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL`) because the server config schema is consistent across modes.
 - `JWT_SECRET` demo default is long enough for runtime validation, but you must replace it in any real deployment.
 
@@ -424,7 +424,7 @@ The Docker smoke script and compose stack use a small set of env vars to keep CI
 - `LEGACY_LENS_SMOKE_TIMEOUT_MS`: total polling timeout for DB health, app health, and dev-login redirect checks
 - `DEV_AUTH_BYPASS=1`: enables `/api/dev/login` for local/demo flows only
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1`: only for local/demo containers that keep `NODE_ENV=production`; never use in real production
-- `CSP_ALLOW_UNSAFE_EVAL=true`: demo-only CSP relaxation for frontend bundles that still require `eval` / `new Function`; keep this unset in real production unless the risk is accepted
+- `CSP_ALLOW_UNSAFE_EVAL=true`: optional CSP relaxation for frontend bundles that require `eval` / `new Function`; the demo leaves it unset by default, and real production should set it only if the risk is accepted
 - `LEGACY_LENS_GIT_HOST_ALLOWLIST`: production Git host allowlist override
 - `LEGACY_LENS_TRUST_PROXY`: only set this when the app is actually behind a trusted reverse proxy or load balancer
 - `PROJECT_JOB_EXECUTION_TIMEOUT_MS`: maximum wall-clock time a worker thread may spend on one claimed job before the thread is terminated and DB lease recovery retries the job

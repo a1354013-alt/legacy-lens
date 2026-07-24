@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useLocation, useRoute } from "wouter";
 import { AlertTriangle, ArrowLeft, FileText, Loader2, ShieldAlert } from "lucide-react";
 import {
@@ -216,14 +216,29 @@ export default function AnalysisResult() {
     runPage,
     setRunPage,
     setSelectedRunId,
+    inspectedRunId,
+    setInspectedRunId,
     compareBaseRunId,
     compareRunId,
     flowTraceSearch,
     setFlowTraceSearch,
+    flowTraceForm,
+    setFlowTraceForm,
+    flowTraceComponent,
+    setFlowTraceComponent,
+    flowTraceEvent,
+    setFlowTraceEvent,
     flowTraceStatus,
     setFlowTraceStatus,
+    flowTraceTable,
+    setFlowTraceTable,
+    flowTraceOperation,
+    setFlowTraceOperation,
+    flowTraceConfidence,
+    setFlowTraceConfidence,
     flowTracePage,
     setFlowTracePage,
+    resetFlowTraceFilters,
     isReportDownloading,
     downloadingRunId,
     isDiffDownloading,
@@ -263,6 +278,7 @@ export default function AnalysisResult() {
     selectCompareRun,
     canDownloadComparison,
   } = useAnalysisResultModel(projectId);
+  const [expandedFlowSteps, setExpandedFlowSteps] = useState<Record<string, boolean>>({});
 
   if (!Number.isFinite(projectId)) {
     return (
@@ -299,6 +315,15 @@ export default function AnalysisResult() {
     report?.status === "partial" ||
     project.errorMessage === "Analysis completed with warnings." ||
     report?.errorMessage === "Analysis completed with warnings.";
+  const runs = analysisRunsQuery?.data?.items ?? [];
+  const findRun = (runId: number | null) => (runId ? runs.find((item) => item.id === runId) : undefined);
+  const getRunNumberLabel = (runId: number | null) => {
+    if (!runId) {
+      return snapshot?.report?.runNumber ? `Current source Run #${snapshot.report.runNumber}` : "Current source Run";
+    }
+    const run = findRun(runId);
+    return run ? `Historical Run #${run.runNumber}` : `Historical Run ID ${runId}`;
+  };
   const partialReasonText =
     snapshot?.partialReasons.length && snapshot.partialReasons.length > 0
       ? snapshot.partialReasons.join("、")
@@ -506,6 +531,17 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="history" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={inspectedRunId ? "outline" : "default"}>{inspectedRunId ? "Historical" : "Current source"}</Badge>
+                <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
+              </div>
+              {inspectedRunId ? (
+                <Button size="sm" variant="outline" onClick={() => setInspectedRunId(null)}>
+                  Return to current source
+                </Button>
+              ) : null}
+            </div>
             <PaginationControls
               total={analysisRunsQuery?.data?.total ?? 0}
               page={analysisRunsQuery?.data?.page ?? runPage}
@@ -514,7 +550,7 @@ export default function AnalysisResult() {
               onNext={() => setRunPage((value) => value + 1)}
             />
             <div className="space-y-3">
-              {(analysisRunsQuery?.data?.items ?? []).map((run) => (
+              {runs.map((run) => (
                 <Card key={run.id}>
                   <CardHeader>
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -526,8 +562,10 @@ export default function AnalysisResult() {
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Badge variant={run.status === "partial" ? "secondary" : "outline"}>{analysisStatusLabel(run.status)}</Badge>
-                        {run.isLatestUsable ? <Badge>latest</Badge> : null}
-                        {run.isBaseline ? <Badge variant="secondary">baseline</Badge> : null}
+                        {snapshot?.report?.id === run.id ? <Badge>Current source</Badge> : null}
+                        {run.isLatestUsable ? <Badge>Latest usable</Badge> : null}
+                        {run.isBaseline ? <Badge variant="secondary">Baseline</Badge> : null}
+                        {snapshot?.report?.id !== run.id ? <Badge variant="outline">Historical</Badge> : null}
                       </div>
                     </div>
                   </CardHeader>
@@ -539,8 +577,10 @@ export default function AnalysisResult() {
                       <span>Confidence: {run.confidence ? `${run.confidence.score}/100 ${run.confidence.level}` : "unknown"}</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setSelectedRunId(run.id)}>View run</Button>
-                      <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })}>Set baseline</Button>
+                      <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); setInspectedRunId(run.id); }}>View Run details</Button>
+                      <Button size="sm" variant="outline" onClick={() => { setInspectedRunId(run.id); setActiveTab("buildDoctor"); }}>View Build Doctor</Button>
+                      <Button size="sm" variant="outline" onClick={() => { setInspectedRunId(run.id); setFlowTracePage(1); setActiveTab("flow"); }}>View UI → DB Flow</Button>
+                      <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })} disabled={setBaselineMutation?.isPending}>Set baseline</Button>
                       {run.isBaseline ? (
                         <Button size="sm" variant="outline" onClick={() => clearBaselineMutation?.mutate(projectId)} disabled={clearBaselineMutation?.isPending}>Clear baseline</Button>
                       ) : null}
@@ -576,10 +616,17 @@ export default function AnalysisResult() {
                 <CardHeader>
                   <CardTitle>Comparison</CardTitle>
                   <CardDescription>
-                    Base run ID {compareBaseRunId} compared with run ID {compareRunId}
+                    {getRunNumberLabel(compareBaseRunId)} compared with {getRunNumberLabel(compareRunId)}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
+                  {compareBaseRunId === compareRunId ? (
+                    <Alert variant="warning">
+                      <AlertTriangle className="size-4" />
+                      <AlertTitle>Choose two different Runs</AlertTitle>
+                      <AlertDescription>Legacy Lens prevents same-Run comparisons before requesting a backend Diff.</AlertDescription>
+                    </Alert>
+                  ) : null}
                   {diffQuery?.isLoading ? <p className="text-slate-600">Calculating diff...</p> : null}
                   {diffQuery?.error ? <p className="text-red-600">{diffQuery.error.message}</p> : null}
                   {diffQuery?.data ? (
@@ -605,6 +652,17 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="buildDoctor" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={inspectedRunId ? "outline" : "default"}>{inspectedRunId ? "Historical" : "Current source"}</Badge>
+                <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
+              </div>
+              {inspectedRunId ? (
+                <Button size="sm" variant="outline" onClick={() => setInspectedRunId(null)}>
+                  Return to current source
+                </Button>
+              ) : null}
+            </div>
             {buildDoctorRunQuery?.isLoading ? <div className="flex justify-center py-10"><Loader2 className="size-6 animate-spin text-slate-600" /></div> : null}
             {buildDoctorRunQuery?.data?.snapshot?.buildDoctor ? (
               <Card>
@@ -620,26 +678,71 @@ export default function AnalysisResult() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4 text-sm">
+                  {buildDoctorRunQuery.data.snapshot.buildDoctor.status === "not_applicable" ? (
+                    <Alert>
+                      <AlertTitle>Build Doctor not applicable</AlertTitle>
+                      <AlertDescription>No Delphi build metadata was available for this Run.</AlertDescription>
+                    </Alert>
+                  ) : null}
                   <div className="grid gap-2 md:grid-cols-2">
                     <span>Compiler family: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.value ?? "unknown"}</span>
                     <span>Confidence: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.confidence}</span>
+                    <span>Compiler evidence: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.evidence.join(", ") || "none"}</span>
                     <span>Defines: {buildDoctorRunQuery.data.snapshot.buildDoctor.defines.join(", ") || "none"}</span>
+                    <span>Configurations: {buildDoctorRunQuery.data.snapshot.buildDoctor.configurations.join(", ") || "none"}</span>
                     <span>Platforms: {buildDoctorRunQuery.data.snapshot.buildDoctor.platforms.join(", ") || "none"}</span>
                   </div>
+                  <BuildDoctorList title="Project entries" items={buildDoctorRunQuery.data.snapshot.buildDoctor.projectEntries.map((entry) => `${entry.path} (${entry.kind})${entry.lineNumber ? `:${entry.lineNumber}` : ""} - ${entry.evidence}`)} />
+                  <BuildDoctorList title="Search paths" items={buildDoctorRunQuery.data.snapshot.buildDoctor.searchPaths} />
+                  <BuildDoctorList title="Include paths" items={buildDoctorRunQuery.data.snapshot.buildDoctor.includePaths} />
+                  <BuildDoctorList title="Output paths" items={buildDoctorRunQuery.data.snapshot.buildDoctor.outputPaths} />
+                  <BuildDoctorList title="Required packages" items={buildDoctorRunQuery.data.snapshot.buildDoctor.requiredPackages} />
+                  <BuildDoctorList title="Runtime packages" items={buildDoctorRunQuery.data.snapshot.buildDoctor.runtimePackages} />
+                  <BuildDoctorList title="Required Units" items={buildDoctorRunQuery.data.snapshot.buildDoctor.requiredUnits} />
+                  <BuildDoctorList title="Missing Units" items={buildDoctorRunQuery.data.snapshot.buildDoctor.missingUnits} />
+                  <BuildDoctorList title="Unresolved Units" items={buildDoctorRunQuery.data.snapshot.buildDoctor.unresolvedUnits} />
+                  <BuildDoctorList title="Missing packages" items={buildDoctorRunQuery.data.snapshot.buildDoctor.missingPackages} />
+                  <BuildDoctorList title="External dependencies" items={buildDoctorRunQuery.data.snapshot.buildDoctor.externalDependencies} />
                   <div className="space-y-2">
-                    {buildDoctorRunQuery.data.snapshot.buildDoctor.findings.slice(0, 50).map((finding) => (
-                      <div key={`${finding.code}:${finding.title}:${finding.evidence ?? ""}`} className="rounded-lg border px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant={finding.severity === "blocker" ? "destructive" : "outline"}>{finding.severity}</Badge>
-                          <span className="font-medium text-slate-950">{finding.title}</span>
-                          <span className="text-slate-500">{finding.confidence}</span>
+                    <h3 className="font-medium text-slate-950">Package resolutions</h3>
+                    {buildDoctorRunQuery.data.snapshot.buildDoctor.packageResolutions.length ? (
+                      buildDoctorRunQuery.data.snapshot.buildDoctor.packageResolutions.map((entry) => (
+                        <div key={entry.packageName} className="rounded-lg border px-3 py-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-slate-950">{entry.packageName}</span>
+                            <Badge variant={entry.resolution === "missing" ? "destructive" : "outline"}>{entry.resolution}</Badge>
+                          </div>
+                          <p className="mt-1 text-slate-600">Source file: {entry.evidence[0] ?? "unknown"}</p>
+                          <p className="text-slate-600">Resolved path: {entry.resolvedPath ?? "none"}</p>
+                          <p className="text-slate-500">Evidence: {entry.evidence.join(" | ") || "none"}</p>
                         </div>
-                        <p className="mt-1 text-slate-700">{finding.description}</p>
-                        <p className="mt-1 text-slate-600">{finding.recommendation}</p>
-                        {finding.evidence ? <p className="mt-1 text-slate-500">Evidence: {finding.evidence}</p> : null}
-                      </div>
-                    ))}
+                      ))
+                    ) : (
+                      <p className="text-slate-500">No package resolutions recorded.</p>
+                    )}
                   </div>
+                  {(["blocker", "error", "warning", "info"] as const).map((severity) => {
+                    const findings = (buildDoctorRunQuery.data.snapshot?.buildDoctor.findings ?? []).filter((finding) => finding.severity === severity);
+                    return (
+                      <div key={severity} className="space-y-2">
+                        <h3 className="font-medium text-slate-950">Findings: {severity} ({findings.length})</h3>
+                        {findings.length ? findings.map((finding) => (
+                          <div key={`${finding.code}:${finding.title}:${finding.evidence ?? ""}`} className="rounded-lg border px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant={finding.severity === "blocker" ? "destructive" : "outline"}>{finding.severity}</Badge>
+                              <span className="font-medium text-slate-950">{finding.title}</span>
+                              <span className="text-slate-500">{finding.confidence}</span>
+                            </div>
+                            <p className="mt-1 text-slate-700">{finding.description}</p>
+                            <p className="mt-1 text-slate-600">{finding.recommendation}</p>
+                            {finding.sourceFile ? <p className="mt-1 text-slate-500">Source: {finding.sourceFile}{finding.lineNumber ? `:${finding.lineNumber}` : ""}</p> : null}
+                            {finding.evidence ? <p className="mt-1 text-slate-500">Evidence: {finding.evidence}</p> : null}
+                          </div>
+                        )) : <p className="text-slate-500">No {severity} findings.</p>}
+                      </div>
+                    );
+                  })}
+                  <BuildDoctorList title="Limitations" items={buildDoctorRunQuery.data.snapshot.buildDoctor.limitations} />
                 </CardContent>
               </Card>
             ) : (
@@ -648,15 +751,48 @@ export default function AnalysisResult() {
           </TabsContent>
 
           <TabsContent value="flow" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={inspectedRunId ? "outline" : "default"}>{inspectedRunId ? "Historical" : "Current source"}</Badge>
+                <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
+              </div>
+              {inspectedRunId ? (
+                <Button size="sm" variant="outline" onClick={() => { setInspectedRunId(null); setFlowTracePage(1); }}>
+                  Return to current source
+                </Button>
+              ) : null}
+            </div>
+            {flowTraceSummaryQuery?.data?.globalTruncated ? (
+              <Alert variant="warning">
+                <AlertTriangle className="size-4" />
+                <AlertTitle>Flow trace output truncated</AlertTitle>
+                <AlertDescription>The analyzer reached the global flow-trace limit. Persisted traces are complete as stored, but additional candidates were not saved.</AlertDescription>
+              </Alert>
+            ) : null}
+            {flowTraceSummaryQuery?.error ? (
+              <Alert variant="destructive">
+                <AlertTitle>Unable to load flow summary</AlertTitle>
+                <AlertDescription>{flowTraceSummaryQuery.error.message}</AlertDescription>
+              </Alert>
+            ) : null}
             <div className="grid gap-4 md:grid-cols-4">
               <MetricCard title="Traces" value={flowTraceSummaryQuery?.data?.total ?? 0} />
               <MetricCard title="Complete" value={flowTraceSummaryQuery?.data?.complete ?? 0} />
               <MetricCard title="Partial" value={flowTraceSummaryQuery?.data?.partial ?? 0} />
+              <MetricCard title="Unresolved" value={flowTraceSummaryQuery?.data?.unresolved ?? 0} />
+              <MetricCard title="Read paths" value={flowTraceSummaryQuery?.data?.readPaths ?? 0} />
+              <MetricCard title="Write paths" value={flowTraceSummaryQuery?.data?.writePaths ?? 0} />
               <MetricCard title="Tables" value={flowTraceSummaryQuery?.data?.affectedTables ?? 0} />
+              <MetricCard title="Candidates" value={flowTraceSummaryQuery?.data?.candidateTraceCount ?? 0} />
+              <MetricCard title="Persisted" value={flowTraceSummaryQuery?.data?.persistedTraceCount ?? 0} />
             </div>
             <FilterCard title="Flow trace filters" description="Filter static UI event and data-binding paths.">
-              <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
+              <div className="grid gap-3 md:grid-cols-3">
                 <Input value={flowTraceSearch} onChange={(event) => { setFlowTraceSearch(event.target.value); setFlowTracePage(1); }} placeholder="Search form, component, SQL, table, or field" />
+                <Input value={flowTraceForm} onChange={(event) => { setFlowTraceForm(event.target.value); setFlowTracePage(1); }} placeholder="Form" />
+                <Input value={flowTraceComponent} onChange={(event) => { setFlowTraceComponent(event.target.value); setFlowTracePage(1); }} placeholder="Component" />
+                <Input value={flowTraceEvent} onChange={(event) => { setFlowTraceEvent(event.target.value); setFlowTracePage(1); }} placeholder="Event" />
+                <Input value={flowTraceTable} onChange={(event) => { setFlowTraceTable(event.target.value); setFlowTracePage(1); }} placeholder="Table" />
                 <Select value={flowTraceStatus} onValueChange={(value) => { setFlowTraceStatus(value); setFlowTracePage(1); }}>
                   <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
                   <SelectContent>
@@ -666,8 +802,36 @@ export default function AnalysisResult() {
                     <SelectItem value="unresolved">Unresolved</SelectItem>
                   </SelectContent>
                 </Select>
+                <Select value={flowTraceOperation} onValueChange={(value) => { setFlowTraceOperation(value); setFlowTracePage(1); }}>
+                  <SelectTrigger><SelectValue placeholder="Operation" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All operations</SelectItem>
+                    <SelectItem value="read">Read</SelectItem>
+                    <SelectItem value="write">Write</SelectItem>
+                    <SelectItem value="calculate">Calculate</SelectItem>
+                    <SelectItem value="unknown">Unknown</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={flowTraceConfidence} onValueChange={(value) => { setFlowTraceConfidence(value); setFlowTracePage(1); }}>
+                  <SelectTrigger><SelectValue placeholder="Confidence" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All confidence levels</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="low">Low</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="mt-3">
+                <Button size="sm" variant="outline" onClick={resetFlowTraceFilters}>Reset Filters</Button>
               </div>
             </FilterCard>
+            {flowTracesQuery?.error ? (
+              <Alert variant="destructive">
+                <AlertTitle>Unable to load flow traces</AlertTitle>
+                <AlertDescription>{flowTracesQuery.error.message}</AlertDescription>
+              </Alert>
+            ) : null}
             <PaginationControls total={flowTracesQuery?.data?.total ?? 0} page={flowTracesQuery?.data?.page ?? flowTracePage} pageCount={flowTracesQuery?.data?.pageCount ?? 0} onPrev={() => setFlowTracePage((value) => Math.max(1, value - 1))} onNext={() => setFlowTracePage((value) => value + 1)} />
             <div className="space-y-3">
               {(flowTracesQuery?.data?.items ?? []).map((trace) => (
@@ -685,16 +849,38 @@ export default function AnalysisResult() {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3 text-sm">
+                    <div className="flex flex-wrap gap-2">
+                      {trace.affectedTables.map((table) => <Badge key={table} variant="outline">{table}</Badge>)}
+                      {trace.affectedFields.map((field) => <Badge key={`${field.table}.${field.field}.${field.operation}`} variant="secondary">{field.table}.{field.field} {field.operation}</Badge>)}
+                    </div>
+                    <p className="text-slate-600">Operations: {Array.from(new Set(trace.affectedFields.map((field) => field.operation))).join(", ") || "none"}</p>
+                    {trace.steps.find((step) => step.filePath) ? (
+                      <p className="text-slate-500">
+                        Source: {trace.steps.find((step) => step.filePath)?.filePath}
+                        {trace.steps.find((step) => step.filePath)?.lineNumber ? `:${trace.steps.find((step) => step.filePath)?.lineNumber}` : ""}
+                      </p>
+                    ) : null}
                     {trace.warnings.length > 0 ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Trace warnings</AlertTitle><AlertDescription>{trace.warnings.join(" ")}</AlertDescription></Alert> : null}
+                    {trace.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Trace truncated</AlertTitle><AlertDescription>This trace reached its per-trace step limit.</AlertDescription></Alert> : null}
                     <div className="space-y-2">
-                      {trace.steps.slice(0, 30).map((step) => (
+                      {(expandedFlowSteps[trace.stableKey] ? trace.steps : trace.steps.slice(0, 5)).map((step) => (
                         <div key={step.id} className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
                           <Badge variant="outline">{step.type}</Badge>
                           <span className="font-medium text-slate-950">{step.label}</span>
                           {step.operation ? <Badge variant="secondary">{step.operation}</Badge> : null}
                           {step.filePath ? <span className="text-slate-500">{step.filePath}{step.lineNumber ? `:${step.lineNumber}` : ""}</span> : null}
+                          {step.evidence ? <span className="text-slate-500">Evidence: {step.evidence}</span> : null}
                         </div>
                       ))}
+                      {trace.steps.length > 5 ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setExpandedFlowSteps((current) => ({ ...current, [trace.stableKey]: !current[trace.stableKey] }))}
+                        >
+                          {expandedFlowSteps[trace.stableKey] ? "Collapse" : `Show all steps (${trace.steps.length})`}
+                        </Button>
+                      ) : null}
                     </div>
                   </CardContent>
                 </Card>
@@ -1025,6 +1211,25 @@ function SimpleListCard({ title, items, emptyText }: { title: string; items: str
         {items.length ? items.map((item) => <div key={item} className="rounded-lg border px-3 py-2">{item}</div>) : <p className="text-slate-500">{emptyText}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+function BuildDoctorList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="space-y-2">
+      <h3 className="font-medium text-slate-950">{title}</h3>
+      {items.length ? (
+        <div className="grid gap-2 md:grid-cols-2">
+          {items.map((item) => (
+            <div key={item} className="rounded-lg border px-3 py-2 text-slate-700">
+              {item}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-slate-500">None recorded.</p>
+      )}
+    </div>
   );
 }
 

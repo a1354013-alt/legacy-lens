@@ -411,4 +411,107 @@ describe("Delphi flow tracer", () => {
     expect(result.traces[0]?.resolvedHandler).toBe("TOrderForm.btnSaveClick");
     expect(result.traces[0]?.status).toBe("complete");
   });
+
+  it("discloses indirect call cycles as structured warnings", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const validateOrder = symbol("ValidateOrder", 20);
+    const saveOrder = symbol("SaveOrder", 30);
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [{ formName: "OrderForm", formClass: "TOrderForm", componentName: "btnSave", componentClass: "TButton", eventName: "OnClick", handlerName: "btnSaveClick", filePath: "MainForm.dfm", lineNumber: 4, resolvedMethod: "TOrderForm.btnSaveClick", resolvedFile: "MainForm.pas", status: "resolved", warnings: [] }],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick, validateOrder, saveOrder],
+      dependencies: [
+        { from: btnSaveClick.stableKey, to: validateOrder.stableKey, fromName: "btnSaveClick", toName: "ValidateOrder", type: "calls", line: 12 },
+        { from: validateOrder.stableKey, to: saveOrder.stableKey, fromName: "ValidateOrder", toName: "SaveOrder", type: "calls", line: 22 },
+        { from: saveOrder.stableKey, to: validateOrder.stableKey, fromName: "SaveOrder", toName: "ValidateOrder", type: "calls", line: 32 },
+      ],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.status).toBe("partial");
+    expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_CALL_CYCLE");
+  });
+
+  it("stops traversal at the maximum call depth", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const saveOrder = symbol("SaveOrder", 20);
+    const persistOrder = symbol("PersistOrder", 30);
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [{ formName: "OrderForm", formClass: "TOrderForm", componentName: "btnSave", componentClass: "TButton", eventName: "OnClick", handlerName: "btnSaveClick", filePath: "MainForm.dfm", lineNumber: 4, resolvedMethod: "TOrderForm.btnSaveClick", resolvedFile: "MainForm.pas", status: "resolved", warnings: [] }],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick, saveOrder, persistOrder],
+      dependencies: [
+        { from: btnSaveClick.stableKey, to: saveOrder.stableKey, fromName: "btnSaveClick", toName: "SaveOrder", type: "calls", line: 12 },
+        { from: saveOrder.stableKey, to: persistOrder.stableKey, fromName: "SaveOrder", toName: "PersistOrder", type: "calls", line: 22 },
+      ],
+      sqlStatements: [],
+    }, { maxCallDepth: 1 });
+
+    expect(result.traces[0]?.truncated).toBe(true);
+    expect(result.traces[0]?.warnings.join(" ")).toContain("FLOW_TRACE_MAX_CALL_DEPTH_REACHED");
+  });
+
+  it("keeps unresolved handlers unresolved", () => {
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [{ formName: "OrderForm", formClass: "TOrderForm", componentName: "btnSave", componentClass: "TButton", eventName: "OnClick", handlerName: "btnSaveClick", filePath: "MainForm.dfm", lineNumber: 4, resolvedMethod: null, resolvedFile: null, status: "unresolved", warnings: ["handler missing"] }],
+      delphiDataBindings: [],
+      symbols: [],
+      dependencies: [],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.status).toBe("unresolved");
+    expect(result.traces[0]?.warnings.join(" ")).toContain("handler missing");
+  });
+
+  it("keeps dynamic and EXECUTE SQL evidence with lower confidence warnings", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [{ formName: "OrderForm", formClass: "TOrderForm", componentName: "btnSave", componentClass: "TButton", eventName: "OnClick", handlerName: "btnSaveClick", filePath: "MainForm.dfm", lineNumber: 4, resolvedMethod: "TOrderForm.btnSaveClick", resolvedFile: "MainForm.pas", status: "resolved", warnings: [] }],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick],
+      dependencies: [],
+      sqlStatements: [
+        { stableKey: "sql-dynamic", ownerSymbolStableKey: btnSaveClick.stableKey, ownerSymbolName: "TOrderForm.btnSaveClick", filePath: "MainForm.pas", startLine: 12, endLine: 12, operation: "execute", normalizedSql: "EXECUTE IMMEDIATE :SQL_TEXT", tables: [{ name: "unknown", operation: "unknown" }], fields: [], dynamic: true, confidence: "low", warnings: ["dynamic sql"] },
+      ],
+    });
+
+    expect(result.traces[0]?.steps.map((step) => step.label)).toContain("EXECUTE unknown");
+    expect(result.traces[0]?.warnings.join(" ")).toContain("Dynamic SQL lowers flow confidence");
+  });
+
+  it("persists multiple SQL statements owned by one handler", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [{ formName: "OrderForm", formClass: "TOrderForm", componentName: "btnSave", componentClass: "TButton", eventName: "OnClick", handlerName: "btnSaveClick", filePath: "MainForm.dfm", lineNumber: 4, resolvedMethod: "TOrderForm.btnSaveClick", resolvedFile: "MainForm.pas", status: "resolved", warnings: [] }],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick],
+      dependencies: [],
+      sqlStatements: [
+        { stableKey: "sql-1", ownerSymbolStableKey: btnSaveClick.stableKey, ownerSymbolName: "TOrderForm.btnSaveClick", filePath: "MainForm.pas", startLine: 12, endLine: 12, operation: "select", normalizedSql: "SELECT ID FROM ORDERS", tables: [{ name: "ORDERS", operation: "read" }], fields: [{ table: "ORDERS", field: "ID", operation: "read" }], dynamic: false, confidence: "high", warnings: [] },
+        { stableKey: "sql-2", ownerSymbolStableKey: btnSaveClick.stableKey, ownerSymbolName: "TOrderForm.btnSaveClick", filePath: "MainForm.pas", startLine: 13, endLine: 13, operation: "update", normalizedSql: "UPDATE ORDERS SET STATUS = :STATUS", tables: [{ name: "ORDERS", operation: "write" }], fields: [{ table: "ORDERS", field: "STATUS", operation: "write" }], dynamic: false, confidence: "high", warnings: [] },
+      ],
+    });
+
+    expect(result.traces[0]?.affectedFields).toEqual(
+      expect.arrayContaining([
+        { table: "ORDERS", field: "ID", operation: "read" },
+        { table: "ORDERS", field: "STATUS", operation: "write" },
+      ])
+    );
+  });
+
+  it("keeps event paths without SQL as complete static UI paths", () => {
+    const btnSaveClick = symbol("btnSaveClick", 10);
+    const result = buildDelphiFlowTraces({
+      delphiEventMap: [{ formName: "OrderForm", formClass: "TOrderForm", componentName: "btnSave", componentClass: "TButton", eventName: "OnClick", handlerName: "btnSaveClick", filePath: "MainForm.dfm", lineNumber: 4, resolvedMethod: "TOrderForm.btnSaveClick", resolvedFile: "MainForm.pas", status: "resolved", warnings: [] }],
+      delphiDataBindings: [],
+      symbols: [btnSaveClick],
+      dependencies: [],
+      sqlStatements: [],
+    });
+
+    expect(result.traces[0]?.status).toBe("complete");
+    expect(result.traces[0]?.affectedTables).toEqual([]);
+  });
 });

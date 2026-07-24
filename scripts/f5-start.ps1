@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
+. (Join-Path $PSScriptRoot "f5-startup-policy.ps1")
 
 $composeArgs = @("compose", "-f", "docker-compose.demo.yml")
 $startupTimeoutSeconds = 180
@@ -141,16 +142,6 @@ function Show-ComposeDiagnostics {
 function Get-ComposeServiceContainerId([string] $ServiceName) {
   $result = Invoke-DockerChecked -Arguments ($composeArgs + @("ps", "-q", $ServiceName)) -IgnoreFailure
   return $result.Trim()
-}
-
-function Test-ComposeStackActive {
-  foreach ($serviceName in @("app", "migrate", "db")) {
-    if (Get-ComposeServiceContainerId -ServiceName $serviceName) {
-      return $true
-    }
-  }
-
-  return $false
 }
 
 function Get-ComposeServiceState([string] $ServiceName) {
@@ -331,7 +322,9 @@ try {
   $appUrl = Get-AppUrl
   $readyUrl = Get-ReadyUrl
 
-  if (Invoke-ReadyCheck -Url $readyUrl) {
+  $startupAction = Get-F5StartupAction -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl)
+
+  if ($startupAction -eq "OpenExisting") {
     Write-Step "Legacy Lens is already running."
     Write-Step "Opening $appUrl"
     Start-Process $appUrl
@@ -339,9 +332,7 @@ try {
   }
 
   Assert-PortsAvailableForStartup
-  if (-not (Test-ComposeStackActive)) {
-    Start-ComposeDetached
-  }
+  Start-ComposeDetached
   Wait-ForReadiness
 
   Write-Step "Legacy Lens is ready."

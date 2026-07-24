@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,10 +60,46 @@ describe("shared launcher implementation", () => {
     expect(launcher).toContain("$startupTimeoutSeconds = 180");
     expect(launcher).toContain("Timed out waiting for /ready");
     expect(launcher).toContain("Legacy Lens is already running.");
+    expect(launcher).toContain("Get-F5StartupAction");
+    expect(launcher).toContain("Start-ComposeDetached");
+    expect(launcher).not.toContain("Test-ComposeStackActive");
     expect(launcher).toContain('Get-PackageVersion');
     expect(launcher).toContain('must be an integer between 1 and 65535');
     expect(launcher).toContain('Get-ValidatedPortValue -VariableName "LEGACY_LENS_PORT"');
     expect(launcher).toContain('Get-ValidatedPortValue -VariableName "LEGACY_LENS_DB_PORT"');
+  });
+
+  it("uses readiness, not partial containers, as the only startup decision", () => {
+    const launcher = readProjectFile("scripts/f5-start.ps1");
+
+    expect(launcher).toContain("$startupAction = Get-F5StartupAction -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl)");
+    expect(launcher).toContain('if ($startupAction -eq "OpenExisting")');
+    expect(launcher).toMatch(/Assert-PortsAvailableForStartup\s+Start-ComposeDetached\s+Wait-ForReadiness/s);
+  });
+
+  it("repairs DB-only, DB+migrate, and unhealthy-app stacks with exactly one compose up decision", () => {
+    const policyPath = path.join(projectRoot, "scripts", "f5-startup-policy.ps1");
+    const command = [
+      `. '${policyPath.replaceAll("'", "''")}'`,
+      "[pscustomobject]@{ Ready = Get-F5StartupAction -ReadyHealthy $true",
+      "DbOnly = Get-F5StartupAction -ReadyHealthy $false",
+      "DbAndMigrate = Get-F5StartupAction -ReadyHealthy $false",
+      "UnhealthyApp = Get-F5StartupAction -ReadyHealthy $false",
+      "} | ConvertTo-Json -Compress",
+    ].join("; ");
+    const output = execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      cwd: projectRoot,
+      encoding: "utf8",
+    });
+    const decisions = JSON.parse(output);
+
+    expect(decisions.Ready).toBe("OpenExisting");
+    expect(decisions.DbOnly).toBe("ComposeUp");
+    expect(decisions.DbAndMigrate).toBe("ComposeUp");
+    expect(decisions.UnhealthyApp).toBe("ComposeUp");
+
+    const launcher = readProjectFile("scripts/f5-start.ps1");
+    expect((launcher.match(/Start-ComposeDetached/g) ?? []).length).toBe(2);
   });
 
   it("keeps the legacy Windows entrypoints delegating to the shared launcher", () => {

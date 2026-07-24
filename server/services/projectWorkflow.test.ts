@@ -3874,10 +3874,12 @@ describe("project workflow", () => {
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("OldForm.pas");
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.toContain("Old risk");
     await expect(zip.file("impact-analysis.json")!.async("text")).resolves.not.toContain("NewForm.pas");
-    const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { runNumber?: number; analysisResultId?: number; isHistoricalExport?: boolean };
+    const metadata = JSON.parse(await zip.file("metadata.json")!.async("text")) as { runNumber?: number; analysisResultId?: number; isHistoricalExport?: boolean; analyzerVersion?: string; exporterVersion?: string };
     expect(metadata.runNumber).toBe(1);
     expect(metadata.analysisResultId).toBe(1);
     expect(metadata.isHistoricalExport).toBe(true);
+    expect(metadata.analyzerVersion).toBe("1.1.0-rc2");
+    expect(metadata.exporterVersion).toBeTypeOf("string");
     await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"analysisResultId\": 1");
     await expect(zip.file("analysis-summary.json")!.async("text")).resolves.toContain("\"projectName\": \"historical-report\"");
     await expect(zip.file("analysis-summary.json")!.async("text")).resolves.not.toContain("NewSave");

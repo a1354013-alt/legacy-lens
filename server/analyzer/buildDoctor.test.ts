@@ -196,6 +196,80 @@ describe("Delphi Build Doctor", () => {
     );
   });
 
+  it("classifies versioned standard Delphi packages as standard", () => {
+    const result = analyzeDelphiBuild([
+      {
+        path: "Packages/AppCore.dpk",
+        language: "delphi",
+        content: "package AppCore;\nrequires rtl280, vcl280, dbrtl280;\ncontains\nend.",
+      },
+    ]);
+
+    expect(result.missingPackages).toEqual([]);
+    expect(result.packageResolutions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ packageName: "rtl280", resolution: "delphi_standard" }),
+        expect.objectContaining({ packageName: "vcl280", resolution: "delphi_standard" }),
+        expect.objectContaining({ packageName: "dbrtl280", resolution: "delphi_standard" }),
+      ])
+    );
+  });
+
+  it("preserves MSBuild macro paths without reporting concrete missing paths", () => {
+    const result = analyzeDelphiBuild([
+      {
+        path: "Project1.dproj",
+        language: "delphi",
+        content: "<Project><PropertyGroup><DCC_UnitSearchPath>$(BDSLIB)\\$(Platform)\\release;Source</DCC_UnitSearchPath></PropertyGroup></Project>",
+      },
+    ]);
+
+    expect(result.searchPaths).toContain("$(BDSLIB)\\$(Platform)\\release");
+    expect(result.findings.map((finding) => finding.code)).not.toContain("DELPHI_ESCAPING_SEARCH_PATH");
+  });
+
+  it("checks RC and nested relative resource references against imported files", () => {
+    const result = analyzeDelphiBuild([
+      { path: "Forms/MainForm.pas", language: "delphi", content: "unit MainForm;\ninterface\nimplementation\n{$R resources\\MainForm.res}\nend." },
+      { path: "Forms/resources/MainForm.res", language: "delphi", content: "compiled resource bytes" },
+      { path: "Resources/App.rc", language: "delphi", content: "APP_ICON ICON \"icons\\app.ico\"\nMISSING_ICON ICON \"icons\\missing.ico\"" },
+      { path: "Resources/icons/app.ico", language: "delphi", content: "icon" },
+    ]);
+
+    const missingResources = result.findings.filter((finding) => finding.code === "DELPHI_RESOURCE_REFERENCE_MISSING");
+
+    expect(missingResources).toHaveLength(1);
+    expect(missingResources[0]).toMatchObject({ sourceFile: "Resources/App.rc", evidence: "icons\\missing.ico" });
+  });
+
+  it("keeps metadata from multiple directories source-aware", () => {
+    const result = analyzeDelphiBuild([
+      { path: "Apps/App.dproj", language: "delphi", content: "<Project><PropertyGroup><DCC_UnitSearchPath>..\\Shared</DCC_UnitSearchPath></PropertyGroup></Project>" },
+      { path: "Tools/Tool.dproj", language: "delphi", content: "<Project><PropertyGroup><DCC_UnitSearchPath>..\\Lib</DCC_UnitSearchPath></PropertyGroup></Project>" },
+    ]);
+
+    const pathFindings = result.findings.filter((finding) => finding.code === "DELPHI_ESCAPING_SEARCH_PATH");
+
+    expect(pathFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceFile: "Apps/App.dproj", rawValue: "..\\Shared", resolvedPath: "Shared" }),
+        expect.objectContaining({ sourceFile: "Tools/Tool.dproj", rawValue: "..\\Lib", resolvedPath: "Lib" }),
+      ])
+    );
+  });
+
+  it("enforces the XML input size limit with a controlled finding", () => {
+    const result = analyzeDelphiBuild([
+      {
+        path: "Huge.dproj",
+        language: "delphi",
+        content: `<Project>${" ".repeat(1_000_001)}</Project>`,
+      },
+    ]);
+
+    expect(result.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: "DELPHI_CONFIG_PARSE_LIMITED", sourceFile: "Huge.dproj" })]));
+  });
+
   it("uses the documented scoring policy", () => {
     expect(
       scoreBuildDoctorFindings([
