@@ -1,6 +1,8 @@
-import React from "react";
+﻿import React from "react";
 import { renderToString } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "@/locales";
+import { dependencyTargetKindLabel } from "@/locales/uiLabels";
 import AnalysisResult, { renderDocumentPreview } from "./AnalysisResult";
 
 const setLocation = vi.fn();
@@ -199,8 +201,18 @@ describe("AnalysisResult", () => {
             updatedAt: new Date("2026-01-01T00:00:00.000Z"),
           },
           importWarnings: [],
-          warningSummary: [{ code: "IMPORT_LIMITED_ANALYSIS", label: "DFM 有限分析", description: "部分 DFM 只能做有限分析。", count: 2, sampleMessages: [], sampleFiles: [], partialReason: "DFM 僅有限分析" }],
-          partialReasons: ["DFM 僅有限分析", "偵測到 legacy encoding"],
+          warningSummary: [
+            {
+              code: "IMPORT_LIMITED_ANALYSIS",
+              label: "DFM 匯入受限",
+              description: "部分 DFM 內容無法完整匯入。",
+              count: 2,
+              sampleMessages: [],
+              sampleFiles: [],
+              partialReason: "DFM 匯入受限",
+            },
+          ],
+          partialReasons: ["DFM 匯入受限", "legacy encoding"],
           totals: { files: 10, symbols: 20, fields: 0, dependencies: 5, fieldDependencies: 0, risks: 3, rules: 2, importWarnings: 2 },
           topSymbols: [],
           topRisks: [],
@@ -232,9 +244,9 @@ describe("AnalysisResult", () => {
     const html = renderToString(<AnalysisResult />);
 
     expect(html).toContain("分析完成但有警告");
-    expect(html).not.toContain("專案錯誤");
+    expect(html).not.toContain("撠??航炊");
     expect(html).not.toContain("completed_with_warnings");
-    expect(html).toContain("原因摘要");
+    expect(html).toContain("原因摘要：");
   });
 
   it("shows import warnings from the analysis snapshot", () => {
@@ -308,8 +320,8 @@ describe("AnalysisResult", () => {
 
     expect(html).toContain("fmt");
     expect(html).toContain("dynamicCall");
-    expect(html).toContain("外部");
-    expect(html).toContain("未解析");
+    expect(html).toContain(dependencyTargetKindLabel("external"));
+    expect(html).toContain(dependencyTargetKindLabel("unresolved"));
   });
 
   it("shows analysis confidence score, level, breakdown, and manual review prompt", () => {
@@ -344,13 +356,13 @@ describe("AnalysisResult", () => {
 
     const html = renderToString(<AnalysisResult />);
 
-    expect(html).toContain("Analysis Confidence Score");
+    expect(html).toContain(t("analysisV11.summary.confidenceTitle"));
     expect(html).toContain("55");
     expect(html).toContain("/100");
     expect(html).toContain("low");
     expect(html).toContain("Unresolved DFM event handlers");
     expect(html).toContain("Dynamic SQL");
-    expect(html).toContain("需要人工複核");
+    expect(html).toContain(t("analysisV11.summary.lowConfidenceTitle"));
   });
 
   it("shows confidence unavailable when the backend result has no final confidence", () => {
@@ -376,11 +388,11 @@ describe("AnalysisResult", () => {
 
     const html = renderToString(<AnalysisResult />);
 
-    expect(html).toContain("Analysis Confidence Score");
-    expect(html).toContain("Confidence unavailable for this analysis result.");
+    expect(html).toContain(t("analysisV11.summary.confidenceTitle"));
+    expect(html).toContain(t("analysisV11.summary.confidenceUnavailable"));
   });
 
   it("returns stable fallback text when no document content exists", () => {
-    expect(renderDocumentPreview(null)).toBe("目前沒有可預覽的文件內容。");
+    expect(renderDocumentPreview(null)).toBe(t("analysis.empty.noDocument"));
   });
 });

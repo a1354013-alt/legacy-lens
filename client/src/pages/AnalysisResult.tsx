@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+﻿import { useState, type ReactNode } from "react";
 import { useLocation, useRoute } from "wouter";
 import { AlertTriangle, ArrowLeft, FileText, Loader2, ShieldAlert } from "lucide-react";
 import {
@@ -47,6 +47,7 @@ import {
   RulePanel,
   WarningSummaryCard,
 } from "./analysisResult/components";
+import { analysisResultCopy } from "./analysisResult/copy";
 import { useAnalysisResultModel } from "./analysisResult/useAnalysisResultModel";
 
 export function renderDocumentPreview(content: string | null | undefined) {
@@ -100,10 +101,10 @@ function AnalysisConfidenceCard({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Analysis Confidence Score</CardTitle>
-          <CardDescription>Heuristic analysis confidence for this report.</CardDescription>
+          <CardTitle>{analysisResultCopy.summary.confidenceTitle}</CardTitle>
+          <CardDescription>{analysisResultCopy.summary.confidenceDescription}</CardDescription>
         </CardHeader>
-        <CardContent className="text-sm text-slate-600">Confidence unavailable for this analysis result.</CardContent>
+        <CardContent className="text-sm text-slate-600">{analysisResultCopy.summary.confidenceUnavailable}</CardContent>
       </Card>
     );
   }
@@ -115,8 +116,8 @@ function AnalysisConfidenceCard({
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <CardTitle>Analysis Confidence Score</CardTitle>
-            <CardDescription>Heuristic analysis confidence for this report.</CardDescription>
+            <CardTitle>{analysisResultCopy.summary.confidenceTitle}</CardTitle>
+            <CardDescription>{analysisResultCopy.summary.confidenceDescription}</CardDescription>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-2xl font-semibold text-slate-950">{confidence.score}/100</span>
@@ -130,12 +131,12 @@ function AnalysisConfidenceCard({
         {confidence.score < 60 ? (
           <Alert variant="warning">
             <AlertTriangle className="size-4" />
-            <AlertTitle>需要人工複核</AlertTitle>
-            <AlertDescription>Confidence is below 60, so review the highlighted limitations before relying on this report.</AlertDescription>
+            <AlertTitle>{analysisResultCopy.summary.lowConfidenceTitle}</AlertTitle>
+            <AlertDescription>{analysisResultCopy.summary.lowConfidenceDescription}</AlertDescription>
           </Alert>
         ) : null}
         {penalties.length === 0 ? (
-          <p className="text-slate-600">No major confidence penalties were detected.</p>
+          <p className="text-slate-600">{analysisResultCopy.summary.noMajorPenalties}</p>
         ) : (
           <div className="space-y-2">
             {penalties.map((item) => (
@@ -508,12 +509,12 @@ export default function AnalysisResult() {
                 emptyText={t("analysis.summary.noSymbols")}
               />
               <SimpleListCard
-                title="Top 風險類型"
+                title={analysisResultCopy.summary.topRiskTypes}
                 items={(snapshot?.topRiskGroups ?? []).slice(0, 10).map((item) => `[${riskSeverityLabel(item.severity)}] ${item.title} (${item.occurrenceCount})`)}
                 emptyText={t("analysis.summary.noRisks")}
               />
               <SimpleListCard
-                title="Top 規則類型"
+                title={analysisResultCopy.summary.topRuleTypes}
                 items={(snapshot?.topRuleGroups ?? []).slice(0, 10).map((item) => `${item.title} (${item.occurrenceCount})`)}
                 emptyText={t("analysis.summary.noRules")}
               />
@@ -521,12 +522,12 @@ export default function AnalysisResult() {
 
             <div className="grid gap-4 lg:grid-cols-2">
               <SimpleListCard
-                title="最常被影響的檔案"
+                title={analysisResultCopy.summary.topAffectedFiles}
                 items={(snapshot?.topAffectedFiles ?? []).map((item) => `${item.filePath} (${item.totalCount})`)}
-                emptyText="目前沒有可顯示的檔案影響排行。"
+                emptyText={analysisResultCopy.summary.noAffectedFiles}
               />
               <SimpleListCard
-                title="相依摘要"
+                title={analysisResultCopy.summary.dependencySummaryTitle}
                 items={
                   snapshot
                     ? [
@@ -537,7 +538,7 @@ export default function AnalysisResult() {
                       ]
                     : []
                 }
-                emptyText="目前沒有相依摘要。"
+                emptyText={analysisResultCopy.summary.noDependencySummary}
               />
             </div>
 
@@ -601,7 +602,7 @@ export default function AnalysisResult() {
                     <div className="flex flex-wrap gap-2">
                       <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); inspectRun(run.id); }}>{t("analysisV11.history.details")}</Button>
                       <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setActiveTab("buildDoctor"); }}>{t("analysisV11.history.buildDoctor")}</Button>
-                      <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setFlowTracePage(1); setActiveTab("flow"); }}>View UI → DB Flow</Button>
+                      <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setFlowTracePage(1); setActiveTab("flow"); }}>{t("analysisV11.history.flow")}</Button>
                       <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })} disabled={setBaselineMutation?.isPending}>{t("analysisV11.history.setBaseline")}</Button>
                       {run.isBaseline ? (
                         <Button size="sm" variant="outline" onClick={() => clearBaselineMutation?.mutate(projectId)} disabled={clearBaselineMutation?.isPending}>{t("analysisV11.history.clearBaseline")}</Button>
@@ -1455,7 +1456,7 @@ function BuildDoctorList({ title, items }: { title: string; items: string[] }) {
           ))}
         </div>
       ) : (
-        <p className="text-slate-500">None recorded.</p>
+        <p className="text-slate-500">{t("analysisV11.buildDoctor.noItems")}</p>
       )}
     </div>
   );

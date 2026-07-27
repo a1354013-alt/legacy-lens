@@ -191,6 +191,27 @@ function dedupeMetadataValues(values: DelphiMetadataValue[]) {
   return Array.from(new Map(values.map((entry) => [metadataEntryKey(entry), entry])).values());
 }
 
+function packageReferenceDetails(entries: DelphiMetadataValue[]) {
+  return dedupeMetadataValues(entries)
+    .map((entry) => {
+      const resolved = resolveRelativePath(entry.sourceFile, entry.value);
+      return {
+        sourceFile: entry.sourceFile,
+        lineNumber: entry.lineNumber ?? undefined,
+        condition: entry.condition,
+        rawValue: entry.value,
+        resolvedPath: resolved.resolvedPath ?? undefined,
+      };
+    })
+    .sort((left, right) => {
+      return left.sourceFile.localeCompare(right.sourceFile)
+        || (left.lineNumber ?? 0) - (right.lineNumber ?? 0)
+        || (left.condition ?? "").localeCompare(right.condition ?? "")
+        || left.rawValue.localeCompare(right.rawValue)
+        || (left.resolvedPath ?? "").localeCompare(right.resolvedPath ?? "");
+    });
+}
+
 function metadataEvidence(entry: DelphiMetadataValue, extra?: { resolvedPath?: string | null }) {
   return [
     `sourceFile=${entry.sourceFile}`,
@@ -849,6 +870,7 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
   const packageResolutions: DelphiPackageResolutionDetail[] = Array.from(packageGroups.entries()).sort(([left], [right]) => left.localeCompare(right)).map(([, entries]) => {
     const pkg = entries[0]!.value;
     const normalizedPkg = normalizeKey(pkg);
+    const references = packageReferenceDetails(entries);
     const localMatches = uniq([
       ...(localPackageIndex.get(normalizedPkg) ?? []),
       ...(localPackageIndex.get(normalizeKey(stem(pkg))) ?? []),
@@ -890,11 +912,17 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
         resolvedPath: missingExplicit.resolved.resolvedPath ?? undefined,
         evidence: metadataEvidence(missingExplicit.entry, { resolvedPath: missingExplicit.resolved.resolvedPath }),
       });
-      return { packageName: pkg, resolution: "missing", resolvedPath: missingExplicit.resolved.resolvedPath!, evidence: entries.map((entry) => metadataEvidence(entry, { resolvedPath: resolveRelativePath(entry.sourceFile, entry.value).resolvedPath })) };
+      return {
+        packageName: pkg,
+        resolution: "missing",
+        resolvedPath: missingExplicit.resolved.resolvedPath!,
+        evidence: entries.map((entry) => metadataEvidence(entry, { resolvedPath: resolveRelativePath(entry.sourceFile, entry.value).resolvedPath })),
+        references,
+      };
     }
 
     if (localMatches.length === 1) {
-      return { packageName: pkg, resolution: "project_local", resolvedPath: localMatches[0], evidence: localMatches };
+      return { packageName: pkg, resolution: "project_local", resolvedPath: localMatches[0], evidence: localMatches, references };
     }
 
     if (localMatches.length > 1) {
@@ -908,11 +936,11 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
         evidence: pkg,
         relatedFiles: localMatches,
       });
-      return { packageName: pkg, resolution: "ambiguous", evidence: localMatches };
+      return { packageName: pkg, resolution: "ambiguous", evidence: localMatches, references };
     }
 
     if (isStandardPackage(pkg)) {
-      return { packageName: pkg, resolution: "delphi_standard", evidence: entries.map((entry) => metadataEvidence(entry)) };
+      return { packageName: pkg, resolution: "delphi_standard", evidence: entries.map((entry) => metadataEvidence(entry)), references };
     }
 
     findings.push({
@@ -925,7 +953,7 @@ export function analyzeDelphiBuild(files: AnalyzableFile[]): DelphiBuildDoctorRe
       evidence: pkg,
     });
     externalDependencies.push(pkg);
-    return { packageName: pkg, resolution: "external_unverified", evidence: entries.map((entry) => metadataEvidence(entry)) };
+    return { packageName: pkg, resolution: "external_unverified", evidence: entries.map((entry) => metadataEvidence(entry)), references };
   });
 
   if (runtimePackages.length > 0) {

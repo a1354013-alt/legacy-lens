@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -11,12 +11,39 @@ function readProjectFile(relativePath) {
   return readFileSync(path.join(projectRoot, relativePath), "utf8");
 }
 
-function resolvePowerShellExecutable() {
-  if (process.platform === "win32") {
-    return "powershell.exe";
+function isExecutableOnPath(executable) {
+  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const candidateNames = process.platform === "win32" && !path.extname(executable) ? [executable, `${executable}.exe`] : [executable];
+
+  for (const entry of pathEntries) {
+    for (const candidateName of candidateNames) {
+      const candidatePath = path.join(entry, candidateName);
+      try {
+        accessSync(candidatePath, constants.X_OK);
+        return true;
+      } catch {
+        // Keep scanning PATH entries until a matching executable is found.
+      }
+    }
   }
 
-  return "pwsh";
+  return false;
+}
+
+function powerShellExecutableCandidates(platform = process.platform) {
+  return platform === "win32" ? ["powershell.exe", "pwsh"] : ["pwsh", "powershell"];
+}
+
+function resolvePowerShellExecutable(platform = process.platform, hasExecutable = isExecutableOnPath) {
+  const candidates = powerShellExecutableCandidates(platform);
+
+  for (const candidate of candidates) {
+    if (hasExecutable(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`PowerShell executable was not found on PATH. Tried: ${candidates.join(", ")}`);
 }
 
 function runPowerShellCommand(command) {
@@ -29,7 +56,7 @@ function runPowerShellCommand(command) {
     });
   } catch (error) {
     if (error?.code === "ENOENT") {
-      throw new Error(`PowerShell executable '${executable}' was not found on PATH. Install PowerShell Core as 'pwsh' for Linux CI.`);
+      throw new Error(`PowerShell executable '${executable}' was not found on PATH. Tried: ${powerShellExecutableCandidates().join(", ")}`);
     }
 
     throw error;
@@ -37,6 +64,14 @@ function runPowerShellCommand(command) {
 }
 
 describe("VS Code F5 launcher", () => {
+  it("resolves PowerShell executables deterministically across Windows and non-Windows runners", () => {
+    expect(powerShellExecutableCandidates("win32")).toEqual(["powershell.exe", "pwsh"]);
+    expect(powerShellExecutableCandidates("linux")).toEqual(["pwsh", "powershell"]);
+    expect(resolvePowerShellExecutable("win32", (candidate) => candidate === "pwsh")).toBe("pwsh");
+    expect(resolvePowerShellExecutable("linux", (candidate) => candidate === "powershell")).toBe("powershell");
+    expect(() => resolvePowerShellExecutable("linux", () => false)).toThrow("Tried: pwsh, powershell");
+  });
+
   it("keeps exactly one launch configuration and points it at scripts/f5-start.ps1", () => {
     const launchJson = JSON.parse(readProjectFile(".vscode/launch.json"));
 

@@ -63,6 +63,68 @@ describe("Delphi Build Doctor", () => {
     );
   });
 
+  it("preserves structured package-reference provenance deterministically", () => {
+    const result = analyzeDelphiBuild([
+      {
+        path: "Packages/AppCore.dpk",
+        language: "delphi",
+        content: "package AppCore;\nrequires Vendor.Reporting, LocalShared;\ncontains\nend.",
+      },
+      {
+        path: "Build/App.dproj",
+        language: "delphi",
+        content: [
+          "<Project>",
+          "  <PropertyGroup Condition=\"'$(Config)'=='Debug'\">",
+          "    <DCC_UsePackage>Vendor.Reporting;LocalShared</DCC_UsePackage>",
+          "  </PropertyGroup>",
+          "</Project>",
+        ].join("\n"),
+      },
+      {
+        path: "Packages/LocalShared.dpk",
+        language: "delphi",
+        content: "package LocalShared;\nrequires rtl;\ncontains\nend.",
+      },
+    ]);
+
+    const localShared = result.packageResolutions.find((entry) => entry.packageName === "LocalShared");
+    const vendor = result.packageResolutions.find((entry) => entry.packageName === "Vendor.Reporting");
+
+    expect(localShared?.references).toEqual([
+      {
+        sourceFile: "Build/App.dproj",
+        lineNumber: 3,
+        condition: "'$(Config)'=='Debug'",
+        rawValue: "LocalShared",
+        resolvedPath: "Build/LocalShared",
+      },
+      {
+        sourceFile: "Packages/AppCore.dpk",
+        lineNumber: 2,
+        condition: undefined,
+        rawValue: "LocalShared",
+        resolvedPath: "Packages/LocalShared",
+      },
+    ]);
+    expect(vendor?.references).toEqual([
+      {
+        sourceFile: "Build/App.dproj",
+        lineNumber: 3,
+        condition: "'$(Config)'=='Debug'",
+        rawValue: "Vendor.Reporting",
+        resolvedPath: "Build/Vendor.Reporting",
+      },
+      {
+        sourceFile: "Packages/AppCore.dpk",
+        lineNumber: 2,
+        condition: undefined,
+        rawValue: "Vendor.Reporting",
+        resolvedPath: "Packages/Vendor.Reporting",
+      },
+    ]);
+  });
+
   it("treats common namespaced Delphi units as standard", () => {
     const result = analyzeDelphiBuild([
       {

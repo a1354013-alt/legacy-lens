@@ -31,12 +31,29 @@ jobs:
       - name: Validate PowerShell launcher syntax
         shell: pwsh
         run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path './scripts/f5-start.ps1'), [ref] $null, [ref] $errors) | Out-Null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path './scripts/f5-stop.ps1'), [ref] $null, [ref] $errors) | Out-Null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path './scripts/start-demo.ps1'), [ref] $null, [ref] $errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_ }
+          $allErrors = @()
+          foreach ($file in @(
+            "./scripts/f5-start.ps1",
+            "./scripts/f5-stop.ps1",
+            "./scripts/start-demo.ps1",
+            "./scripts/f5-startup-policy.ps1"
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref] $tokens,
+              [ref] $parseErrors
+            ) | Out-Null
+
+            if ($parseErrors) {
+              $allErrors += $parseErrors
+            }
+          }
+
+          if ($allErrors.Count -gt 0) {
+            $allErrors | Format-List
             exit 1
           }
       - name: Verify Drizzle metadata
