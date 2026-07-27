@@ -15,7 +15,7 @@ describe("analysis result extracted components", () => {
       />
     );
 
-    expect(html).toContain("下載報告 ZIP");
+    expect(html).toContain("Download report ZIP");
     expect(html).toContain("disabled");
   });
 
@@ -28,7 +28,7 @@ describe("analysis result extracted components", () => {
     expect(summaryHtml).toContain("Status");
     expect(summaryHtml).toContain("completed");
     expect(tableHtml).toContain("dbo.Users");
-    expect(tableHtml).toContain("讀取 3 / 寫入 1 / 參照 4");
+    expect(tableHtml).toContain("Reads 3 / Writes 1 / References 4");
   });
 
   it("renders risks, warning summaries, and pagination summary without changing list semantics", () => {
@@ -56,8 +56,8 @@ describe("analysis result extracted components", () => {
         items={[
           {
             code: "IMPORT_LIMITED_ANALYSIS",
-            label: "DFM 有限分析",
-            description: "部分 Delphi 表單檔僅做有限分析。",
+            label: "DFM limited analysis",
+            description: "Delphi metadata was imported with limited parsing.",
             count: 10,
             sampleMessages: ["Imported with limited analysis."],
             sampleFiles: ["forms/MainForm.dfm"],
@@ -70,9 +70,9 @@ describe("analysis result extracted components", () => {
     );
 
     expect(risksHtml).toContain("Dynamic SQL");
-    expect(risksHtml).toContain("出現 3 次");
-    expect(risksHtml).toContain("Review the generated statement manually.");
-    expect(warningsHtml).toContain("DFM 有限分析");
-    expect(pagingHtml).toContain("共 20 筆，第 2 / 4 頁");
+    expect(risksHtml).toContain("3 occurrences");
+    expect(risksHtml).toContain("Recommendation: Review the generated statement manually.");
+    expect(warningsHtml).toContain("DFM limited analysis");
+    expect(pagingHtml).toContain("20 total, page 2 of 4");
   });
 });

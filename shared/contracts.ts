@@ -210,6 +210,17 @@ export const delphiPackageResolutionDetailSchema = z.object({
   resolution: delphiPackageResolutionSchema,
   resolvedPath: z.string().optional(),
   evidence: z.array(z.string()),
+  references: z
+    .array(
+      z.object({
+        sourceFile: z.string(),
+        lineNumber: z.number().int().positive().optional(),
+        condition: z.string().optional(),
+        rawValue: z.string(),
+        resolvedPath: z.string().optional(),
+      })
+    )
+    .optional(),
 });
 export type DelphiPackageResolutionDetail = z.infer<typeof delphiPackageResolutionDetailSchema>;
 

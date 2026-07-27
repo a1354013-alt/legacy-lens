@@ -323,11 +323,21 @@ export default function AnalysisResult() {
   const findRun = (runId: number | null) => (runId ? runs.find((item) => item.id === runId) : undefined);
   const getRunNumberLabel = (runId: number | null) => {
     if (!runId) {
-      return snapshot?.report?.runNumber ? `Current source Run #${snapshot.report.runNumber}` : "Current source Run";
+      return snapshot?.report?.runNumber
+        ? t("analysisV11.runSource.currentRunNumber", { runNumber: snapshot.report.runNumber })
+        : t("analysisV11.runSource.currentRun");
     }
     const run = findRun(runId);
-    return run ? `Historical Run #${run.runNumber}` : `Historical Run ID ${runId}`;
+    return run
+      ? t("analysisV11.runSource.historicalRunNumber", { runNumber: run.runNumber })
+      : t("analysisV11.runSource.historicalRunId", { runId });
   };
+  const comparisonBaseLabel = diffQuery?.data
+    ? t("analysisV11.diff.baseRun", { runNumber: diffQuery.data.baseRun.runNumber })
+    : getRunNumberLabel(compareBaseRunId);
+  const comparisonCompareLabel = diffQuery?.data
+    ? t("analysisV11.diff.compareRun", { runNumber: diffQuery.data.compareRun.runNumber })
+    : getRunNumberLabel(compareRunId);
   const partialReasonText =
     snapshot?.partialReasons.length && snapshot.partialReasons.length > 0
       ? snapshot.partialReasons.join("、")
@@ -462,9 +472,9 @@ export default function AnalysisResult() {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="overview">{t("analysis.tabs.overview")}</TabsTrigger>
-            <TabsTrigger value="history">Analysis History</TabsTrigger>
-            <TabsTrigger value="buildDoctor">Build Doctor</TabsTrigger>
-            <TabsTrigger value="flow">UI to DB Flow</TabsTrigger>
+            <TabsTrigger value="history">{t("analysisV11.tabs.history")}</TabsTrigger>
+            <TabsTrigger value="buildDoctor">{t("analysisV11.tabs.buildDoctor")}</TabsTrigger>
+            <TabsTrigger value="flow">{t("analysisV11.tabs.flow")}</TabsTrigger>
             <TabsTrigger value="impact">{t("analysis.tabs.impact")}</TabsTrigger>
             <TabsTrigger value="symbols">{t("analysis.tabs.symbols")}</TabsTrigger>
             <TabsTrigger value="fields">{t("analysis.tabs.fields")}</TabsTrigger>
@@ -537,12 +547,14 @@ export default function AnalysisResult() {
           <TabsContent value="history" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>{isInspectingHistoricalRun ? "Historical" : "Current source"}</Badge>
+                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>
+                  {isInspectingHistoricalRun ? t("analysisV11.runSource.historical") : t("analysisV11.runSource.current")}
+                </Badge>
                 <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
               </div>
               {isInspectingHistoricalRun ? (
                 <Button size="sm" variant="outline" onClick={returnToCurrentSource}>
-                  Return to current source
+                  {t("analysisV11.runSource.returnToCurrent")}
                 </Button>
               ) : null}
             </div>
@@ -555,7 +567,7 @@ export default function AnalysisResult() {
             />
             {analysisRunsQuery?.error ? (
               <Alert variant="destructive">
-                <AlertTitle>Unable to load analysis history</AlertTitle>
+                <AlertTitle>{t("analysisV11.history.loadFailedTitle")}</AlertTitle>
                 <AlertDescription>{analysisRunsQuery.error.message}</AlertDescription>
               </Alert>
             ) : null}
@@ -565,37 +577,37 @@ export default function AnalysisResult() {
                   <CardHeader>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <CardTitle>Run {run.runNumber}</CardTitle>
+                        <CardTitle>{t("analysisV11.history.runTitle", { runNumber: run.runNumber })}</CardTitle>
                         <CardDescription>
-                          {run.createdAt.toLocaleString()} / {run.sourceFingerprint?.slice(0, 12) ?? "no fingerprint"}
+                          {run.createdAt.toLocaleString()} / {run.sourceFingerprint?.slice(0, 12) ?? t("analysisV11.history.noFingerprint")}
                         </CardDescription>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Badge variant={run.status === "partial" ? "secondary" : "outline"}>{analysisStatusLabel(run.status)}</Badge>
-                        {snapshot?.report?.id === run.id ? <Badge>Current source</Badge> : null}
-                        {run.isLatestUsable ? <Badge>Latest usable</Badge> : null}
-                        {run.isBaseline ? <Badge variant="secondary">Baseline</Badge> : null}
-                        {snapshot?.report?.id !== run.id ? <Badge variant="outline">Historical</Badge> : null}
+                        {snapshot?.report?.id === run.id ? <Badge>{t("analysisV11.runSource.current")}</Badge> : null}
+                        {run.isLatestUsable ? <Badge>{t("analysisV11.runSource.latestUsable")}</Badge> : null}
+                        {run.isBaseline ? <Badge variant="secondary">{t("analysisV11.runSource.baseline")}</Badge> : null}
+                        {snapshot?.report?.id !== run.id ? <Badge variant="outline">{t("analysisV11.runSource.historical")}</Badge> : null}
                       </div>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3 text-sm">
                     <div className="grid gap-2 md:grid-cols-4">
-                      <span>Files: {run.metricsSummary.files}</span>
-                      <span>Symbols: {run.metricsSummary.symbols}</span>
-                      <span>Risks: {run.riskCount}</span>
-                      <span>Confidence: {run.confidence ? `${run.confidence.score}/100 ${run.confidence.level}` : "unknown"}</span>
+                      <span>{t("analysisV11.history.files", { count: run.metricsSummary.files })}</span>
+                      <span>{t("analysisV11.history.symbols", { count: run.metricsSummary.symbols })}</span>
+                      <span>{t("analysisV11.history.risks", { count: run.riskCount })}</span>
+                      <span>{t("analysisV11.history.confidence", { value: run.confidence ? `${run.confidence.score}/100 ${run.confidence.level}` : t("analysisV11.history.unknownConfidence") })}</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); inspectRun(run.id); }}>View Run details</Button>
-                      <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setActiveTab("buildDoctor"); }}>View Build Doctor</Button>
+                      <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); inspectRun(run.id); }}>{t("analysisV11.history.details")}</Button>
+                      <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setActiveTab("buildDoctor"); }}>{t("analysisV11.history.buildDoctor")}</Button>
                       <Button size="sm" variant="outline" onClick={() => { inspectRun(run.id); setFlowTracePage(1); setActiveTab("flow"); }}>View UI → DB Flow</Button>
-                      <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })} disabled={setBaselineMutation?.isPending}>Set baseline</Button>
+                      <Button size="sm" variant="outline" onClick={() => setBaselineMutation?.mutate({ projectId, runId: run.id })} disabled={setBaselineMutation?.isPending}>{t("analysisV11.history.setBaseline")}</Button>
                       {run.isBaseline ? (
-                        <Button size="sm" variant="outline" onClick={() => clearBaselineMutation?.mutate(projectId)} disabled={clearBaselineMutation?.isPending}>Clear baseline</Button>
+                        <Button size="sm" variant="outline" onClick={() => clearBaselineMutation?.mutate(projectId)} disabled={clearBaselineMutation?.isPending}>{t("analysisV11.history.clearBaseline")}</Button>
                       ) : null}
-                      <Button size="sm" variant="outline" onClick={() => selectCompareBaseRun(run.id)}>Use as base</Button>
-                      <Button size="sm" variant="outline" onClick={() => selectCompareRun(run.id)}>Compare to</Button>
+                      <Button size="sm" variant="outline" onClick={() => selectCompareBaseRun(run.id)}>{t("analysisV11.history.useAsBase")}</Button>
+                      <Button size="sm" variant="outline" onClick={() => selectCompareRun(run.id)}>{t("analysisV11.history.compareTo")}</Button>
                       <Button size="sm" variant="outline" onClick={() => void handleDownloadHistoricalReport(run.id)} disabled={downloadingRunId === run.id}>
                         {downloadingRunId === run.id ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
                         Download report
@@ -610,51 +622,49 @@ export default function AnalysisResult() {
             </div>
             {selectedRunQuery?.error ? (
               <Alert variant="destructive">
-                <AlertTitle>Unable to load selected Run</AlertTitle>
+                <AlertTitle>{t("analysisV11.history.selectedRunLoadFailedTitle")}</AlertTitle>
                 <AlertDescription>{selectedRunQuery.error.message}</AlertDescription>
               </Alert>
             ) : null}
             {selectedRunQuery?.data ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Run {selectedRunQuery.data.runNumber} Details</CardTitle>
-                  <CardDescription>{selectedRunQuery.data.snapshotWarning ?? "Snapshot is available for historical report, Build Doctor, and flow tracing."}</CardDescription>
+                  <CardTitle>{t("analysisV11.history.selectedRunTitle", { runNumber: selectedRunQuery.data.runNumber })}</CardTitle>
+                  <CardDescription>{selectedRunQuery.data.snapshotWarning ?? t("analysisV11.history.selectedRunSnapshotReady")}</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 text-sm md:grid-cols-3">
-                  <span>Analyzer: {selectedRunQuery.data.analyzerVersion}</span>
-                  <span>Warnings: {selectedRunQuery.data.warningCount}</span>
-                  <span>Job: {selectedRunQuery.data.jobId ?? "none"}</span>
+                  <span>{t("analysisV11.history.analyzer", { value: selectedRunQuery.data.analyzerVersion })}</span>
+                  <span>{t("analysisV11.history.warnings", { count: selectedRunQuery.data.warningCount })}</span>
+                  <span>{t("analysisV11.history.job", { value: selectedRunQuery.data.jobId ?? t("analysisV11.history.noJob") })}</span>
                 </CardContent>
               </Card>
             ) : null}
             {compareBaseRunId && compareRunId ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Comparison</CardTitle>
-                  <CardDescription>
-                    {getRunNumberLabel(compareBaseRunId)} compared with {getRunNumberLabel(compareRunId)}
-                  </CardDescription>
+                  <CardTitle>{t("analysisV11.diff.title")}</CardTitle>
+                  <CardDescription>{t("analysisV11.diff.comparing", { base: comparisonBaseLabel, compare: comparisonCompareLabel })}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
                   {compareBaseRunId === compareRunId ? (
                     <Alert variant="warning">
                       <AlertTriangle className="size-4" />
-                      <AlertTitle>Choose two different Runs</AlertTitle>
-                      <AlertDescription>Legacy Lens prevents same-Run comparisons before requesting a backend Diff.</AlertDescription>
+                      <AlertTitle>{t("analysisV11.diff.sameRunTitle")}</AlertTitle>
+                      <AlertDescription>{t("analysisV11.diff.sameRunDescription")}</AlertDescription>
                     </Alert>
                   ) : null}
-                  {diffQuery?.isLoading ? <p className="text-slate-600">Calculating diff...</p> : null}
+                  {diffQuery?.isLoading ? <p className="text-slate-600">{t("analysisV11.diff.loading")}</p> : null}
                   {diffQuery?.error ? <p className="text-red-600">{diffQuery.error.message}</p> : null}
                   {diffQuery?.data ? (
                     <>
                       <AnalysisDiffPanel diff={diffQuery.data} />
-                      {diffQuery.data.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Diff truncated</AlertTitle><AlertDescription>Large diff groups were capped. Totals are still shown.</AlertDescription></Alert> : null}
+                      {diffQuery.data.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>{t("analysisV11.diff.truncatedTitle")}</AlertTitle><AlertDescription>{t("analysisV11.diff.truncatedDescription")}</AlertDescription></Alert> : null}
                     </>
                   ) : null}
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => void handleDownloadComparison()} disabled={!canDownloadComparison || isDiffDownloading}>
                       {isDiffDownloading ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-                      Download comparison
+                      {t("analysisV11.diff.download")}
                     </Button>
                   </div>
                 </CardContent>
@@ -665,19 +675,21 @@ export default function AnalysisResult() {
           <TabsContent value="buildDoctor" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>{isInspectingHistoricalRun ? "Historical" : "Current source"}</Badge>
+                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>
+                  {isInspectingHistoricalRun ? t("analysisV11.runSource.historical") : t("analysisV11.runSource.current")}
+                </Badge>
                 <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
               </div>
               {isInspectingHistoricalRun ? (
                 <Button size="sm" variant="outline" onClick={returnToCurrentSource}>
-                  Return to current source
+                  {t("analysisV11.runSource.returnToCurrent")}
                 </Button>
               ) : null}
             </div>
             {buildDoctorRunQuery?.isLoading ? <div className="flex justify-center py-10"><Loader2 className="size-6 animate-spin text-slate-600" /></div> : null}
             {buildDoctorRunQuery?.error ? (
               <Alert variant="destructive">
-                <AlertTitle>Unable to load Build Doctor</AlertTitle>
+                <AlertTitle>{t("analysisV11.buildDoctor.loadFailedTitle")}</AlertTitle>
                 <AlertDescription>{buildDoctorRunQuery.error.message}</AlertDescription>
               </Alert>
             ) : null}
@@ -686,8 +698,8 @@ export default function AnalysisResult() {
                 <CardHeader>
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <CardTitle>Delphi Build Doctor</CardTitle>
-                      <CardDescription>Static build-readiness audit. No compiler or project command is executed.</CardDescription>
+                      <CardTitle>{t("analysisV11.buildDoctor.title")}</CardTitle>
+                      <CardDescription>{t("analysisV11.buildDoctor.description")}</CardDescription>
                     </div>
                     <Badge variant={buildDoctorRunQuery.data.snapshot.buildDoctor.status === "blocked" ? "destructive" : "secondary"}>
                       {buildDoctorRunQuery.data.snapshot.buildDoctor.status} / {buildDoctorRunQuery.data.snapshot.buildDoctor.score}
@@ -697,31 +709,31 @@ export default function AnalysisResult() {
                 <CardContent className="space-y-4 text-sm">
                   {buildDoctorRunQuery.data.snapshot.buildDoctor.status === "not_applicable" ? (
                     <Alert>
-                      <AlertTitle>Build Doctor not applicable</AlertTitle>
-                      <AlertDescription>No Delphi build metadata was available for this Run.</AlertDescription>
+                      <AlertTitle>{t("analysisV11.buildDoctor.notApplicableTitle")}</AlertTitle>
+                      <AlertDescription>{t("analysisV11.buildDoctor.notApplicableDescription")}</AlertDescription>
                     </Alert>
                   ) : null}
                   <div className="grid gap-2 md:grid-cols-2">
-                    <span>Compiler family: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.value ?? "unknown"}</span>
-                    <span>Confidence: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.confidence}</span>
-                    <span>Compiler evidence: {buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.evidence.join(", ") || "none"}</span>
-                    <span>Defines: {buildDoctorRunQuery.data.snapshot.buildDoctor.defines.join(", ") || "none"}</span>
-                    <span>Configurations: {buildDoctorRunQuery.data.snapshot.buildDoctor.configurations.join(", ") || "none"}</span>
-                    <span>Platforms: {buildDoctorRunQuery.data.snapshot.buildDoctor.platforms.join(", ") || "none"}</span>
+                    <span>{t("analysisV11.buildDoctor.compilerFamily", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.value ?? t("analysisV11.buildDoctor.unknown") })}</span>
+                    <span>{t("analysisV11.buildDoctor.confidence", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.confidence })}</span>
+                    <span>{t("analysisV11.buildDoctor.compilerEvidence", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.evidence.join(", ") || t("analysisV11.buildDoctor.none") })}</span>
+                    <span>{t("analysisV11.buildDoctor.defines", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.defines.join(", ") || t("analysisV11.buildDoctor.none") })}</span>
+                    <span>{t("analysisV11.buildDoctor.configurations", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.configurations.join(", ") || t("analysisV11.buildDoctor.none") })}</span>
+                    <span>{t("analysisV11.buildDoctor.platforms", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.platforms.join(", ") || t("analysisV11.buildDoctor.none") })}</span>
                   </div>
-                  <BuildDoctorList title="Project entries" items={buildDoctorRunQuery.data.snapshot.buildDoctor.projectEntries.map((entry) => `${entry.path} (${entry.kind})${entry.lineNumber ? `:${entry.lineNumber}` : ""} - ${entry.evidence}`)} />
-                  <BuildDoctorList title="Search paths" items={buildDoctorRunQuery.data.snapshot.buildDoctor.searchPaths} />
-                  <BuildDoctorList title="Include paths" items={buildDoctorRunQuery.data.snapshot.buildDoctor.includePaths} />
-                  <BuildDoctorList title="Output paths" items={buildDoctorRunQuery.data.snapshot.buildDoctor.outputPaths} />
-                  <BuildDoctorList title="Required packages" items={buildDoctorRunQuery.data.snapshot.buildDoctor.requiredPackages} />
-                  <BuildDoctorList title="Runtime packages" items={buildDoctorRunQuery.data.snapshot.buildDoctor.runtimePackages} />
-                  <BuildDoctorList title="Required Units" items={buildDoctorRunQuery.data.snapshot.buildDoctor.requiredUnits} />
-                  <BuildDoctorList title="Missing Units" items={buildDoctorRunQuery.data.snapshot.buildDoctor.missingUnits} />
-                  <BuildDoctorList title="Unresolved Units" items={buildDoctorRunQuery.data.snapshot.buildDoctor.unresolvedUnits} />
-                  <BuildDoctorList title="Missing packages" items={buildDoctorRunQuery.data.snapshot.buildDoctor.missingPackages} />
-                  <BuildDoctorList title="External dependencies" items={buildDoctorRunQuery.data.snapshot.buildDoctor.externalDependencies} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.projectEntries")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.projectEntries.map((entry) => `${entry.path} (${entry.kind})${entry.lineNumber ? `:${entry.lineNumber}` : ""} - ${entry.evidence}`)} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.searchPaths")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.searchPaths} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.includePaths")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.includePaths} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.outputPaths")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.outputPaths} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.requiredPackages")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.requiredPackages} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.runtimePackages")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.runtimePackages} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.requiredUnits")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.requiredUnits} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.missingUnits")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.missingUnits} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.unresolvedUnits")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.unresolvedUnits} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.missingPackages")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.missingPackages} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.externalDependencies")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.externalDependencies} />
                   <div className="space-y-2">
-                    <h3 className="font-medium text-slate-950">Package resolutions</h3>
+                    <h3 className="font-medium text-slate-950">{t("analysisV11.buildDoctor.packageResolutions")}</h3>
                     {buildDoctorRunQuery.data.snapshot.buildDoctor.packageResolutions.length ? (
                       buildDoctorRunQuery.data.snapshot.buildDoctor.packageResolutions.map((entry) => (
                         <div key={entry.packageName} className="rounded-lg border px-3 py-2">
@@ -729,20 +741,32 @@ export default function AnalysisResult() {
                             <span className="font-medium text-slate-950">{entry.packageName}</span>
                             <Badge variant={entry.resolution === "missing" ? "destructive" : "outline"}>{entry.resolution}</Badge>
                           </div>
-                          <p className="mt-1 text-slate-600">Evidence: {entry.evidence[0] ?? "unknown"}</p>
-                          <p className="text-slate-600">Resolved path: {entry.resolvedPath ?? "none"}</p>
-                          <p className="text-slate-500">Evidence: {entry.evidence.join(" | ") || "none"}</p>
+                          <p className="mt-1 text-slate-600">{t("analysisV11.buildDoctor.resolvedPath", { value: entry.resolvedPath ?? t("analysisV11.buildDoctor.none") })}</p>
+                          {entry.references?.length ? (
+                            <div className="mt-2 space-y-1">
+                              <p className="text-slate-600">{t("analysisV11.buildDoctor.references")}</p>
+                              {entry.references.map((reference, index) => (
+                                <p key={`${reference.sourceFile}:${reference.lineNumber ?? index}:${reference.rawValue}`} className="text-slate-500">
+                                  {t("analysisV11.buildDoctor.evidence", {
+                                    value: `${reference.sourceFile}${reference.lineNumber ? `:${reference.lineNumber}` : ""} | ${reference.rawValue}${reference.condition ? ` | ${reference.condition}` : ""}${reference.resolvedPath ? ` | ${reference.resolvedPath}` : ""}`,
+                                  })}
+                                </p>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-slate-500">{t("analysisV11.buildDoctor.evidence", { value: entry.evidence.join(" | ") || t("analysisV11.buildDoctor.none") })}</p>
+                          )}
                         </div>
                       ))
                     ) : (
-                      <p className="text-slate-500">No package resolutions recorded.</p>
+                      <p className="text-slate-500">{t("analysisV11.buildDoctor.noPackageResolutions")}</p>
                     )}
                   </div>
                   {(["blocker", "error", "warning", "info"] as const).map((severity) => {
                     const findings = (buildDoctorRunQuery.data.snapshot?.buildDoctor.findings ?? []).filter((finding) => finding.severity === severity);
                     return (
                       <div key={severity} className="space-y-2">
-                        <h3 className="font-medium text-slate-950">Findings: {severity} ({findings.length})</h3>
+                        <h3 className="font-medium text-slate-950">{t("analysisV11.buildDoctor.findings", { severity, count: findings.length })}</h3>
                         {findings.length ? findings.map((finding) => (
                           <div key={`${finding.code}:${finding.title}:${finding.evidence ?? ""}`} className="rounded-lg border px-3 py-2">
                             <div className="flex flex-wrap items-center gap-2">
@@ -752,77 +776,79 @@ export default function AnalysisResult() {
                             </div>
                             <p className="mt-1 text-slate-700">{finding.description}</p>
                             <p className="mt-1 text-slate-600">{finding.recommendation}</p>
-                            {finding.sourceFile ? <p className="mt-1 text-slate-500">Source: {finding.sourceFile}{finding.lineNumber ? `:${finding.lineNumber}` : ""}</p> : null}
-                            {finding.evidence ? <p className="mt-1 text-slate-500">Evidence: {finding.evidence}</p> : null}
+                            {finding.sourceFile ? <p className="mt-1 text-slate-500">{t("analysisV11.buildDoctor.source", { value: `${finding.sourceFile}${finding.lineNumber ? `:${finding.lineNumber}` : ""}` })}</p> : null}
+                            {finding.evidence ? <p className="mt-1 text-slate-500">{t("analysisV11.buildDoctor.evidence", { value: finding.evidence })}</p> : null}
                           </div>
-                        )) : <p className="text-slate-500">No {severity} findings.</p>}
+                        )) : <p className="text-slate-500">{t("analysisV11.buildDoctor.noFindings", { severity })}</p>}
                       </div>
                     );
                   })}
-                  <BuildDoctorList title="Limitations" items={buildDoctorRunQuery.data.snapshot.buildDoctor.limitations} />
+                  <BuildDoctorList title={t("analysisV11.buildDoctor.limitations")} items={buildDoctorRunQuery.data.snapshot.buildDoctor.limitations} />
                 </CardContent>
               </Card>
             ) : !buildDoctorRunQuery?.isLoading && !buildDoctorRunQuery?.error ? (
-              <Card><CardContent className="py-8 text-center text-sm text-slate-600">Build Doctor data is not available for this run.</CardContent></Card>
+              <Card><CardContent className="py-8 text-center text-sm text-slate-600">{t("analysisV11.buildDoctor.unavailable")}</CardContent></Card>
             ) : null}
           </TabsContent>
 
           <TabsContent value="flow" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white px-4 py-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>{isInspectingHistoricalRun ? "Historical" : "Current source"}</Badge>
+                <Badge variant={isInspectingHistoricalRun ? "outline" : "default"}>
+                  {isInspectingHistoricalRun ? t("analysisV11.runSource.historical") : t("analysisV11.runSource.current")}
+                </Badge>
                 <span className="font-medium text-slate-950">{getRunNumberLabel(inspectedRunId)}</span>
               </div>
               {isInspectingHistoricalRun ? (
                 <Button size="sm" variant="outline" onClick={returnToCurrentSource}>
-                  Return to current source
+                  {t("analysisV11.runSource.returnToCurrent")}
                 </Button>
               ) : null}
             </div>
             {flowTraceSummaryQuery?.data?.globalTruncated ? (
               <Alert variant="warning">
                 <AlertTriangle className="size-4" />
-                <AlertTitle>Flow trace output truncated</AlertTitle>
-                <AlertDescription>The analyzer reached the global flow-trace limit. Persisted traces are complete as stored, but additional candidates were not saved.</AlertDescription>
+                <AlertTitle>{t("analysisV11.flow.globalTruncatedTitle")}</AlertTitle>
+                <AlertDescription>{t("analysisV11.flow.globalTruncatedDescription")}</AlertDescription>
               </Alert>
             ) : null}
             {flowTraceSummaryQuery?.error ? (
               <Alert variant="destructive">
-                <AlertTitle>Unable to load flow summary</AlertTitle>
+                <AlertTitle>{t("analysisV11.flow.summaryLoadFailedTitle")}</AlertTitle>
                 <AlertDescription>{flowTraceSummaryQuery.error.message}</AlertDescription>
               </Alert>
             ) : null}
             <div className="grid gap-4 md:grid-cols-4">
-              <MetricCard title="Traces" value={flowTraceSummaryQuery?.data?.total ?? 0} />
-              <MetricCard title="Complete" value={flowTraceSummaryQuery?.data?.complete ?? 0} />
-              <MetricCard title="Partial" value={flowTraceSummaryQuery?.data?.partial ?? 0} />
-              <MetricCard title="Unresolved" value={flowTraceSummaryQuery?.data?.unresolved ?? 0} />
-              <MetricCard title="Read paths" value={flowTraceSummaryQuery?.data?.readPaths ?? 0} />
-              <MetricCard title="Write paths" value={flowTraceSummaryQuery?.data?.writePaths ?? 0} />
-              <MetricCard title="Tables" value={flowTraceSummaryQuery?.data?.affectedTables ?? 0} />
-              <MetricCard title="Candidates" value={flowTraceSummaryQuery?.data?.candidateTraceCount ?? 0} />
-              <MetricCard title="Persisted" value={flowTraceSummaryQuery?.data?.persistedTraceCount ?? 0} />
+              <MetricCard title={t("analysisV11.flow.traces")} value={flowTraceSummaryQuery?.data?.total ?? 0} />
+              <MetricCard title={t("analysisV11.flow.complete")} value={flowTraceSummaryQuery?.data?.complete ?? 0} />
+              <MetricCard title={t("analysisV11.flow.partial")} value={flowTraceSummaryQuery?.data?.partial ?? 0} />
+              <MetricCard title={t("analysisV11.flow.unresolved")} value={flowTraceSummaryQuery?.data?.unresolved ?? 0} />
+              <MetricCard title={t("analysisV11.flow.readPaths")} value={flowTraceSummaryQuery?.data?.readPaths ?? 0} />
+              <MetricCard title={t("analysisV11.flow.writePaths")} value={flowTraceSummaryQuery?.data?.writePaths ?? 0} />
+              <MetricCard title={t("analysisV11.flow.tables")} value={flowTraceSummaryQuery?.data?.affectedTables ?? 0} />
+              <MetricCard title={t("analysisV11.flow.candidates")} value={flowTraceSummaryQuery?.data?.candidateTraceCount ?? 0} />
+              <MetricCard title={t("analysisV11.flow.persisted")} value={flowTraceSummaryQuery?.data?.persistedTraceCount ?? 0} />
             </div>
-            <FilterCard title="Flow trace filters" description="Filter static UI event and data-binding paths.">
+            <FilterCard title={t("analysisV11.flow.filtersTitle")} description={t("analysisV11.flow.filtersDescription")}>
               <div className="grid gap-3 md:grid-cols-3">
-                <Input value={flowTraceSearch} onChange={(event) => { setFlowTraceSearch(event.target.value); setFlowTracePage(1); }} placeholder="Search form, component, SQL, table, or field" />
-                <Input value={flowTraceForm} onChange={(event) => { setFlowTraceForm(event.target.value); setFlowTracePage(1); }} placeholder="Form" />
-                <Input value={flowTraceComponent} onChange={(event) => { setFlowTraceComponent(event.target.value); setFlowTracePage(1); }} placeholder="Component" />
-                <Input value={flowTraceEvent} onChange={(event) => { setFlowTraceEvent(event.target.value); setFlowTracePage(1); }} placeholder="Event" />
-                <Input value={flowTraceTable} onChange={(event) => { setFlowTraceTable(event.target.value); setFlowTracePage(1); }} placeholder="Table" />
+                <Input value={flowTraceSearch} onChange={(event) => { setFlowTraceSearch(event.target.value); setFlowTracePage(1); }} placeholder={t("analysisV11.flow.searchPlaceholder")} />
+                <Input value={flowTraceForm} onChange={(event) => { setFlowTraceForm(event.target.value); setFlowTracePage(1); }} placeholder={t("analysisV11.flow.formPlaceholder")} />
+                <Input value={flowTraceComponent} onChange={(event) => { setFlowTraceComponent(event.target.value); setFlowTracePage(1); }} placeholder={t("analysisV11.flow.componentPlaceholder")} />
+                <Input value={flowTraceEvent} onChange={(event) => { setFlowTraceEvent(event.target.value); setFlowTracePage(1); }} placeholder={t("analysisV11.flow.eventPlaceholder")} />
+                <Input value={flowTraceTable} onChange={(event) => { setFlowTraceTable(event.target.value); setFlowTracePage(1); }} placeholder={t("analysisV11.flow.tablePlaceholder")} />
                 <Select value={flowTraceStatus} onValueChange={(value) => { setFlowTraceStatus(value); setFlowTracePage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysisV11.flow.statusPlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="complete">Complete</SelectItem>
-                    <SelectItem value="partial">Partial</SelectItem>
-                    <SelectItem value="unresolved">Unresolved</SelectItem>
+                    <SelectItem value="all">{t("analysisV11.flow.allStatuses")}</SelectItem>
+                    <SelectItem value="complete">{t("analysisV11.flow.complete")}</SelectItem>
+                    <SelectItem value="partial">{t("analysisV11.flow.partial")}</SelectItem>
+                    <SelectItem value="unresolved">{t("analysisV11.flow.unresolved")}</SelectItem>
                   </SelectContent>
                 </Select>
                 <Select value={flowTraceOperation} onValueChange={(value) => { setFlowTraceOperation(value); setFlowTracePage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Operation" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysisV11.flow.operationPlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All operations</SelectItem>
+                    <SelectItem value="all">{t("analysisV11.flow.allOperations")}</SelectItem>
                     <SelectItem value="read">Read</SelectItem>
                     <SelectItem value="write">Write</SelectItem>
                     <SelectItem value="calculate">Calculate</SelectItem>
@@ -830,9 +856,9 @@ export default function AnalysisResult() {
                   </SelectContent>
                 </Select>
                 <Select value={flowTraceConfidence} onValueChange={(value) => { setFlowTraceConfidence(value); setFlowTracePage(1); }}>
-                  <SelectTrigger><SelectValue placeholder="Confidence" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("analysisV11.flow.confidencePlaceholder")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All confidence levels</SelectItem>
+                    <SelectItem value="all">{t("analysisV11.flow.allConfidence")}</SelectItem>
                     <SelectItem value="high">High</SelectItem>
                     <SelectItem value="medium">Medium</SelectItem>
                     <SelectItem value="low">Low</SelectItem>
@@ -840,12 +866,12 @@ export default function AnalysisResult() {
                 </Select>
               </div>
               <div className="mt-3">
-                <Button size="sm" variant="outline" onClick={resetFlowTraceFilters}>Reset Filters</Button>
+                <Button size="sm" variant="outline" onClick={resetFlowTraceFilters}>{t("analysisV11.flow.resetFilters")}</Button>
               </div>
             </FilterCard>
             {flowTracesQuery?.error ? (
               <Alert variant="destructive">
-                <AlertTitle>Unable to load flow traces</AlertTitle>
+                <AlertTitle>{t("analysisV11.flow.tracesLoadFailedTitle")}</AlertTitle>
                 <AlertDescription>{flowTracesQuery.error.message}</AlertDescription>
               </Alert>
             ) : null}
@@ -857,7 +883,7 @@ export default function AnalysisResult() {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <CardTitle>{trace.componentClass}.{trace.componentName}</CardTitle>
-                        <CardDescription>{trace.formName}{trace.eventName ? ` / ${trace.eventName}` : ""} / {trace.resolvedHandler ?? trace.handlerName ?? "data binding"}</CardDescription>
+                        <CardDescription>{trace.formName}{trace.eventName ? ` / ${trace.eventName}` : ""} / {trace.resolvedHandler ?? trace.handlerName ?? t("analysisV11.flow.dataBinding")}</CardDescription>
                       </div>
                       <div className="flex gap-2">
                         <Badge variant={trace.status === "unresolved" ? "destructive" : "outline"}>{trace.status}</Badge>
@@ -870,15 +896,12 @@ export default function AnalysisResult() {
                       {trace.affectedTables.map((table) => <Badge key={table} variant="outline">{table}</Badge>)}
                       {trace.affectedFields.map((field) => <Badge key={`${field.table}.${field.field}.${field.operation}`} variant="secondary">{field.table}.{field.field} {field.operation}</Badge>)}
                     </div>
-                    <p className="text-slate-600">Operations: {Array.from(new Set(trace.affectedFields.map((field) => field.operation))).join(", ") || "none"}</p>
+                    <p className="text-slate-600">{t("analysisV11.flow.operations", { value: Array.from(new Set(trace.affectedFields.map((field) => field.operation))).join(", ") || t("analysisV11.buildDoctor.none") })}</p>
                     {trace.steps.find((step) => step.filePath) ? (
-                      <p className="text-slate-500">
-                        Source: {trace.steps.find((step) => step.filePath)?.filePath}
-                        {trace.steps.find((step) => step.filePath)?.lineNumber ? `:${trace.steps.find((step) => step.filePath)?.lineNumber}` : ""}
-                      </p>
+                      <p className="text-slate-500">{t("analysisV11.flow.source", { value: `${trace.steps.find((step) => step.filePath)?.filePath ?? ""}${trace.steps.find((step) => step.filePath)?.lineNumber ? `:${trace.steps.find((step) => step.filePath)?.lineNumber}` : ""}` })}</p>
                     ) : null}
-                    {trace.warnings.length > 0 ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Trace warnings</AlertTitle><AlertDescription>{trace.warnings.join(" ")}</AlertDescription></Alert> : null}
-                    {trace.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>Trace truncated</AlertTitle><AlertDescription>This trace reached its per-trace step limit.</AlertDescription></Alert> : null}
+                    {trace.warnings.length > 0 ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>{t("analysisV11.flow.warningTitle")}</AlertTitle><AlertDescription>{trace.warnings.join(" ")}</AlertDescription></Alert> : null}
+                    {trace.truncated ? <Alert variant="warning"><AlertTriangle className="size-4" /><AlertTitle>{t("analysisV11.flow.traceTruncatedTitle")}</AlertTitle><AlertDescription>{t("analysisV11.flow.traceTruncatedDescription")}</AlertDescription></Alert> : null}
                     <div className="space-y-2">
                       {(expandedFlowSteps[trace.stableKey] ? trace.steps : trace.steps.slice(0, 5)).map((step) => (
                         <div key={step.id} className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
@@ -886,7 +909,7 @@ export default function AnalysisResult() {
                           <span className="font-medium text-slate-950">{step.label}</span>
                           {step.operation ? <Badge variant="secondary">{step.operation}</Badge> : null}
                           {step.filePath ? <span className="text-slate-500">{step.filePath}{step.lineNumber ? `:${step.lineNumber}` : ""}</span> : null}
-                          {step.evidence ? <span className="text-slate-500">Evidence: {step.evidence}</span> : null}
+                          {step.evidence ? <span className="text-slate-500">{t("analysisV11.flow.evidence", { value: step.evidence })}</span> : null}
                         </div>
                       ))}
                       {trace.steps.length > 5 ? (
@@ -895,7 +918,7 @@ export default function AnalysisResult() {
                           variant="outline"
                           onClick={() => setExpandedFlowSteps((current) => ({ ...current, [trace.stableKey]: !current[trace.stableKey] }))}
                         >
-                          {expandedFlowSteps[trace.stableKey] ? "Collapse" : `Show all steps (${trace.steps.length})`}
+                          {expandedFlowSteps[trace.stableKey] ? t("analysisV11.flow.collapse") : t("analysisV11.flow.showAllSteps", { count: trace.steps.length })}
                         </Button>
                       ) : null}
                     </div>
@@ -903,7 +926,7 @@ export default function AnalysisResult() {
                 </Card>
               ))}
               {!flowTracesQuery?.isLoading && !flowTracesQuery?.error && (flowTracesQuery?.data?.items.length ?? 0) === 0 ? (
-                <Card><CardContent className="py-8 text-center text-sm text-slate-600">No flow traces match the current filters.</CardContent></Card>
+                <Card><CardContent className="py-8 text-center text-sm text-slate-600">{t("analysisV11.flow.empty")}</CardContent></Card>
               ) : null}
             </div>
           </TabsContent>
@@ -1197,75 +1220,75 @@ function AnalysisDiffPanel({ diff }: { diff: AnalysisDiff }) {
   const metricEntries = Object.entries(diff.metricsDelta).filter(([, value]) => value !== 0);
   const sections: Array<{ title: string; buckets: Array<{ label: string; bucket: DiffBucket; changed?: boolean }> }> = [
     {
-      title: "Files",
+      title: t("analysisV11.diff.files"),
       buckets: [
-        { label: "Added", bucket: diff.files.added },
-        { label: "Removed", bucket: diff.files.removed },
-        { label: "Changed", bucket: diff.files.changed, changed: true },
+        { label: t("analysisV11.diff.added"), bucket: diff.files.added },
+        { label: t("analysisV11.diff.removed"), bucket: diff.files.removed },
+        { label: t("analysisV11.diff.changed"), bucket: diff.files.changed, changed: true },
       ],
     },
     {
-      title: "Fields",
+      title: t("analysisV11.diff.fields"),
       buckets: [
-        { label: "Added", bucket: diff.fields.added },
-        { label: "Removed", bucket: diff.fields.removed },
-        { label: "Changed", bucket: diff.fields.changed, changed: true },
+        { label: t("analysisV11.diff.added"), bucket: diff.fields.added },
+        { label: t("analysisV11.diff.removed"), bucket: diff.fields.removed },
+        { label: t("analysisV11.diff.changed"), bucket: diff.fields.changed, changed: true },
       ],
     },
     {
-      title: "Field dependencies",
+      title: t("analysisV11.diff.fieldDependencies"),
       buckets: [
-        { label: "Introduced", bucket: diff.fieldDependencies.introduced },
-        { label: "Removed", bucket: diff.fieldDependencies.removed },
-        { label: "Changed", bucket: diff.fieldDependencies.changed, changed: true },
+        { label: t("analysisV11.diff.introduced"), bucket: diff.fieldDependencies.introduced },
+        { label: t("analysisV11.diff.removed"), bucket: diff.fieldDependencies.removed },
+        { label: t("analysisV11.diff.changed"), bucket: diff.fieldDependencies.changed, changed: true },
       ],
     },
     {
-      title: "Risks",
+      title: t("analysisV11.diff.risks"),
       buckets: [
-        { label: "Introduced", bucket: diff.risks.introduced },
-        { label: "Resolved", bucket: diff.risks.resolved },
-        { label: "Changed", bucket: diff.risks.changed, changed: true },
+        { label: t("analysisV11.diff.introduced"), bucket: diff.risks.introduced },
+        { label: t("analysisV11.diff.resolved"), bucket: diff.risks.resolved },
+        { label: t("analysisV11.diff.changed"), bucket: diff.risks.changed, changed: true },
       ],
     },
     {
-      title: "Rules",
+      title: t("analysisV11.diff.rules"),
       buckets: [
-        { label: "Introduced", bucket: diff.rules.introduced },
-        { label: "Resolved", bucket: diff.rules.resolved },
-        { label: "Changed", bucket: diff.rules.changed, changed: true },
+        { label: t("analysisV11.diff.introduced"), bucket: diff.rules.introduced },
+        { label: t("analysisV11.diff.resolved"), bucket: diff.rules.resolved },
+        { label: t("analysisV11.diff.changed"), bucket: diff.rules.changed, changed: true },
       ],
     },
     {
-      title: "Delphi events",
+      title: t("analysisV11.diff.delphiEvents"),
       buckets: [
-        { label: "Introduced", bucket: diff.delphiEvents.introduced },
-        { label: "Removed", bucket: diff.delphiEvents.removed },
-        { label: "Resolution changed", bucket: diff.delphiEvents.resolutionChanged, changed: true },
+        { label: t("analysisV11.diff.introduced"), bucket: diff.delphiEvents.introduced },
+        { label: t("analysisV11.diff.removed"), bucket: diff.delphiEvents.removed },
+        { label: t("analysisV11.diff.resolutionChanged"), bucket: diff.delphiEvents.resolutionChanged, changed: true },
       ],
     },
     {
-      title: "Data bindings",
+      title: t("analysisV11.diff.dataBindings"),
       buckets: [
-        { label: "Introduced", bucket: diff.dataBindings.introduced },
-        { label: "Removed", bucket: diff.dataBindings.removed },
-        { label: "Changed", bucket: diff.dataBindings.changed, changed: true },
+        { label: t("analysisV11.diff.introduced"), bucket: diff.dataBindings.introduced },
+        { label: t("analysisV11.diff.removed"), bucket: diff.dataBindings.removed },
+        { label: t("analysisV11.diff.changed"), bucket: diff.dataBindings.changed, changed: true },
       ],
     },
     {
-      title: "Build Doctor",
+      title: t("analysisV11.diff.buildDoctor"),
       buckets: [
-        { label: "Introduced", bucket: diff.buildDoctor.introduced },
-        { label: "Resolved", bucket: diff.buildDoctor.resolved },
-        { label: "Changed", bucket: diff.buildDoctor.changed, changed: true },
+        { label: t("analysisV11.diff.introduced"), bucket: diff.buildDoctor.introduced },
+        { label: t("analysisV11.diff.resolved"), bucket: diff.buildDoctor.resolved },
+        { label: t("analysisV11.diff.changed"), bucket: diff.buildDoctor.changed, changed: true },
       ],
     },
     {
-      title: "Flow traces",
+      title: t("analysisV11.diff.flowTraces"),
       buckets: [
-        { label: "Introduced", bucket: diff.flowTraces.introduced },
-        { label: "Removed", bucket: diff.flowTraces.removed },
-        { label: "Changed", bucket: diff.flowTraces.changed, changed: true },
+        { label: t("analysisV11.diff.introduced"), bucket: diff.flowTraces.introduced },
+        { label: t("analysisV11.diff.removed"), bucket: diff.flowTraces.removed },
+        { label: t("analysisV11.diff.changed"), bucket: diff.flowTraces.changed, changed: true },
       ],
     },
   ];
@@ -1273,9 +1296,9 @@ function AnalysisDiffPanel({ diff }: { diff: AnalysisDiff }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-2 md:grid-cols-3">
-        <span>Base Run #{diff.baseRun.runNumber}</span>
-        <span>Compare Run #{diff.compareRun.runNumber}</span>
-        <span>Build score delta {diff.buildDoctor.scoreDelta}</span>
+        <span>{t("analysisV11.diff.baseRun", { runNumber: diff.baseRun.runNumber })}</span>
+        <span>{t("analysisV11.diff.compareRun", { runNumber: diff.compareRun.runNumber })}</span>
+        <span>{t("analysisV11.diff.buildScoreDelta", { value: diff.buildDoctor.scoreDelta })}</span>
       </div>
       <DiffMetricSection entries={metricEntries} />
       <Accordion type="multiple" className="space-y-3">
@@ -1300,8 +1323,8 @@ function DiffMetricSection({ entries }: { entries: Array<[string, number]> }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Metric deltas</CardTitle>
-        <CardDescription>Total {entries.length} / Displayed {entries.length}</CardDescription>
+        <CardTitle className="text-base">{t("analysisV11.diff.metricDeltas")}</CardTitle>
+        <CardDescription>{`${t("analysisV11.diff.total", { count: entries.length })} / ${t("analysisV11.diff.displayed", { count: entries.length })}`}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
         {entries.length ? (
@@ -1312,7 +1335,7 @@ function DiffMetricSection({ entries }: { entries: Array<[string, number]> }) {
             </div>
           ))
         ) : (
-          <p className="text-slate-500">No metric deltas.</p>
+          <p className="text-slate-500">{t("analysisV11.diff.noMetricDeltas")}</p>
         )}
       </CardContent>
     </Card>
@@ -1325,9 +1348,9 @@ function DiffBucketSection({ label, bucket, changed = false }: { label: string; 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h4 className="font-medium text-slate-950">{label}</h4>
         <div className="flex flex-wrap gap-2">
-          <Badge variant="outline">Total {bucket.total}</Badge>
-          <Badge variant="outline">Displayed {bucket.displayed}</Badge>
-          {bucket.truncated ? <Badge variant="secondary">Truncated</Badge> : null}
+          <Badge variant="outline">{t("analysisV11.diff.total", { count: bucket.total })}</Badge>
+          <Badge variant="outline">{t("analysisV11.diff.displayed", { count: bucket.displayed })}</Badge>
+          {bucket.truncated ? <Badge variant="secondary">{t("analysisV11.diff.truncated")}</Badge> : null}
         </div>
       </div>
       {bucket.items.length ? (
@@ -1337,7 +1360,7 @@ function DiffBucketSection({ label, bucket, changed = false }: { label: string; 
           ))}
         </div>
       ) : (
-        <p className="text-slate-500">No entries in this bucket.</p>
+        <p className="text-slate-500">{t("analysisV11.diff.emptyBucket")}</p>
       )}
     </div>
   );
@@ -1348,11 +1371,11 @@ function DiffEntry({ item, changed }: { item: unknown; changed: boolean }) {
     return (
       <div className="grid gap-2 rounded-lg bg-slate-50 p-3 md:grid-cols-2">
         <div>
-          <p className="mb-1 font-medium text-slate-950">before</p>
+          <p className="mb-1 font-medium text-slate-950">{t("analysisV11.diff.before")}</p>
           <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-slate-700">{formatDiffValue(item.before)}</pre>
         </div>
         <div>
-          <p className="mb-1 font-medium text-slate-950">after</p>
+          <p className="mb-1 font-medium text-slate-950">{t("analysisV11.diff.after")}</p>
           <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-slate-700">{formatDiffValue(item.after)}</pre>
         </div>
       </div>

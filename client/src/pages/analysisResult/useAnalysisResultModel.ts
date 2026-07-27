@@ -281,10 +281,10 @@ export function useAnalysisResultModel(projectId: number) {
         utils.analysis.listRuns.invalidate({ projectId }),
         selectedRunId ? utils.analysis.getRun.invalidate({ projectId, runId: selectedRunId }) : Promise.resolve(),
       ]);
-    toast.success("Baseline updated.");
+      toast.success(analysisResultCopy.toasts.baselineUpdated);
     },
     onError: (error) => {
-      toast.error(error.message || "Set baseline failed.");
+      toast.error(error.message || analysisResultCopy.toasts.baselineUpdateFailed);
     },
   });
 
@@ -297,10 +297,10 @@ export function useAnalysisResultModel(projectId: number) {
           ? utils.analysis.getDiff.invalidate({ projectId, baseRunId: compareBaseRunId, compareRunId })
           : Promise.resolve(),
       ]);
-    toast.success("Baseline cleared.");
+      toast.success(analysisResultCopy.toasts.baselineCleared);
     },
     onError: (error) => {
-      toast.error(error.message || "Clear baseline failed.");
+      toast.error(error.message || analysisResultCopy.toasts.baselineClearFailed);
     },
   });
 
@@ -356,9 +356,9 @@ export function useAnalysisResultModel(projectId: number) {
     setDownloadingRunId(runId);
     try {
       await downloadReportZip(projectId, runId);
-    toast.success("Historical report downloaded.");
+      toast.success(analysisResultCopy.toasts.historicalReportDownloadSucceeded);
     } catch (error) {
-    toast.error(error instanceof Error ? error.message : "Historical report download failed.");
+      toast.error(error instanceof Error ? error.message : analysisResultCopy.toasts.historicalReportDownloadFailed);
     } finally {
       setDownloadingRunId(null);
     }
@@ -371,9 +371,9 @@ export function useAnalysisResultModel(projectId: number) {
     setIsDiffDownloading(true);
     try {
       await downloadAnalysisDiffZip(projectId, compareBaseRunId, compareRunId);
-    toast.success("Comparison downloaded.");
+      toast.success(analysisResultCopy.toasts.diffDownloadSucceeded);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Comparison download failed.");
+      toast.error(error instanceof Error ? error.message : analysisResultCopy.toasts.diffDownloadFailed);
     } finally {
       setIsDiffDownloading(false);
     }
