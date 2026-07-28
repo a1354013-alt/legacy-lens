@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -11,12 +11,39 @@ function readProjectFile(relativePath) {
   return readFileSync(path.join(projectRoot, relativePath), "utf8");
 }
 
-function resolvePowerShellExecutable() {
-  if (process.platform === "win32") {
-    return "powershell.exe";
+function isExecutableOnPath(executable) {
+  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const candidateNames = process.platform === "win32" && !path.extname(executable) ? [executable, `${executable}.exe`] : [executable];
+
+  for (const entry of pathEntries) {
+    for (const candidateName of candidateNames) {
+      const candidatePath = path.join(entry, candidateName);
+      try {
+        accessSync(candidatePath, constants.X_OK);
+        return true;
+      } catch {
+        // Keep scanning PATH entries until a matching executable is found.
+      }
+    }
   }
 
-  return "pwsh";
+  return false;
+}
+
+function powerShellExecutableCandidates(platform = process.platform) {
+  return platform === "win32" ? ["powershell.exe", "pwsh"] : ["pwsh", "powershell"];
+}
+
+function resolvePowerShellExecutable(platform = process.platform, hasExecutable = isExecutableOnPath) {
+  const candidates = powerShellExecutableCandidates(platform);
+
+  for (const candidate of candidates) {
+    if (hasExecutable(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`PowerShell executable was not found on PATH. Tried: ${candidates.join(", ")}`);
 }
 
 function runPowerShellCommand(command) {
@@ -29,14 +56,55 @@ function runPowerShellCommand(command) {
     });
   } catch (error) {
     if (error?.code === "ENOENT") {
-      throw new Error(`PowerShell executable '${executable}' was not found on PATH. Install PowerShell Core as 'pwsh' for Linux CI.`);
+      throw new Error(`PowerShell executable '${executable}' was not found on PATH. Tried: ${powerShellExecutableCandidates().join(", ")}`);
     }
 
     throw error;
   }
 }
 
+const launcherPolicyTestTimeoutMs = 15_000;
+
+function policyPathCommandPreamble() {
+  const policyPath = path.join(projectRoot, "scripts", "f5-startup-policy.ps1");
+  return `. '${policyPath.replaceAll("'", "''")}'`;
+}
+
+function runPowerShellJson(command) {
+  return JSON.parse(runPowerShellCommand(command));
+}
+
+function getStartupDecision(readyHealthy) {
+  const command = [
+    policyPathCommandPreamble(),
+    `Get-F5StartupDecision -ReadyHealthy $${readyHealthy ? "true" : "false"} | ConvertTo-Json -Compress`,
+  ].join("; ");
+  return runPowerShellJson(command);
+}
+
+function getRecoveryDecision({
+  readyHealthy,
+  appStatus,
+  migrateStatus,
+  migrateExitCode,
+  recoveryAlreadyAttempted,
+}) {
+  const command = [
+    policyPathCommandPreamble(),
+    `Get-F5RecoveryDecision -ReadyHealthy $${readyHealthy ? "true" : "false"} -AppStatus '${appStatus.replaceAll("'", "''")}' -MigrateStatus '${migrateStatus.replaceAll("'", "''")}' -MigrateExitCode ${migrateExitCode} -RecoveryAlreadyAttempted $${recoveryAlreadyAttempted ? "true" : "false"} | ConvertTo-Json -Compress`,
+  ].join("; ");
+  return runPowerShellJson(command);
+}
+
 describe("VS Code F5 launcher", () => {
+  it("resolves PowerShell executables deterministically across Windows and non-Windows runners", () => {
+    expect(powerShellExecutableCandidates("win32")).toEqual(["powershell.exe", "pwsh"]);
+    expect(powerShellExecutableCandidates("linux")).toEqual(["pwsh", "powershell"]);
+    expect(resolvePowerShellExecutable("win32", (candidate) => candidate === "pwsh")).toBe("pwsh");
+    expect(resolvePowerShellExecutable("linux", (candidate) => candidate === "powershell")).toBe("powershell");
+    expect(() => resolvePowerShellExecutable("linux", () => false)).toThrow("Tried: pwsh, powershell");
+  });
+
   it("keeps exactly one launch configuration and points it at scripts/f5-start.ps1", () => {
     const launchJson = JSON.parse(readProjectFile(".vscode/launch.json"));
 
@@ -86,7 +154,7 @@ describe("shared launcher implementation", () => {
     expect(launcher).toContain("$startupTimeoutSeconds = 180");
     expect(launcher).toContain("Timed out waiting for /ready");
     expect(launcher).toContain("Legacy Lens is already running.");
-    expect(launcher).toContain("Get-F5StartupAction");
+    expect(launcher).toContain("Get-F5StartupDecision");
     expect(launcher).toContain("Start-ComposeDetached");
     expect(launcher).not.toContain("Test-ComposeStackActive");
     expect(launcher).toContain('Get-PackageVersion');
@@ -98,62 +166,157 @@ describe("shared launcher implementation", () => {
   it("uses readiness, not partial containers, as the only startup decision", () => {
     const launcher = readProjectFile("scripts/f5-start.ps1");
 
-    expect(launcher).toContain("$startupAction = Get-F5StartupAction -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl)");
+    expect(launcher).toContain("$startupDecision = Get-F5StartupDecision -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl)");
+    expect(launcher).toContain('$startupAction = [string] $startupDecision.startupAction');
     expect(launcher).toContain('if ($startupAction -eq "OpenExisting")');
     expect(launcher).toMatch(/Assert-PortsAvailableForStartup\s+Start-ComposeDetached\s+\$readyAfterStartup = Wait-ForReadiness/s);
     expect(launcher).toMatch(/Restart-AppServiceForRecovery\s+}\s+Wait-ForReadiness/s);
   });
 
-  it("repairs DB-only, DB+migrate, and unhealthy-app stacks with exactly one compose up decision", () => {
-    const policyPath = path.join(projectRoot, "scripts", "f5-startup-policy.ps1");
-    const command = [
-      `. '${policyPath.replaceAll("'", "''")}'`,
-      "[pscustomobject]@{ Ready = Get-F5StartupAction -ReadyHealthy $true",
-      "DbOnly = Get-F5StartupAction -ReadyHealthy $false",
-      "DbAndMigrate = Get-F5StartupAction -ReadyHealthy $false",
-      "UnhealthyApp = Get-F5StartupAction -ReadyHealthy $false",
-      "} | ConvertTo-Json -Compress",
-    ].join("; ");
-    const output = runPowerShellCommand(command);
-    const decisions = JSON.parse(output);
+  it("keeps a healthy ready app on the existing stack without compose up", () => {
+    const decision = getStartupDecision(true);
 
-    expect(decisions.Ready).toBe("OpenExisting");
-    expect(decisions.DbOnly).toBe("ComposeUp");
-    expect(decisions.DbAndMigrate).toBe("ComposeUp");
-    expect(decisions.UnhealthyApp).toBe("ComposeUp");
+    expect(decision).toMatchObject({
+      startupAction: "OpenExisting",
+      shouldRunComposeUp: false,
+      shouldAttemptAppRecovery: false,
+      reason: "ready_healthy",
+    });
+  }, launcherPolicyTestTimeoutMs);
 
-    const launcher = readProjectFile("scripts/f5-start.ps1");
-    expect((launcher.match(/Start-ComposeDetached/g) ?? []).length).toBe(2);
-  });
+  it("repairs a DB-only stack with exactly one compose up decision", () => {
+    const decision = getStartupDecision(false);
 
-  it("selects app-only recovery only for a running unhealthy app and never after migrate failure or a prior attempt", () => {
-    const policyPath = path.join(projectRoot, "scripts", "f5-startup-policy.ps1");
-    const command = [
-      `. '${policyPath.replaceAll("'", "''")}'`,
-      "[pscustomobject]@{ Ready = Get-F5RecoveryAction -ReadyHealthy $true -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
-      "DbOnly = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus '' -MigrateStatus '' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
-      "MissingApp = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus '' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
-      "StoppedApp = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'exited' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
-      "RunningUnhealthyApp = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $false",
-      "MigrateFailure = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 1 -RecoveryAlreadyAttempted $false",
-      "SecondAttempt = Get-F5RecoveryAction -ReadyHealthy $false -AppStatus 'running' -MigrateStatus 'exited' -MigrateExitCode 0 -RecoveryAlreadyAttempted $true",
-      "} | ConvertTo-Json -Compress",
-    ].join("; ");
-    const output = runPowerShellCommand(command);
-    const decisions = JSON.parse(output);
+    expect(decision).toMatchObject({
+      startupAction: "ComposeUp",
+      shouldRunComposeUp: true,
+      shouldAttemptAppRecovery: false,
+      reason: "partial_stack",
+    });
+  }, launcherPolicyTestTimeoutMs);
 
-    expect(decisions.Ready).toBe("None");
-    expect(decisions.DbOnly).toBe("None");
-    expect(decisions.MissingApp).toBe("None");
-    expect(decisions.StoppedApp).toBe("None");
-    expect(decisions.RunningUnhealthyApp).toBe("ForceRecreateApp");
-    expect(decisions.MigrateFailure).toBe("None");
-    expect(decisions.SecondAttempt).toBe("None");
+  it("repairs a DB plus migrate stack with exactly one compose up decision", () => {
+    const decision = getStartupDecision(false);
+
+    expect(decision).toMatchObject({
+      startupAction: "ComposeUp",
+      shouldRunComposeUp: true,
+      shouldAttemptAppRecovery: false,
+      reason: "partial_stack",
+    });
+  }, launcherPolicyTestTimeoutMs);
+
+  it("repairs a running unhealthy app stack with exactly one compose up decision before any recovery logic", () => {
+    const decision = getStartupDecision(false);
+
+    expect(decision).toMatchObject({
+      startupAction: "ComposeUp",
+      shouldRunComposeUp: true,
+      shouldAttemptAppRecovery: false,
+      reason: "partial_stack",
+    });
+  }, launcherPolicyTestTimeoutMs);
+
+  it("uses app-only recovery only for a running unhealthy app", () => {
+    const decision = getRecoveryDecision({
+      readyHealthy: false,
+      appStatus: "running",
+      migrateStatus: "exited",
+      migrateExitCode: 0,
+      recoveryAlreadyAttempted: false,
+    });
+
+    expect(decision).toMatchObject({
+      recoveryAction: "ForceRecreateApp",
+      shouldAttemptAppRecovery: true,
+      reason: "running_unhealthy_app",
+    });
+  }, launcherPolicyTestTimeoutMs);
+
+  it("does not use app-only recovery for a healthy ready app", () => {
+    const decision = getRecoveryDecision({
+      readyHealthy: true,
+      appStatus: "running",
+      migrateStatus: "exited",
+      migrateExitCode: 0,
+      recoveryAlreadyAttempted: false,
+    });
+
+    expect(decision).toMatchObject({
+      recoveryAction: "None",
+      shouldAttemptAppRecovery: false,
+      reason: "ready_healthy",
+    });
+  }, launcherPolicyTestTimeoutMs);
+
+  it("does not use app-only recovery when the app service is missing", () => {
+    const decision = getRecoveryDecision({
+      readyHealthy: false,
+      appStatus: "",
+      migrateStatus: "exited",
+      migrateExitCode: 0,
+      recoveryAlreadyAttempted: false,
+    });
+
+    expect(decision).toMatchObject({
+      recoveryAction: "None",
+      shouldAttemptAppRecovery: false,
+      reason: "app_not_running",
+    });
+  }, launcherPolicyTestTimeoutMs);
+
+  it("does not use app-only recovery when the app service is stopped", () => {
+    const decision = getRecoveryDecision({
+      readyHealthy: false,
+      appStatus: "exited",
+      migrateStatus: "exited",
+      migrateExitCode: 0,
+      recoveryAlreadyAttempted: false,
+    });
+
+    expect(decision).toMatchObject({
+      recoveryAction: "None",
+      shouldAttemptAppRecovery: false,
+      reason: "app_not_running",
+    });
+  }, launcherPolicyTestTimeoutMs);
+
+  it("does not use app-only recovery after migrate failure", () => {
+    const decision = getRecoveryDecision({
+      readyHealthy: false,
+      appStatus: "running",
+      migrateStatus: "exited",
+      migrateExitCode: 1,
+      recoveryAlreadyAttempted: false,
+    });
+
+    expect(decision).toMatchObject({
+      recoveryAction: "None",
+      shouldAttemptAppRecovery: false,
+      reason: "migrate_failed",
+    });
+  }, launcherPolicyTestTimeoutMs);
+
+  it("uses app-only recovery at most once", () => {
+    const decision = getRecoveryDecision({
+      readyHealthy: false,
+      appStatus: "running",
+      migrateStatus: "exited",
+      migrateExitCode: 0,
+      recoveryAlreadyAttempted: true,
+    });
+
+    expect(decision).toMatchObject({
+      recoveryAction: "None",
+      shouldAttemptAppRecovery: false,
+      reason: "recovery_already_attempted",
+    });
 
     const launcher = readProjectFile("scripts/f5-start.ps1");
     expect((launcher.match(/Restart-AppServiceForRecovery/g) ?? []).length).toBe(2);
+    expect(launcher).toContain("-RecoveryAlreadyAttempted $false");
     expect(launcher).toContain('"--force-recreate", "app"');
-  });
+  }, launcherPolicyTestTimeoutMs);
 
   it("parses every PowerShell launcher script and reports all syntax errors together", () => {
     const scriptPaths = [
@@ -178,7 +341,7 @@ describe("shared launcher implementation", () => {
     ].join("; ");
 
     expect(runPowerShellCommand(command).trim()).toBe("OK");
-  });
+  }, launcherPolicyTestTimeoutMs);
 
   it("keeps the legacy Windows entrypoints delegating to the shared launcher", () => {
     const legacyPowerShellLauncher = readProjectFile("scripts/start-demo.ps1");
@@ -193,5 +356,20 @@ describe("shared launcher implementation", () => {
     const gitignore = readProjectFile(".gitignore");
     expect(gitignore).toContain(".tmp/");
     expect(gitignore).toContain("!.vscode/launch.json");
+  });
+
+  it("keeps the invalid-port validation in the production launcher", () => {
+    const launcher = readProjectFile("scripts/f5-start.ps1");
+
+    expect(launcher).toContain('must be an integer between 1 and 65535');
+    expect(launcher).toContain('Get-ValidatedPortValue -VariableName "LEGACY_LENS_PORT"');
+    expect(launcher).toContain('Get-ValidatedPortValue -VariableName "LEGACY_LENS_DB_PORT"');
+  });
+
+  it("keeps the missing-Docker failure in the production launcher", () => {
+    const launcher = readProjectFile("scripts/f5-start.ps1");
+
+    expect(launcher).toContain('Docker is not installed or is not available on PATH.');
+    expect(launcher).toContain('Docker Compose is unavailable. Install or update Docker Desktop and try again.');
   });
 });

@@ -347,7 +347,8 @@ try {
   $appUrl = Get-AppUrl
   $readyUrl = Get-ReadyUrl
 
-  $startupAction = Get-F5StartupAction -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl)
+  $startupDecision = Get-F5StartupDecision -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl)
+  $startupAction = [string] $startupDecision.startupAction
 
   if ($startupAction -eq "OpenExisting") {
     Write-Step "Legacy Lens is already running."
@@ -373,12 +374,13 @@ try {
       $migrateStatus = [string] $migrateState.Status
       $migrateExitCode = [int] $migrateState.ExitCode
     }
-    $recoveryAction = Get-F5RecoveryAction `
+    $recoveryDecision = Get-F5RecoveryDecision `
       -ReadyHealthy (Invoke-ReadyCheck -Url $readyUrl) `
       -AppStatus $appStatus `
       -MigrateStatus $migrateStatus `
       -MigrateExitCode $migrateExitCode `
       -RecoveryAlreadyAttempted $false
+    $recoveryAction = [string] $recoveryDecision.recoveryAction
 
     if ($recoveryAction -eq "ForceRecreateApp") {
       Restart-AppServiceForRecovery

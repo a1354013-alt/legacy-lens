@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { t } from "@/locales";
 import { FileTable, PaginationControls, ProjectSummaryCard, ReportActions, RiskPanel, WarningSummaryCard } from "./components";
 
 describe("analysis result extracted components", () => {
@@ -15,7 +16,7 @@ describe("analysis result extracted components", () => {
       />
     );
 
-    expect(html).toContain("Download report ZIP");
+    expect(html).toContain(t("analysisV11.actions.downloadReportZip"));
     expect(html).toContain("disabled");
   });
 
@@ -28,7 +29,7 @@ describe("analysis result extracted components", () => {
     expect(summaryHtml).toContain("Status");
     expect(summaryHtml).toContain("completed");
     expect(tableHtml).toContain("dbo.Users");
-    expect(tableHtml).toContain("Reads 3 / Writes 1 / References 4");
+    expect(tableHtml).toContain(t("analysisV11.summary.fieldStats", { readCount: 3, writeCount: 1, referenceCount: 4 }));
   });
 
   it("renders risks, warning summaries, and pagination summary without changing list semantics", () => {
@@ -70,9 +71,9 @@ describe("analysis result extracted components", () => {
     );
 
     expect(risksHtml).toContain("Dynamic SQL");
-    expect(risksHtml).toContain("3 occurrences");
-    expect(risksHtml).toContain("Recommendation: Review the generated statement manually.");
+    expect(risksHtml).toContain(t("analysisV11.risk.occurrence", { count: 3 }));
+    expect(risksHtml).toContain(t("analysisV11.risk.recommendation", { text: "Review the generated statement manually." }));
     expect(warningsHtml).toContain("DFM limited analysis");
-    expect(pagingHtml).toContain("20 total, page 2 of 4");
+    expect(pagingHtml).toContain(t("analysisV11.pagination.summary", { total: 20, page: 2, pageCount: 4 }));
   });
 });
