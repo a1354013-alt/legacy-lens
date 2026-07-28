@@ -215,13 +215,13 @@ describe("zipHandler", () => {
   });
 
   it("rejects archives whose extracted supported-source bytes exceed the limit", async () => {
-    const nearSingleFileLimitBuffer = Buffer.alloc(MAX_SINGLE_FILE_BYTES, "a");
+    const tinyFileBuffer = Buffer.from("package main\n");
     const openBufferSpy = vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
       files: Array.from({ length: 101 }, (_, index) => ({
         path: `src/file-${index}.go`,
         type: "File",
-        vars: { uncompressedSize: nearSingleFileLimitBuffer.length },
-        stream: () => Readable.from([nearSingleFileLimitBuffer]),
+        vars: { uncompressedSize: MAX_SINGLE_FILE_BYTES },
+        stream: () => Readable.from([tinyFileBuffer]),
       })),
     } as any);
 

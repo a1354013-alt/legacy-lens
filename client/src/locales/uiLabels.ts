@@ -77,12 +77,36 @@ export function fieldOperationLabel(operation: FieldDependencyOperationType | st
   return t(`labels.fieldOperation.${operation}`);
 }
 
+export function confidenceLevelLabel(level: "high" | "medium" | "low" | string) {
+  return t(`labels.confidenceLevel.${level}`);
+}
+
 export function riskSeverityLabel(severity: RiskSeverity | string) {
   return t(`labels.riskSeverity.${severity}`);
 }
 
+export function riskTypeLabel(type: string) {
+  return t(`labels.riskType.${type}`);
+}
+
+export function flowStatusLabel(status: "complete" | "partial" | "unresolved" | string) {
+  return t(`labels.flowStatus.${status}`);
+}
+
+export function buildDoctorStatusLabel(status: "not_applicable" | "ready" | "ready_with_warnings" | "blocked" | string) {
+  return t(`labels.buildDoctorStatus.${status}`);
+}
+
+export function findingSeverityLabel(severity: "critical" | "blocker" | "error" | "warning" | "info" | string) {
+  return t(`labels.findingSeverity.${severity}`);
+}
+
 export function ruleTypeLabel(type: RuleType | string) {
   return t(`labels.ruleType.${type}`);
+}
+
+export function analysisEntityTypeLabel(type: string) {
+  return t(`labels.analysisEntityType.${type}`);
 }
 
 export function impactTargetTypeLabel(type: ImpactTargetType | string) {

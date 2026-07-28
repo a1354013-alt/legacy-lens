@@ -27,12 +27,18 @@ import {
   analysisStatusLabel,
   dependencyKindLabel,
   dependencyTargetKindLabel,
+  buildDoctorStatusLabel,
+  confidenceLevelLabel,
   localizeProjectJobErrorMessage,
   fieldOperationLabel,
+  findingSeverityLabel,
+  flowStatusLabel,
+  analysisEntityTypeLabel,
   projectJobStatusLabel,
   projectJobTypeLabel,
   projectStatusLabel,
   riskSeverityLabel,
+  riskTypeLabel,
   ruleTypeLabel,
   sourceTypeLabel,
   symbolKindLabel,
@@ -611,14 +617,14 @@ export default function AnalysisResult() {
                       <Button size="sm" variant="outline" onClick={() => selectCompareRun(run.id)}>{t("analysisV11.history.compareTo")}</Button>
                       <Button size="sm" variant="outline" onClick={() => void handleDownloadHistoricalReport(run.id)} disabled={downloadingRunId === run.id}>
                         {downloadingRunId === run.id ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-                        Download report
+                        {t("analysisV11.history.downloadReport")}
                       </Button>
                     </div>
                   </CardContent>
                 </Card>
               ))}
               {!analysisRunsQuery?.isLoading && !analysisRunsQuery?.error && (analysisRunsQuery?.data?.items.length ?? 0) === 0 ? (
-                <Card><CardContent className="py-8 text-center text-sm text-slate-600">No analysis history is available yet.</CardContent></Card>
+                <Card><CardContent className="py-8 text-center text-sm text-slate-600">{t("analysisV11.history.empty")}</CardContent></Card>
               ) : null}
             </div>
             {selectedRunQuery?.error ? (
@@ -703,7 +709,7 @@ export default function AnalysisResult() {
                       <CardDescription>{t("analysisV11.buildDoctor.description")}</CardDescription>
                     </div>
                     <Badge variant={buildDoctorRunQuery.data.snapshot.buildDoctor.status === "blocked" ? "destructive" : "secondary"}>
-                      {buildDoctorRunQuery.data.snapshot.buildDoctor.status} / {buildDoctorRunQuery.data.snapshot.buildDoctor.score}
+                      {buildDoctorStatusLabel(buildDoctorRunQuery.data.snapshot.buildDoctor.status)} / {buildDoctorRunQuery.data.snapshot.buildDoctor.score}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -716,7 +722,7 @@ export default function AnalysisResult() {
                   ) : null}
                   <div className="grid gap-2 md:grid-cols-2">
                     <span>{t("analysisV11.buildDoctor.compilerFamily", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.value ?? t("analysisV11.buildDoctor.unknown") })}</span>
-                    <span>{t("analysisV11.buildDoctor.confidence", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.confidence })}</span>
+                    <span>{t("analysisV11.buildDoctor.confidence", { value: confidenceLevelLabel(buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.confidence) })}</span>
                     <span>{t("analysisV11.buildDoctor.compilerEvidence", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.compilerFamily.evidence.join(", ") || t("analysisV11.buildDoctor.none") })}</span>
                     <span>{t("analysisV11.buildDoctor.defines", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.defines.join(", ") || t("analysisV11.buildDoctor.none") })}</span>
                     <span>{t("analysisV11.buildDoctor.configurations", { value: buildDoctorRunQuery.data.snapshot.buildDoctor.configurations.join(", ") || t("analysisV11.buildDoctor.none") })}</span>
@@ -767,11 +773,11 @@ export default function AnalysisResult() {
                     const findings = (buildDoctorRunQuery.data.snapshot?.buildDoctor.findings ?? []).filter((finding) => finding.severity === severity);
                     return (
                       <div key={severity} className="space-y-2">
-                        <h3 className="font-medium text-slate-950">{t("analysisV11.buildDoctor.findings", { severity, count: findings.length })}</h3>
+                        <h3 className="font-medium text-slate-950">{t("analysisV11.buildDoctor.findings", { severity: findingSeverityLabel(severity), count: findings.length })}</h3>
                         {findings.length ? findings.map((finding) => (
                           <div key={`${finding.code}:${finding.title}:${finding.evidence ?? ""}`} className="rounded-lg border px-3 py-2">
                             <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant={finding.severity === "blocker" ? "destructive" : "outline"}>{finding.severity}</Badge>
+                              <Badge variant={finding.severity === "blocker" ? "destructive" : "outline"}>{findingSeverityLabel(finding.severity)}</Badge>
                               <span className="font-medium text-slate-950">{finding.title}</span>
                               <span className="text-slate-500">{finding.confidence}</span>
                             </div>
@@ -780,7 +786,7 @@ export default function AnalysisResult() {
                             {finding.sourceFile ? <p className="mt-1 text-slate-500">{t("analysisV11.buildDoctor.source", { value: `${finding.sourceFile}${finding.lineNumber ? `:${finding.lineNumber}` : ""}` })}</p> : null}
                             {finding.evidence ? <p className="mt-1 text-slate-500">{t("analysisV11.buildDoctor.evidence", { value: finding.evidence })}</p> : null}
                           </div>
-                        )) : <p className="text-slate-500">{t("analysisV11.buildDoctor.noFindings", { severity })}</p>}
+                        )) : <p className="text-slate-500">{t("analysisV11.buildDoctor.noFindings", { severity: findingSeverityLabel(severity) })}</p>}
                       </div>
                     );
                   })}
@@ -850,19 +856,19 @@ export default function AnalysisResult() {
                   <SelectTrigger><SelectValue placeholder={t("analysisV11.flow.operationPlaceholder")} /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">{t("analysisV11.flow.allOperations")}</SelectItem>
-                    <SelectItem value="read">Read</SelectItem>
-                    <SelectItem value="write">Write</SelectItem>
-                    <SelectItem value="calculate">Calculate</SelectItem>
-                    <SelectItem value="unknown">Unknown</SelectItem>
+                    <SelectItem value="read">{fieldOperationLabel("read")}</SelectItem>
+                    <SelectItem value="write">{fieldOperationLabel("write")}</SelectItem>
+                    <SelectItem value="calculate">{fieldOperationLabel("calculate")}</SelectItem>
+                    <SelectItem value="unknown">{fieldOperationLabel("unknown")}</SelectItem>
                   </SelectContent>
                 </Select>
                 <Select value={flowTraceConfidence} onValueChange={(value) => { setFlowTraceConfidence(value); setFlowTracePage(1); }}>
                   <SelectTrigger><SelectValue placeholder={t("analysisV11.flow.confidencePlaceholder")} /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">{t("analysisV11.flow.allConfidence")}</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="high">{confidenceLevelLabel("high")}</SelectItem>
+                    <SelectItem value="medium">{confidenceLevelLabel("medium")}</SelectItem>
+                    <SelectItem value="low">{confidenceLevelLabel("low")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -887,17 +893,17 @@ export default function AnalysisResult() {
                         <CardDescription>{trace.formName}{trace.eventName ? ` / ${trace.eventName}` : ""} / {trace.resolvedHandler ?? trace.handlerName ?? t("analysisV11.flow.dataBinding")}</CardDescription>
                       </div>
                       <div className="flex gap-2">
-                        <Badge variant={trace.status === "unresolved" ? "destructive" : "outline"}>{trace.status}</Badge>
-                        <Badge variant="secondary">{trace.confidence}</Badge>
+                        <Badge variant={trace.status === "unresolved" ? "destructive" : "outline"}>{flowStatusLabel(trace.status)}</Badge>
+                        <Badge variant="secondary">{confidenceLevelLabel(trace.confidence)}</Badge>
                       </div>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3 text-sm">
                     <div className="flex flex-wrap gap-2">
                       {trace.affectedTables.map((table) => <Badge key={table} variant="outline">{table}</Badge>)}
-                      {trace.affectedFields.map((field) => <Badge key={`${field.table}.${field.field}.${field.operation}`} variant="secondary">{field.table}.{field.field} {field.operation}</Badge>)}
+                      {trace.affectedFields.map((field) => <Badge key={`${field.table}.${field.field}.${field.operation}`} variant="secondary">{field.table}.{field.field} {fieldOperationLabel(field.operation)}</Badge>)}
                     </div>
-                    <p className="text-slate-600">{t("analysisV11.flow.operations", { value: Array.from(new Set(trace.affectedFields.map((field) => field.operation))).join(", ") || t("analysisV11.buildDoctor.none") })}</p>
+                    <p className="text-slate-600">{t("analysisV11.flow.operations", { value: Array.from(new Set(trace.affectedFields.map((field) => fieldOperationLabel(field.operation)))).join(", ") || t("analysisV11.buildDoctor.none") })}</p>
                     {trace.steps.find((step) => step.filePath) ? (
                       <p className="text-slate-500">{t("analysisV11.flow.source", { value: `${trace.steps.find((step) => step.filePath)?.filePath ?? ""}${trace.steps.find((step) => step.filePath)?.lineNumber ? `:${trace.steps.find((step) => step.filePath)?.lineNumber}` : ""}` })}</p>
                     ) : null}
@@ -906,9 +912,9 @@ export default function AnalysisResult() {
                     <div className="space-y-2">
                       {(expandedFlowSteps[trace.stableKey] ? trace.steps : trace.steps.slice(0, 5)).map((step) => (
                         <div key={step.id} className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
-                          <Badge variant="outline">{step.type}</Badge>
+                          <Badge variant="outline">{analysisEntityTypeLabel(step.type)}</Badge>
                           <span className="font-medium text-slate-950">{step.label}</span>
-                          {step.operation ? <Badge variant="secondary">{step.operation}</Badge> : null}
+                          {step.operation ? <Badge variant="secondary">{fieldOperationLabel(step.operation)}</Badge> : null}
                           {step.filePath ? <span className="text-slate-500">{step.filePath}{step.lineNumber ? `:${step.lineNumber}` : ""}</span> : null}
                           {step.evidence ? <span className="text-slate-500">{t("analysisV11.flow.evidence", { value: step.evidence })}</span> : null}
                         </div>
@@ -1112,10 +1118,10 @@ export default function AnalysisResult() {
                   <SelectTrigger><SelectValue placeholder="風險類型" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">全部風險類型</SelectItem>
-                    {riskTypes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                    {riskTypes.map((value) => <SelectItem key={value} value={value}>{riskTypeLabel(value)}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <Input value={riskFile} onChange={(event) => { setRiskFile(event.target.value); setRiskPage(1); }} placeholder="依檔案篩選" />
+                <Input value={riskFile} onChange={(event) => { setRiskFile(event.target.value); setRiskPage(1); }} placeholder={t("analysis.filters.filePlaceholder")} />
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-4">
                 <div className="flex items-center gap-3">
@@ -1127,7 +1133,7 @@ export default function AnalysisResult() {
                       setRiskPage(1);
                     }}
                   />
-                  <Label htmlFor="risk-critical-only">只看 critical</Label>
+                  <Label htmlFor="risk-critical-only">{t("analysis.filters.criticalOnly")}</Label>
                 </div>
                 <div className="flex items-center gap-3">
                   <Checkbox
@@ -1138,7 +1144,7 @@ export default function AnalysisResult() {
                       setRiskPage(1);
                     }}
                   />
-                  <Label htmlFor="hide-duplicate-risks">隱藏重複項</Label>
+                  <Label htmlFor="hide-duplicate-risks">{t("analysis.filters.hideDuplicates")}</Label>
                 </div>
               </div>
             </FilterCard>
@@ -1159,7 +1165,7 @@ export default function AnalysisResult() {
                 </Select>
               </div>
               <div className="mt-3 grid gap-3 md:grid-cols-[2fr_1fr]">
-                <Input value={ruleFile} onChange={(event) => { setRuleFile(event.target.value); setRulePage(1); }} placeholder="依檔案篩選" />
+                <Input value={ruleFile} onChange={(event) => { setRuleFile(event.target.value); setRulePage(1); }} placeholder={t("analysis.filters.filePlaceholder")} />
                 <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
                   <Checkbox
                     id="hide-duplicate-rules"
@@ -1169,7 +1175,7 @@ export default function AnalysisResult() {
                       setRulePage(1);
                     }}
                   />
-                  <Label htmlFor="hide-duplicate-rules">隱藏重複項</Label>
+                  <Label htmlFor="hide-duplicate-rules">{t("analysis.filters.hideDuplicates")}</Label>
                 </div>
               </div>
             </FilterCard>

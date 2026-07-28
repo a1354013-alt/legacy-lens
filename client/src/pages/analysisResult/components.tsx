@@ -3,6 +3,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { riskSeverityLabel, ruleTypeLabel } from "@/locales/uiLabels";
 import { analysisResultCopy } from "./copy";
 
 export function ReportActions({
@@ -123,6 +124,9 @@ export function WarningSummaryCard({
                 {item.sampleFiles.length > 0 ? (
                   <div className="space-y-2">
                     <p className="font-medium text-slate-900">{analysisResultCopy.warning.sampleFileLabel}</p>
+                    {item.sampleFiles.length > 50 ? (
+                      <p className="text-slate-500">{analysisResultCopy.warning.displayedSampleFiles(50, item.sampleFiles.length)}</p>
+                    ) : null}
                     {item.sampleFiles.slice(0, 50).map((file) => (
                       <div key={file} className="rounded-lg border border-dashed px-3 py-2 text-slate-600">
                         {file}
@@ -198,7 +202,7 @@ export function RiskPanel({
           <CardHeader className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle className="text-lg">{risk.title}</CardTitle>
-              <Badge variant={risk.severity === "critical" || risk.severity === "high" ? "destructive" : "secondary"}>{risk.severity}</Badge>
+              <Badge variant={risk.severity === "critical" || risk.severity === "high" ? "destructive" : "secondary"}>{riskSeverityLabel(risk.severity)}</Badge>
             </div>
             <div className="flex flex-wrap gap-2 text-sm text-slate-600">
               <Badge variant="outline">{analysisResultCopy.risk.occurrence(risk.occurrenceCount)}</Badge>
@@ -260,7 +264,7 @@ export function RulePanel({
           <CardHeader className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle className="text-lg">{rule.title}</CardTitle>
-              <Badge variant="outline">{rule.ruleType}</Badge>
+              <Badge variant="outline">{ruleTypeLabel(rule.ruleType)}</Badge>
             </div>
             <div className="flex flex-wrap gap-2 text-sm text-slate-600">
               <Badge variant="outline">{analysisResultCopy.rule.occurrence(rule.occurrenceCount)}</Badge>

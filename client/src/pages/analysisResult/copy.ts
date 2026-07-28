@@ -30,6 +30,7 @@ export const analysisResultCopy = {
   warning: {
     title: t("analysisV11.warning.title"),
     sampleFileLabel: t("analysisV11.warning.sampleFileLabel"),
+    displayedSampleFiles: (displayed: number, total: number) => t("analysisV11.warning.displayedSampleFiles", { displayed, total }),
     noDetails: t("analysisV11.warning.noDetails"),
   },
   risk: {

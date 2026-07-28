@@ -2,7 +2,8 @@
  * @vitest-environment jsdom
  */
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "@/locales";
 import AnalysisResult from "./AnalysisResult";
@@ -283,5 +284,248 @@ describe("AnalysisResult interactions", () => {
 
     expect(screen.getByText(t("analysisV11.buildDoctor.references"))).toBeTruthy();
     expect(screen.getByText(/Build\/App\.dproj:12 \| Vendor\.Reporting \| '\$\(Config\)'=='Debug' \| Packages\/Vendor\.Reporting\.dpk/)).toBeTruthy();
+  });
+
+  it("renders history loading, empty, and error states", () => {
+    useAnalysisResultModelMock.mockReturnValue(createModel({ analysisRunsQuery: { data: { items: [], total: 0, page: 1, pageCount: 0 }, error: null, isLoading: true } }));
+    const { rerender } = render(<AnalysisResult />);
+    expect(screen.queryByText(t("analysisV11.history.empty"))).toBeNull();
+
+    useAnalysisResultModelMock.mockReturnValue(createModel({ analysisRunsQuery: { data: { items: [], total: 0, page: 1, pageCount: 0 }, error: null, isLoading: false } }));
+    rerender(<AnalysisResult />);
+    expect(screen.getByText(t("analysisV11.history.empty"))).toBeTruthy();
+
+    useAnalysisResultModelMock.mockReturnValue(createModel({ analysisRunsQuery: { data: { items: [], total: 0, page: 1, pageCount: 0 }, error: new Error("history unavailable"), isLoading: false } }));
+    rerender(<AnalysisResult />);
+    expect(screen.getByText(t("analysisV11.history.loadFailedTitle"))).toBeTruthy();
+    expect(screen.getByText("history unavailable")).toBeTruthy();
+  });
+
+  it("clicks history run actions for current, historical, baseline, and downloads independently", async () => {
+    const user = userEvent.setup();
+    const setSelectedRunId = vi.fn();
+    const inspectRun = vi.fn();
+    const returnToCurrentSource = vi.fn();
+    const setBaselineMutation = { isPending: false, mutate: vi.fn() };
+    const clearBaselineMutation = { isPending: false, mutate: vi.fn() };
+    const selectCompareBaseRun = vi.fn();
+    const selectCompareRun = vi.fn();
+    const handleDownloadHistoricalReport = vi.fn();
+
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        setSelectedRunId,
+        inspectRun,
+        returnToCurrentSource,
+        setBaselineMutation,
+        clearBaselineMutation,
+        selectCompareBaseRun,
+        selectCompareRun,
+        handleDownloadHistoricalReport,
+        downloadingRunId: 55,
+      })
+    );
+
+    render(<AnalysisResult />);
+
+    expect(screen.getByText(t("analysisV11.runSource.current"))).toBeTruthy();
+    expect(screen.getAllByText(t("analysisV11.runSource.historical")).length).toBeGreaterThan(0);
+    expect(screen.getByText(t("analysisV11.runSource.latestUsable"))).toBeTruthy();
+    expect(screen.getByText(t("analysisV11.runSource.baseline"))).toBeTruthy();
+
+    const historicalCard = screen.getByText(t("analysisV11.history.runTitle", { runNumber: 8 })).closest("[data-slot='card']") ?? screen.getByText(t("analysisV11.history.runTitle", { runNumber: 8 })).closest("div")!;
+    await user.click(within(historicalCard as HTMLElement).getByRole("button", { name: t("analysisV11.history.details") }));
+    await user.click(within(historicalCard as HTMLElement).getByRole("button", { name: t("analysisV11.history.setBaseline") }));
+    await user.click(within(historicalCard as HTMLElement).getByRole("button", { name: t("analysisV11.history.clearBaseline") }));
+    await user.click(within(historicalCard as HTMLElement).getByRole("button", { name: t("analysisV11.history.useAsBase") }));
+    await user.click(within(historicalCard as HTMLElement).getByRole("button", { name: t("analysisV11.history.compareTo") }));
+
+    const downloadButtons = screen.getAllByRole("button", { name: t("analysisV11.history.downloadReport") });
+    expect(downloadButtons[1]).toHaveProperty("disabled", true);
+    await user.click(downloadButtons[0]);
+
+    await user.click(screen.getByRole("button", { name: t("analysisV11.runSource.returnToCurrent") }));
+
+    expect(setSelectedRunId).toHaveBeenCalledWith(55);
+    expect(inspectRun).toHaveBeenCalledWith(55);
+    expect(setBaselineMutation.mutate).toHaveBeenCalledWith({ projectId: 1, runId: 55 });
+    expect(clearBaselineMutation.mutate).toHaveBeenCalledWith(1);
+    expect(selectCompareBaseRun).toHaveBeenCalledWith(55);
+    expect(selectCompareRun).toHaveBeenCalledWith(55);
+    expect(handleDownloadHistoricalReport).toHaveBeenCalledWith(101);
+    expect(returnToCurrentSource).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders comparison failures and invokes Diff ZIP download", async () => {
+    const user = userEvent.setup();
+    const handleDownloadComparison = vi.fn();
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        compareBaseRunId: 55,
+        compareRunId: 101,
+        canDownloadComparison: true,
+        handleDownloadComparison,
+        diffQuery: { data: null, error: new Error("diff query failed"), isLoading: false },
+      })
+    );
+
+    render(<AnalysisResult />);
+
+    expect(screen.getByText("diff query failed")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: t("analysisV11.diff.download") }));
+    expect(handleDownloadComparison).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders complete Diff categories, changed before/after values, counts, and truncation", async () => {
+    const user = userEvent.setup();
+    const bucket = (items: unknown[], truncated = false) => ({ items, total: items.length + (truncated ? 2 : 0), displayed: items.length, truncated });
+    const changed = bucket([{ before: { label: "before-name" }, after: { label: "after-name" } }], true);
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        compareBaseRunId: 55,
+        compareRunId: 101,
+        diffQuery: {
+          data: {
+            baseRun: { id: 55, runNumber: 8 },
+            compareRun: { id: 101, runNumber: 9 },
+            metricsDelta: { files: 2, risks: -1 },
+            truncated: true,
+            files: { added: bucket(["src/NewForm.pas"]), removed: bucket(["src/OldForm.pas"]), changed },
+            fields: { added: bucket(["Customer.Name"]), removed: bucket(["Customer.Legacy"]), changed },
+            fieldDependencies: { introduced: bucket(["Customer.Name read"]), removed: bucket(["Customer.Legacy write"]), changed },
+            risks: { introduced: bucket(["Dynamic SQL"]), resolved: bucket(["Missing validation"]), changed },
+            rules: { introduced: bucket(["Validate age"]), resolved: bucket(["Old rule"]), changed },
+            delphiEvents: { introduced: bucket(["Button1.OnClick"]), removed: bucket(["Button2.OnClick"]), resolutionChanged: changed },
+            dataBindings: { introduced: bucket(["DataSource1"]), removed: bucket(["DataSource2"]), changed },
+            buildDoctor: { scoreDelta: 7, introduced: bucket(["Package added"]), resolved: bucket(["Unit resolved"]), changed },
+            flowTraces: { introduced: bucket(["Trace added"]), removed: bucket(["Trace removed"]), changed },
+          },
+          error: null,
+          isLoading: false,
+        },
+      })
+    );
+
+    render(<AnalysisResult />);
+
+    for (const key of ["files", "fields", "fieldDependencies", "risks", "rules", "delphiEvents", "dataBindings", "buildDoctor", "flowTraces"] as const) {
+      expect(screen.getAllByText(t(`analysisV11.diff.${key}`)).length).toBeGreaterThan(0);
+    }
+    await user.click(screen.getByRole("button", { name: t("analysisV11.diff.files") }));
+    expect(screen.getAllByText(t("analysisV11.diff.before")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(t("analysisV11.diff.after")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(t("analysisV11.diff.truncated")).length).toBeGreaterThan(0);
+    expect(screen.getByText("src/NewForm.pas")).toBeTruthy();
+    expect(screen.getByText(t("analysisV11.diff.baseRun", { runNumber: 8 }))).toBeTruthy();
+    expect(screen.getByText(t("analysisV11.diff.compareRun", { runNumber: 9 }))).toBeTruthy();
+    expect(screen.queryByText("101")).toBeNull();
+  });
+
+  it.each(["not_applicable", "ready", "ready_with_warnings", "blocked"] as const)("renders Build Doctor state %s", (status) => {
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        activeTab: "buildDoctor",
+        buildDoctorRunQuery: {
+          data: {
+            snapshot: {
+              buildDoctor: {
+                status,
+                score: 64,
+                compilerFamily: { value: "MSBuild", confidence: "high", evidence: ["ProjectVersion=19.0"] },
+                projectEntries: [{ path: "App.dproj", kind: "dproj", lineNumber: 4, evidence: "Project root" }],
+                configurations: ["Debug"],
+                platforms: ["Win32"],
+                defines: ["DEBUG"],
+                searchPaths: ["src"],
+                includePaths: ["include"],
+                outputPaths: ["bin"],
+                requiredPackages: ["rtl"],
+                runtimePackages: ["vcl"],
+                packageResolutions: [],
+                requiredUnits: ["System.SysUtils"],
+                missingUnits: ["Missing.Unit"],
+                unresolvedUnits: ["Unknown.Unit"],
+                missingPackages: ["MissingPkg"],
+                externalDependencies: ["Vendor.Lib"],
+                findings: [{ severity: "warning", code: "BD001", title: "Path warning", description: "Search path is broad.", recommendation: "Narrow it.", confidence: "medium", evidence: "src/**", sourceFile: "App.dproj", lineNumber: 9 }],
+                limitations: ["No compiler installed."],
+              },
+            },
+          },
+          error: null,
+          isLoading: false,
+        },
+      })
+    );
+
+    render(<AnalysisResult />);
+
+    expect(screen.getByText(/64/)).toBeTruthy();
+    for (const text of ["MSBuild", "ProjectVersion=19.0", "App.dproj", "Debug", "Win32", "DEBUG", "src", "include", "bin", "rtl", "vcl", "System.SysUtils", "Missing.Unit", "Unknown.Unit", "MissingPkg", "Vendor.Lib", "Path warning", "No compiler installed."]) {
+      expect(screen.getAllByText(new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps Build Doctor query failure visible as an API error", () => {
+    useAnalysisResultModelMock.mockReturnValue(createModel({ activeTab: "buildDoctor", buildDoctorRunQuery: { data: null, error: new Error("Build Doctor API failed"), isLoading: false } }));
+    render(<AnalysisResult />);
+    expect(screen.getByText(t("analysisV11.buildDoctor.loadFailedTitle"))).toBeTruthy();
+    expect(screen.queryByText(t("analysisV11.buildDoctor.notApplicableTitle"))).toBeNull();
+  });
+
+  it("renders Flow summary, filters, traces, expansion, and query failures", async () => {
+    const user = userEvent.setup();
+    const setters = {
+      setFlowTraceSearch: vi.fn(),
+      setFlowTraceForm: vi.fn(),
+      setFlowTraceComponent: vi.fn(),
+      setFlowTraceEvent: vi.fn(),
+      setFlowTraceTable: vi.fn(),
+      setFlowTracePage: vi.fn(),
+      resetFlowTraceFilters: vi.fn(),
+    };
+    const steps = Array.from({ length: 6 }, (_, index) => ({ id: `step-${index}`, type: index === 0 ? "event" : "sql", label: `Step ${index}`, operation: index === 1 ? "read" : null, filePath: index === 0 ? "MainForm.pas" : null, lineNumber: index === 0 ? 42 : null, evidence: index === 1 ? "SELECT * FROM Customer" : null }));
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        activeTab: "flow",
+        isInspectingHistoricalRun: false,
+        inspectedRunId: null,
+        ...setters,
+        flowTraceSummaryQuery: { data: { total: 9, complete: 3, partial: 2, unresolved: 4, readPaths: 5, writePaths: 6, affectedTables: 7, candidateTraceCount: 8, persistedTraceCount: 9, globalTruncated: true }, error: new Error("summary failed"), isLoading: false },
+        flowTracesQuery: {
+          data: { items: [{ stableKey: "trace-1", formName: "MainForm", componentClass: "TButton", componentName: "SaveButton", eventName: "OnClick", resolvedHandler: "SaveButtonClick", handlerName: null, status: "partial", confidence: "high", affectedTables: ["Customer"], affectedFields: [{ table: "Customer", field: "Name", operation: "read" }], warnings: ["Path truncated"], truncated: true, steps }], total: 1, page: 3, pageCount: 3 },
+          error: new Error("traces failed"),
+          isLoading: false,
+        },
+      })
+    );
+
+    render(<AnalysisResult />);
+
+    for (const value of ["9", "3", "2", "4", "5", "6", "7", "8"]) expect(screen.getAllByText(value).length).toBeGreaterThan(0);
+    expect(screen.getByText(t("analysisV11.flow.globalTruncatedTitle"))).toBeTruthy();
+    expect(screen.getByText("summary failed")).toBeTruthy();
+    expect(screen.getByText("traces failed")).toBeTruthy();
+    expect(screen.getByText("Customer.Name " + t("labels.fieldOperation.read"))).toBeTruthy();
+    expect(screen.getByText("MainForm.pas:42")).toBeTruthy();
+    expect(screen.getByText(t("analysisV11.flow.traceTruncatedTitle"))).toBeTruthy();
+
+    await user.type(screen.getByPlaceholderText(t("analysisV11.flow.searchPlaceholder")), "save");
+    await user.type(screen.getByPlaceholderText(t("analysisV11.flow.formPlaceholder")), "Main");
+    await user.type(screen.getByPlaceholderText(t("analysisV11.flow.componentPlaceholder")), "Button");
+    await user.type(screen.getByPlaceholderText(t("analysisV11.flow.eventPlaceholder")), "Click");
+    await user.type(screen.getByPlaceholderText(t("analysisV11.flow.tablePlaceholder")), "Customer");
+    await user.click(screen.getByRole("button", { name: t("analysisV11.flow.resetFilters") }));
+    await user.click(screen.getByRole("button", { name: t("analysisV11.flow.showAllSteps", { count: 6 }) }));
+    expect(screen.getByText("Step 5")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: t("analysisV11.flow.collapse") }));
+
+    expect(setters.setFlowTraceSearch).toHaveBeenCalled();
+    expect(setters.setFlowTraceForm).toHaveBeenCalled();
+    expect(setters.setFlowTraceComponent).toHaveBeenCalled();
+    expect(setters.setFlowTraceEvent).toHaveBeenCalled();
+    expect(setters.setFlowTraceTable).toHaveBeenCalled();
+    expect(setters.setFlowTracePage).toHaveBeenCalledWith(1);
+    expect(setters.resetFlowTraceFilters).toHaveBeenCalledTimes(1);
   });
 });

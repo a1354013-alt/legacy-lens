@@ -226,6 +226,7 @@ export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<Extract
     const extractedFiles: ExtractedFile[] = [];
     const warnings: ImportWarning[] = [];
     let totalExtractedSize = 0;
+    let totalDeclaredSupportedSize = 0;
     let sourceCandidateCount = 0;
 
     const entries = zip.files as ZipDirectoryEntry[];
@@ -273,7 +274,8 @@ export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<Extract
       }
 
       if (declaredSize > 0) {
-        assertExtractedSize(totalExtractedSize + declaredSize);
+        totalDeclaredSupportedSize += declaredSize;
+        assertExtractedSize(totalDeclaredSupportedSize);
       }
 
       let fileBuffer: Buffer;
