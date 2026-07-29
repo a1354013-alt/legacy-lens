@@ -30,6 +30,7 @@ import {
   buildDoctorStatusLabel,
   confidenceLevelLabel,
   localizeProjectJobErrorMessage,
+  packageResolutionLabel,
   fieldOperationLabel,
   findingSeverityLabel,
   flowStatusLabel,
@@ -746,7 +747,7 @@ export default function AnalysisResult() {
                         <div key={entry.packageName} className="rounded-lg border px-3 py-2">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="font-medium text-slate-950">{entry.packageName}</span>
-                            <Badge variant={entry.resolution === "missing" ? "destructive" : "outline"}>{entry.resolution}</Badge>
+                            <Badge variant={entry.resolution === "missing" ? "destructive" : "outline"}>{packageResolutionLabel(entry.resolution)}</Badge>
                           </div>
                           <p className="mt-1 text-slate-600">{t("analysisV11.buildDoctor.resolvedPath", { value: entry.resolvedPath ?? t("analysisV11.buildDoctor.none") })}</p>
                           {entry.references?.length ? (

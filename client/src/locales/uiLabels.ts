@@ -4,6 +4,7 @@ import type {
   DependencyTargetKind,
   FieldDependencyOperationType,
   ImpactTargetType,
+  DelphiPackageResolution,
   ProjectJobStatus,
   ProjectJobType,
   ProjectSourceType,
@@ -95,6 +96,10 @@ export function flowStatusLabel(status: "complete" | "partial" | "unresolved" | 
 
 export function buildDoctorStatusLabel(status: "not_applicable" | "ready" | "ready_with_warnings" | "blocked" | string) {
   return t(`labels.buildDoctorStatus.${status}`);
+}
+
+export function packageResolutionLabel(resolution: DelphiPackageResolution | string) {
+  return t(`labels.packageResolution.${resolution}`);
 }
 
 export function findingSeverityLabel(severity: "critical" | "blocker" | "error" | "warning" | "info" | string) {

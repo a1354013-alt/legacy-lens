@@ -333,6 +333,13 @@ const zh = {
       ready_with_warnings: "可建置但有警告",
       blocked: "阻斷",
     },
+    packageResolution: {
+      project_local: "專案內套件",
+      delphi_standard: "Delphi 標準套件",
+      external_unverified: "外部套件，待確認",
+      missing: "缺少",
+      ambiguous: "解析不明確",
+    },
     riskSeverity: {
       low: "低",
       medium: "中",
