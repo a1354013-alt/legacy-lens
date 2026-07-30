@@ -8,6 +8,7 @@ import {
   findingSeverityLabel,
   flowStatusLabel,
   localizeProjectJobErrorMessage,
+  packageResolutionLabel,
   projectJobFailureTitle,
   riskTypeLabel,
 } from "./uiLabels";
@@ -50,6 +51,11 @@ describe("localized UI enum labels", () => {
       ["ready", buildDoctorStatusLabel("ready")],
       ["ready_with_warnings", buildDoctorStatusLabel("ready_with_warnings")],
       ["blocked", buildDoctorStatusLabel("blocked")],
+      ["project_local", packageResolutionLabel("project_local")],
+      ["delphi_standard", packageResolutionLabel("delphi_standard")],
+      ["external_unverified", packageResolutionLabel("external_unverified")],
+      ["missing", packageResolutionLabel("missing")],
+      ["ambiguous", packageResolutionLabel("ambiguous")],
       ["critical", findingSeverityLabel("critical")],
       ["error", findingSeverityLabel("error")],
       ["warning", findingSeverityLabel("warning")],
@@ -76,5 +82,13 @@ describe("localized UI enum labels", () => {
       expect(label).not.toBe(raw);
       expect(label).not.toMatch(/^labels\./);
     }
+  });
+
+  it("returns Traditional Chinese package resolution labels", () => {
+    expect(packageResolutionLabel("project_local")).toBe("專案內套件");
+    expect(packageResolutionLabel("delphi_standard")).toBe("Delphi 標準套件");
+    expect(packageResolutionLabel("external_unverified")).toBe("外部套件，待確認");
+    expect(packageResolutionLabel("missing")).toBe("缺少");
+    expect(packageResolutionLabel("ambiguous")).toBe("解析不明確");
   });
 });

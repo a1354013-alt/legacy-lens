@@ -212,6 +212,10 @@ describe("AnalysisResult interactions", () => {
   beforeEach(() => {
     setLocation.mockReset();
     useAnalysisResultModelMock.mockReset();
+    HTMLElement.prototype.hasPointerCapture ??= vi.fn(() => false);
+    HTMLElement.prototype.setPointerCapture ??= vi.fn();
+    HTMLElement.prototype.releasePointerCapture ??= vi.fn();
+    HTMLElement.prototype.scrollIntoView ??= vi.fn();
   });
 
   afterEach(() => cleanup());
@@ -229,6 +233,13 @@ describe("AnalysisResult interactions", () => {
   });
 
   it("renders Build Doctor package references from structured provenance", () => {
+    const packageResolutions = [
+      ["LocalShared", "project_local"],
+      ["rtl", "delphi_standard"],
+      ["Vendor.Reporting", "external_unverified"],
+      ["MissingPkg", "missing"],
+      ["AmbiguousPkg", "ambiguous"],
+    ] as const;
     useAnalysisResultModelMock.mockReturnValue(
       createModel({
         activeTab: "buildDoctor",
@@ -248,22 +259,20 @@ describe("AnalysisResult interactions", () => {
                 outputPaths: [],
                 runtimePackages: [],
                 requiredPackages: ["Vendor.Reporting"],
-                packageResolutions: [
-                  {
-                    packageName: "Vendor.Reporting",
-                    resolution: "external_unverified",
+                packageResolutions: packageResolutions.map(([packageName, resolution]) => ({
+                    packageName,
+                    resolution,
                     evidence: ["sourceFile=Build/App.dproj"],
                     references: [
                       {
                         sourceFile: "Build/App.dproj",
                         lineNumber: 12,
                         condition: "'$(Config)'=='Debug'",
-                        rawValue: "Vendor.Reporting",
-                        resolvedPath: "Packages/Vendor.Reporting.dpk",
+                        rawValue: packageName,
+                        resolvedPath: `Packages/${packageName}.dpk`,
                       },
                     ],
-                  },
-                ],
+                  })),
                 requiredUnits: [],
                 missingUnits: [],
                 unresolvedUnits: [],
@@ -282,8 +291,12 @@ describe("AnalysisResult interactions", () => {
 
     render(<AnalysisResult />);
 
-    expect(screen.getByText(t("analysisV11.buildDoctor.references"))).toBeTruthy();
+    expect(screen.getAllByText(t("analysisV11.buildDoctor.references")).length).toBe(packageResolutions.length);
     expect(screen.getByText(/Build\/App\.dproj:12 \| Vendor\.Reporting \| '\$\(Config\)'=='Debug' \| Packages\/Vendor\.Reporting\.dpk/)).toBeTruthy();
+    for (const [, resolution] of packageResolutions) {
+      expect(screen.getByText(t(`labels.packageResolution.${resolution}`))).toBeTruthy();
+      expect(screen.queryByText(resolution)).toBeNull();
+    }
   });
 
   it("renders history loading, empty, and error states", () => {
@@ -527,5 +540,40 @@ describe("AnalysisResult interactions", () => {
     expect(setters.setFlowTraceTable).toHaveBeenCalled();
     expect(setters.setFlowTracePage).toHaveBeenCalledWith(1);
     expect(setters.resetFlowTraceFilters).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies Flow status, operation, and confidence filters while resetting pagination", async () => {
+    const user = userEvent.setup();
+    const setters = {
+      setFlowTraceStatus: vi.fn(),
+      setFlowTraceOperation: vi.fn(),
+      setFlowTraceConfidence: vi.fn(),
+      setFlowTracePage: vi.fn(),
+    };
+    useAnalysisResultModelMock.mockReturnValue(
+      createModel({
+        activeTab: "flow",
+        flowTracePage: 3,
+        flowTraceSummaryQuery: { data: null, error: null, isLoading: false },
+        flowTracesQuery: { data: { items: [], total: 0, page: 3, pageCount: 3 }, error: null, isLoading: false },
+        ...setters,
+      })
+    );
+
+    render(<AnalysisResult />);
+
+    const [statusFilter, operationFilter, confidenceFilter] = screen.getAllByRole("combobox");
+    await user.click(statusFilter);
+    await user.click(await screen.findByRole("option", { name: t("analysisV11.flow.partial") }));
+    await user.click(operationFilter);
+    await user.click(await screen.findByRole("option", { name: t("labels.fieldOperation.write") }));
+    await user.click(confidenceFilter);
+    await user.click(await screen.findByRole("option", { name: t("labels.confidenceLevel.low") }));
+
+    expect(setters.setFlowTraceStatus).toHaveBeenCalledWith("partial");
+    expect(setters.setFlowTraceOperation).toHaveBeenCalledWith("write");
+    expect(setters.setFlowTraceConfidence).toHaveBeenCalledWith("low");
+    expect(setters.setFlowTracePage).toHaveBeenCalledWith(1);
+    expect(setters.setFlowTracePage).toHaveBeenCalledTimes(3);
   });
 });

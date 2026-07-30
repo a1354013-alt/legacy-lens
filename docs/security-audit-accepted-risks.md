@@ -1,6 +1,6 @@
 # Security Audit Accepted Risks
 
-Last reviewed: 2026-07-28
+Last reviewed: 2026-07-29
 
 `pnpm audit --audit-level high` passes for the current v1.1.0-rc2 lockfile.
 

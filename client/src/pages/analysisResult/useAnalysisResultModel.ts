@@ -253,14 +253,14 @@ export function useAnalysisResultModel(projectId: number) {
   );
 
   const flowTraceSummaryQuery = trpc.analysis.getFlowTraceSummary.useQuery(
-    { projectId, runId: inspectedHistoricalRunId },
+    { projectId, ...(inspectedHistoricalRunId ? { runId: inspectedHistoricalRunId } : {}) },
     { enabled: Number.isFinite(projectId) && activeTab === "flow" }
   );
 
   const flowTracesQuery = trpc.analysis.getFlowTracesPage.useQuery(
     {
       projectId,
-      runId: inspectedHistoricalRunId,
+      ...(inspectedHistoricalRunId ? { runId: inspectedHistoricalRunId } : {}),
       page: flowTracePage,
       pageSize: RESULT_LIST_PAGE_SIZE,
       search: flowTraceSearch || undefined,
