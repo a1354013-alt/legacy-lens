@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { AppError } from "../appError";
-import { sendAppErrorResponse, sendHttpErrorResponse } from "../httpApiErrors";
+import { sendAppErrorResponse, sendHttpErrorResponse, sendUnexpectedHttpErrorResponse } from "../httpApiErrors";
 import { buildAnalysisDiffArchiveBuffer, buildReportArchiveBuffer } from "../services/projectWorkflow";
 import { createRateLimiter } from "./rateLimiter";
 import { sdk } from "./sdk";
@@ -44,8 +44,11 @@ export function registerReportDownloadRoute(app: Express) {
         return;
       }
 
-      const message = error instanceof Error ? error.message : "Report download failed.";
-      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", message);
+      sendUnexpectedHttpErrorResponse(res, error, {
+        action: "report.download.route",
+        fallbackMessage: "Report download failed.",
+        extra: { projectId, runId: runIdValue ?? null },
+      });
     }
   });
 
@@ -79,8 +82,11 @@ export function registerReportDownloadRoute(app: Express) {
         return;
       }
 
-      const message = error instanceof Error ? error.message : "Analysis diff download failed.";
-      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", message);
+      sendUnexpectedHttpErrorResponse(res, error, {
+        action: "analysis.diff.download.route",
+        fallbackMessage: "Analysis diff download failed.",
+        extra: { projectId, baseRunId, compareRunId },
+      });
     }
   });
 }

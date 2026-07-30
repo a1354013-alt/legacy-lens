@@ -348,14 +348,6 @@ export async function getOwnedProject(projectId: number, userId: number) {
   return getOwnedProjectWithHandle(db, projectId, userId);
 }
 
-async function replaceAnalysisResult(db: DbHandle, projectId: number, values: Omit<typeof analysisResults.$inferInsert, "projectId">) {
-  await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
-  await db.insert(analysisResults).values({
-    projectId,
-    ...values,
-  });
-}
-
 async function getExistingUsableAnalysisResult(db: DbHandle, projectId: number) {
   return getLatestUsableCurrentSourceRun(db, projectId);
 }
@@ -634,6 +626,31 @@ export function stopProjectJobWorkerPolling() {
 
   clearInterval(projectJobWorkerPollTimer);
   projectJobWorkerPollTimer = null;
+}
+
+export async function waitForProjectJobWorkerIdle(timeoutMs = 10_000) {
+  const loop = projectJobWorkerLoop;
+  if (!loop) {
+    return true;
+  }
+
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    await Promise.race([
+      loop,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Project job worker did not become idle within ${timeoutMs}ms.`)), timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function compareProjectJobClaimOrder(left: Pick<ProjectJobRow, "createdAt" | "id">, right: Pick<ProjectJobRow, "createdAt" | "id">) {
@@ -1772,7 +1789,6 @@ function getProjectAnalysisRunnerDeps(): ProjectAnalysisRunnerDeps {
     buildImportWarningSummaryWarnings,
     makeAnalysisPartialResultPersistable,
     recalculateAnalysisResultConfidence,
-    replaceAnalysisResult,
     getAnalysisResultErrorMessage,
     throwAnalysisPersistError,
     insertInChunks,

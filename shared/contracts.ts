@@ -31,6 +31,9 @@ export const ruleTypes = ["validation", "format", "magic_value", "calculation"] 
 
 export const focusLanguageDescription =
   "Primary report focus language. Legacy Lens still scans other supported languages to build cross-file and cross-language relationships.";
+export const PROJECT_NAME_MAX_LENGTH = 255;
+export const PROJECT_DESCRIPTION_MAX_LENGTH = 2_000;
+export const GIT_URL_MAX_LENGTH = 2_048;
 
 export const focusLanguageSchema = z.enum(focusLanguages).describe(focusLanguageDescription);
 export const projectSourceTypeSchema = z.enum(projectSourceTypes);
@@ -73,6 +76,23 @@ export const importUploadResponseSchema = z.object({
 });
 
 export type ImportUploadResponse = z.infer<typeof importUploadResponseSchema>;
+
+export const projectNameInputSchema = z.string().trim().min(1, "Project name is required.").max(PROJECT_NAME_MAX_LENGTH);
+export const projectDescriptionInputSchema = z.string().trim().max(PROJECT_DESCRIPTION_MAX_LENGTH);
+export const gitUrlInputSchema = z.string().trim().min(1, "Git URL is required.").max(GIT_URL_MAX_LENGTH);
+
+export const projectCreateInputSchema = z.object({
+  name: projectNameInputSchema,
+  focusLanguage: focusLanguageSchema,
+  sourceType: projectSourceTypeSchema,
+  description: projectDescriptionInputSchema.optional(),
+});
+export type ProjectCreateInput = z.infer<typeof projectCreateInputSchema>;
+
+export const projectImportRequestSchema = projectCreateInputSchema.extend({
+  gitUrl: gitUrlInputSchema.optional(),
+});
+export type ProjectImportRequest = z.infer<typeof projectImportRequestSchema>;
 
 export const importWarningSchema = z.object({
   code: z.string(),
@@ -454,6 +474,7 @@ export const appErrorCodes = [
   "EMPTY_SOURCE",
   "ZIP_INVALID",
   "ZIP_UNSAFE_PATH",
+  "ZIP_DUPLICATE_PATH",
   "IMPORT_FAILED",
   "ANALYSIS_FAILED",
   "ANALYSIS_PARSE_FAILED",

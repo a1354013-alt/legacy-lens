@@ -3,11 +3,12 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_ZIP_RAW_BYTES, UNAUTHED_ERR_MSG } from "@shared/const";
-import { focusLanguageSchema, importUploadResponseSchema, projectSourceTypeSchema } from "@shared/contracts";
+import { gitUrlInputSchema, importUploadResponseSchema, projectImportRequestSchema } from "@shared/contracts";
 import type { Express, NextFunction, Request, Response } from "express";
 import multer from "multer";
+import { ZodError } from "zod";
 import { AppError } from "../appError";
-import { sendAppErrorResponse, sendHttpErrorResponse } from "../httpApiErrors";
+import { sendAppErrorResponse, sendHttpErrorResponse, sendUnexpectedHttpErrorResponse } from "../httpApiErrors";
 import { parsePositiveIntEnv } from "../_core/env";
 import { sdk } from "../_core/sdk";
 import { logger } from "../_core/logger";
@@ -204,17 +205,15 @@ export function registerProjectUploadRoute(app: Express) {
     }
 
     try {
-      const name = getRequiredBodyString(req, "name");
-      if (!name) {
-        await cleanupUploadedFile(file);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Project name is required.");
-        return;
-      }
-
-      const focusLanguage = focusLanguageSchema.parse(getRequiredBodyString(req, "focusLanguage"));
-      const sourceType = projectSourceTypeSchema.parse(getRequiredBodyString(req, "sourceType"));
-      const description = getOptionalBodyString(req, "description");
-      const gitUrl = getRequiredBodyString(req, "gitUrl");
+      const parsed = projectImportRequestSchema.parse({
+        name: getRequiredBodyString(req, "name"),
+        focusLanguage: getRequiredBodyString(req, "focusLanguage"),
+        sourceType: getRequiredBodyString(req, "sourceType"),
+        description: getOptionalBodyString(req, "description"),
+        gitUrl: getOptionalBodyString(req, "gitUrl"),
+      });
+      const { name, focusLanguage, sourceType, description } = parsed;
+      const gitUrl = parsed.gitUrl ?? "";
 
       if (sourceType === "upload" && !file) {
         sendHttpErrorResponse(res, 400, "BAD_REQUEST", "ZIP file is required for upload imports.");
@@ -259,7 +258,14 @@ export function registerProjectUploadRoute(app: Express) {
         sendAppErrorResponse(res, caughtError);
         return;
       }
-      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", "Import failed unexpectedly. Please try again later.");
+      if (caughtError instanceof ZodError) {
+        sendValidationError(res, caughtError);
+        return;
+      }
+      sendUnexpectedHttpErrorResponse(res, caughtError, {
+        action: "project.import.route",
+        fallbackMessage: "Import failed unexpectedly. Please try again later.",
+      });
     }
   });
 
@@ -303,7 +309,10 @@ export function registerProjectUploadRoute(app: Express) {
         return;
       }
 
-      const gitUrl = typeof req.body.gitUrl === "string" ? req.body.gitUrl.trim() : "";
+      const gitUrl = getOptionalBodyString(req, "gitUrl");
+      if (gitUrl) {
+        gitUrlInputSchema.parse(gitUrl);
+      }
 
       if ((file ? 1 : 0) + (gitUrl ? 1 : 0) !== 1) {
         await cleanupUploadedFile(file);
@@ -314,6 +323,11 @@ export function registerProjectUploadRoute(app: Express) {
       if (file) {
         const job = await queueImportProjectZipFromTempFile(projectId, user.id, file.path, file.originalname);
         res.json({ jobId: job.jobId, jobType: "import_zip" as const });
+        return;
+      }
+
+      if (!gitUrl) {
+        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Git URL is required for Git imports.");
         return;
       }
 
@@ -334,7 +348,14 @@ export function registerProjectUploadRoute(app: Express) {
         sendAppErrorResponse(res, caughtError);
         return;
       }
-      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", errorToSend);
+      if (caughtError instanceof ZodError) {
+        sendValidationError(res, caughtError);
+        return;
+      }
+      sendUnexpectedHttpErrorResponse(res, caughtError, {
+        action: "project.upload.route",
+        extra: { projectId: Number.isInteger(projectId) ? projectId : null },
+      });
     }
   });
 }
@@ -347,4 +368,9 @@ function getRequiredBodyString(req: Request, key: string) {
 function getOptionalBodyString(req: Request, key: string) {
   const value = getRequiredBodyString(req, key);
   return value.length > 0 ? value : undefined;
+}
+
+function sendValidationError(res: Response, error: ZodError) {
+  const message = error.issues[0]?.message ?? "Invalid request.";
+  sendHttpErrorResponse(res, 400, "BAD_REQUEST", message);
 }

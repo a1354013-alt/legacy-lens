@@ -440,12 +440,12 @@ describe("appRouter integration", () => {
   it("lists only the current user's projects and jobs", async () => {
     const { appRouter } = await import("./routers");
     fakeDb.store.projects.push(
-      { id: 1, userId: 7, name: "owned-a", language: "go", sourceType: "upload", status: "completed" },
+      { id: 1, userId: 7, name: "owned-a", language: "go", sourceType: "upload", status: "completed", sourceFingerprint: "owned-a-source" },
       { id: 2, userId: 7, name: "owned-b", language: "sql", sourceType: "git", status: "ready" },
       { id: 3, userId: 99, name: "other-user", language: "go", sourceType: "upload", status: "completed" }
     );
     fakeDb.store.analysisResults.push(
-      { id: 1, projectId: 1, status: "partial" },
+      { id: 1, projectId: 1, status: "partial", sourceFingerprint: "owned-a-source" },
       { id: 2, projectId: 3, status: "completed" }
     );
     fakeDb.store.projectJobs.push(
@@ -464,6 +464,47 @@ describe("appRouter integration", () => {
     expect(projects.some((project) => project.id === 3)).toBe(false);
   });
 
+  it("uses deterministic current-source analysis status for project list and getById", async () => {
+    const { appRouter } = await import("./routers");
+    const createdAt = (day: number) => new Date(`2026-01-${String(day).padStart(2, "0")}T00:00:00.000Z`);
+    fakeDb.store.projects.push(
+      { id: 1, userId: 7, name: "multi-run", language: "go", sourceType: "upload", status: "completed", sourceFingerprint: "fp-a", importWarningsJson: [] },
+      { id: 2, userId: 7, name: "newer-completed", language: "go", sourceType: "upload", status: "completed", sourceFingerprint: "fp-b", importWarningsJson: [] },
+      { id: 3, userId: 7, name: "newer-failed-retains-usable", language: "go", sourceType: "upload", status: "failed", sourceFingerprint: "fp-c", importWarningsJson: [] },
+      { id: 4, userId: 7, name: "outdated-source", language: "go", sourceType: "upload", status: "ready", sourceFingerprint: "fp-current", importWarningsJson: [] },
+      { id: 5, userId: 7, name: "no-usable-current", language: "go", sourceType: "upload", status: "failed", sourceFingerprint: "fp-e", importWarningsJson: [] },
+      { id: 6, userId: 7, name: "row-order-proof", language: "go", sourceType: "upload", status: "completed", sourceFingerprint: "fp-f", importWarningsJson: [] }
+    );
+    fakeDb.store.analysisResults.push(
+      { id: 100, projectId: 1, runNumber: 1, status: "completed", sourceFingerprint: "fp-a", createdAt: createdAt(1) },
+      { id: 101, projectId: 1, runNumber: 3, status: "partial", sourceFingerprint: "fp-a", createdAt: createdAt(3) },
+      { id: 200, projectId: 2, runNumber: 1, status: "completed", sourceFingerprint: "fp-b", createdAt: createdAt(1) },
+      { id: 201, projectId: 2, runNumber: 2, status: "completed_with_warnings", sourceFingerprint: "fp-b", createdAt: createdAt(2) },
+      { id: 301, projectId: 3, runNumber: 2, status: "failed", sourceFingerprint: "fp-c", createdAt: createdAt(3) },
+      { id: 300, projectId: 3, runNumber: 1, status: "completed", sourceFingerprint: "fp-c", createdAt: createdAt(1) },
+      { id: 400, projectId: 4, runNumber: 5, status: "completed", sourceFingerprint: "fp-old", createdAt: createdAt(5) },
+      { id: 500, projectId: 5, runNumber: 1, status: "failed", sourceFingerprint: "fp-e", createdAt: createdAt(1) },
+      { id: 601, projectId: 6, runNumber: 1, status: "completed", sourceFingerprint: "fp-f", createdAt: createdAt(1) },
+      { id: 600, projectId: 6, runNumber: 2, status: "partial", sourceFingerprint: "fp-f", createdAt: createdAt(2) }
+    );
+
+    const caller = appRouter.createCaller(createContext());
+    const list = await caller.projects.list();
+    const byId = new Map(list.map((project) => [project.id, project.analysisStatus]));
+
+    expect(byId.get(1)).toBe("partial");
+    expect(byId.get(2)).toBe("completed_with_warnings");
+    expect(byId.get(3)).toBe("completed");
+    expect(byId.get(4)).toBe("pending");
+    expect(byId.get(5)).toBe("failed");
+    expect(byId.get(6)).toBe("partial");
+
+    for (const projectId of [1, 2, 3, 4, 5, 6]) {
+      const project = await caller.projects.getById(projectId);
+      expect(project?.analysisStatus).toBe(byId.get(projectId));
+    }
+  });
+
   it("rejects oversized page sizes through the shared zod contract", async () => {
     const { appRouter } = await import("./routers");
     fakeDb.store.projects.push({ id: 1, userId: 7, name: "owned-a", language: "go", sourceType: "upload", status: "completed" });
@@ -476,6 +517,29 @@ describe("appRouter integration", () => {
         pageSize: 101,
       })
     ).rejects.toThrow(/100/);
+  });
+
+  it("validates project creation boundaries through the shared input schema", async () => {
+    const { appRouter } = await import("./routers");
+    const caller = appRouter.createCaller(createContext());
+
+    await expect(caller.projects.create({ name: "   ", focusLanguage: "go", sourceType: "upload" })).rejects.toThrow(/Project name is required/);
+    await expect(caller.projects.create({ name: "x".repeat(256), focusLanguage: "go", sourceType: "upload" })).rejects.toThrow(/255/);
+    await expect(
+      caller.projects.create({ name: "valid", focusLanguage: "go", sourceType: "upload", description: "x".repeat(2001) })
+    ).rejects.toThrow(/2000/);
+
+    const created = await caller.projects.create({
+      name: `  ${"x".repeat(255)}  `,
+      focusLanguage: "go",
+      sourceType: "upload",
+      description: `  ${"d".repeat(2000)}  `,
+    });
+    expect(created.projectId).toBe(1);
+    expect(fakeDb.store.projects[0]).toMatchObject({
+      name: "x".repeat(255),
+      description: "d".repeat(2000),
+    });
   });
 
   it("blocks project deletion while an active job still exists", async () => {

@@ -1,6 +1,6 @@
 import "dotenv/config";
 import express from "express";
-import { createServer } from "http";
+import { createServer, type Server } from "http";
 import net from "net";
 import { JSON_UPLOAD_BODY_LIMIT_BYTES } from "@shared/const";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -20,6 +20,7 @@ import {
   recoverStaleProjectJobsOnStartup,
   startProjectJobWorkerPolling,
   stopProjectJobWorkerPolling,
+  waitForProjectJobWorkerIdle,
 } from "../services/projectWorkflow";
 import { registerProjectUploadRoute } from "../services/projectUploadRoute";
 
@@ -43,16 +44,85 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-async function gracefulShutdown(signal: string) {
-  logger.info("Server shutdown requested", { action: "server.shutdown.start", status: "ok", signal });
+function closeHttpServer(server: Server) {
+  return new Promise<void>((resolve, reject) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
 
-  stopProjectJobWorkerPolling();
+export function createGracefulShutdown(server: Server, options: {
+  timeoutMs?: number;
+  exitProcess?: (code: number) => never;
+  closeDatabase?: () => Promise<void>;
+  stopWorkerPolling?: () => void;
+  waitForWorkerIdle?: (timeoutMs: number) => Promise<boolean>;
+} = {}) {
+  let shutdownPromise: Promise<void> | null = null;
+  const timeoutMs = options.timeoutMs ?? parsePositiveIntEnv("GRACEFUL_SHUTDOWN_TIMEOUT_MS", 10_000);
+  const exitProcess = options.exitProcess ?? ((code: number): never => process.exit(code));
+  const closeDatabase = options.closeDatabase ?? closeDb;
+  const stopWorkerPolling = options.stopWorkerPolling ?? stopProjectJobWorkerPolling;
+  const waitForWorkerIdle = options.waitForWorkerIdle ?? waitForProjectJobWorkerIdle;
 
-  // Close database connections
-  await closeDb();
-  
-  logger.info("Server shutdown completed", { action: "server.shutdown.complete", status: "ok", signal });
-  process.exit(0);
+  return (signal: string) => {
+    if (shutdownPromise) {
+      logger.warn("Server shutdown already in progress", { action: "server.shutdown.duplicate", status: "ok", signal });
+      return shutdownPromise;
+    }
+
+    shutdownPromise = (async () => {
+      let forced = false;
+      let timeout: NodeJS.Timeout | null = null;
+      try {
+        logger.info("Server shutdown requested", { action: "server.shutdown.start", status: "ok", signal, timeoutMs });
+        stopWorkerPolling();
+        const timedOut = new Promise<"timeout">((resolve) => {
+          timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+          timeout.unref?.();
+        });
+        const cleanup = (async () => {
+          await closeHttpServer(server);
+          const workerIdle = await waitForWorkerIdle(timeoutMs);
+          if (!workerIdle) {
+            logger.warn("Project job worker did not become idle before shutdown timeout", {
+              action: "server.shutdown.worker_timeout",
+              status: "error",
+              signal,
+            });
+          }
+          await closeDatabase();
+          return "clean" as const;
+        })();
+
+        forced = (await Promise.race([cleanup, timedOut])) === "timeout";
+        if (forced) {
+          logger.error("Server shutdown forced after timeout", { action: "server.shutdown.timeout", status: "error", signal, timeoutMs });
+        } else {
+          logger.info("Server shutdown completed", { action: "server.shutdown.complete", status: "ok", signal });
+        }
+      } catch (error) {
+        forced = true;
+        logger.error("Server shutdown failed", {
+          action: "server.shutdown.failed",
+          status: "error",
+          signal,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+      }
+      exitProcess(forced ? 1 : 0);
+    })();
+
+    return shutdownPromise;
+  };
 }
 
 async function startServer() {
@@ -146,12 +216,16 @@ async function startServer() {
 
   startProjectJobWorkerPolling();
 
-  // Graceful shutdown handlers
-  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  const gracefulShutdown = createGracefulShutdown(server);
+  process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 }
 
-startServer().catch((error) => {
-  logger.error("Failed to start server", { error: error instanceof Error ? error.message : String(error) });
-  process.exit(1);
-});
+export { startServer };
+
+if (!process.env.VITEST) {
+  startServer().catch((error) => {
+    logger.error("Failed to start server", { error: error instanceof Error ? error.message : String(error) });
+    process.exit(1);
+  });
+}

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_ZIP_RAW_BYTES } from "../../shared/const";
+import { GIT_URL_MAX_LENGTH, PROJECT_DESCRIPTION_MAX_LENGTH, PROJECT_NAME_MAX_LENGTH } from "../../shared/contracts";
 import { AppError } from "../appError";
 import {
   cleanupExpiredUploadTempFiles,
@@ -187,6 +188,69 @@ describe("projectUploadRoute", () => {
     });
   });
 
+  it("validates atomic import project fields before job creation", async () => {
+    const { createProjectWithQueuedGitImport, createProjectWithQueuedZipImport } = await import("./projectWorkflow");
+
+    await withUploadServer(async (baseUrl) => {
+      const emptyName = new FormData();
+      emptyName.append("name", "   ");
+      emptyName.append("focusLanguage", "go");
+      emptyName.append("sourceType", "git");
+      emptyName.append("gitUrl", "https://example.com/org/repo.git");
+
+      const longName = new FormData();
+      longName.append("name", "x".repeat(PROJECT_NAME_MAX_LENGTH + 1));
+      longName.append("focusLanguage", "go");
+      longName.append("sourceType", "git");
+      longName.append("gitUrl", "https://example.com/org/repo.git");
+
+      const longDescription = new FormData();
+      longDescription.append("name", "valid");
+      longDescription.append("description", "d".repeat(PROJECT_DESCRIPTION_MAX_LENGTH + 1));
+      longDescription.append("focusLanguage", "go");
+      longDescription.append("sourceType", "git");
+      longDescription.append("gitUrl", "https://example.com/org/repo.git");
+
+      const longGitUrl = new FormData();
+      longGitUrl.append("name", "valid");
+      longGitUrl.append("focusLanguage", "go");
+      longGitUrl.append("sourceType", "git");
+      longGitUrl.append("gitUrl", `https://example.com/${"a".repeat(GIT_URL_MAX_LENGTH)}.git`);
+
+      for (const formData of [emptyName, longName, longDescription, longGitUrl]) {
+        const response = await fetch(`${baseUrl}/api/projects/import`, { method: "POST", body: formData });
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({ code: "BAD_REQUEST" });
+      }
+    });
+
+    expect(vi.mocked(createProjectWithQueuedGitImport)).not.toHaveBeenCalled();
+    expect(vi.mocked(createProjectWithQueuedZipImport)).not.toHaveBeenCalled();
+  });
+
+  it("accepts maximum-length trimmed atomic import values", async () => {
+    const { createProjectWithQueuedGitImport } = await import("./projectWorkflow");
+    const gitUrl = `https://example.com/${"a".repeat(GIT_URL_MAX_LENGTH - "https://example.com/.git".length)}.git`;
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("name", `  ${"x".repeat(PROJECT_NAME_MAX_LENGTH)}  `);
+      formData.append("description", `  ${"d".repeat(PROJECT_DESCRIPTION_MAX_LENGTH)}  `);
+      formData.append("focusLanguage", "go");
+      formData.append("sourceType", "git");
+      formData.append("gitUrl", `  ${gitUrl}  `);
+
+      const response = await fetch(`${baseUrl}/api/projects/import`, { method: "POST", body: formData });
+
+      expect(response.status).toBe(200);
+      expect(vi.mocked(createProjectWithQueuedGitImport)).toHaveBeenCalledWith(
+        7,
+        { name: "x".repeat(PROJECT_NAME_MAX_LENGTH), description: "d".repeat(PROJECT_DESCRIPTION_MAX_LENGTH), focusLanguage: "go", sourceType: "git" },
+        gitUrl
+      );
+    });
+  });
+
   it("preserves AppError responses from atomic import job creation", async () => {
     const { createProjectWithQueuedGitImport } = await import("./projectWorkflow");
     vi.mocked(createProjectWithQueuedGitImport).mockRejectedValueOnce(
@@ -214,7 +278,7 @@ describe("projectUploadRoute", () => {
     });
   });
 
-  it("returns a generic 500 response for unknown atomic import errors", async () => {
+  it("keeps unknown atomic import details in non-production for debugging", async () => {
     const { createProjectWithQueuedZipImport } = await import("./projectWorkflow");
     vi.mocked(createProjectWithQueuedZipImport).mockRejectedValueOnce(
       new Error("SQL connection failed for mysql://internal.example.local")
@@ -236,10 +300,8 @@ describe("projectUploadRoute", () => {
       expect(response.status).toBe(500);
       expect(body).toMatchObject({
         code: "INTERNAL_SERVER_ERROR",
-        message: "Import failed unexpectedly. Please try again later.",
+        message: "SQL connection failed for mysql://internal.example.local",
       });
-      expect(JSON.stringify(body)).not.toContain("mysql://internal.example.local");
-      expect(JSON.stringify(body)).not.toContain("SQL connection failed");
     });
   });
 
@@ -386,6 +448,39 @@ describe("projectUploadRoute", () => {
     await expectFileMissing(lastTempFilePath!);
   });
 
+  it("redacts unexpected project upload failures in production", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    const { queueImportProjectZipFromTempFile } = await import("./projectWorkflow");
+    vi.mocked(queueImportProjectZipFromTempFile).mockImplementationOnce(async (_projectId, _userId, tempFilePath) => {
+      lastTempFilePath = tempFilePath;
+      throw new Error("SQL connection failed for C:/internal/.env");
+    });
+
+    try {
+      await withUploadServer(async (baseUrl) => {
+        const formData = new FormData();
+        formData.append("file", new Blob(["zip-bytes"], { type: "application/zip" }), "project.zip");
+
+        const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+          method: "POST",
+          body: formData,
+        });
+        const body = await response.json();
+
+        expect(response.status).toBe(500);
+        expect(body).toMatchObject({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Internal server error",
+        });
+        expect(JSON.stringify(body)).not.toContain("SQL connection");
+        expect(JSON.stringify(body)).not.toContain("C:/internal");
+      });
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
   it("rejects invalid Git import URLs with a 400 response", async () => {
     const { queueImportProjectGit } = await import("./projectWorkflow");
     vi.mocked(queueImportProjectGit).mockRejectedValueOnce(new AppError("INVALID_GIT_URL", "Git URL is not allowed."));
@@ -405,6 +500,25 @@ describe("projectUploadRoute", () => {
         error: "Git URL is not allowed.",
       });
     });
+  });
+
+  it("rejects over-limit Git upload URLs before queueing re-import", async () => {
+    const { queueImportProjectGit } = await import("./projectWorkflow");
+
+    await withUploadServer(async (baseUrl) => {
+      const formData = new FormData();
+      formData.append("gitUrl", `https://example.com/${"a".repeat(GIT_URL_MAX_LENGTH)}.git`);
+
+      const response = await fetch(`${baseUrl}/api/projects/42/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ code: "BAD_REQUEST" });
+    });
+
+    expect(vi.mocked(queueImportProjectGit)).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the project already has an active job", async () => {

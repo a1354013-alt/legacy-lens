@@ -203,4 +203,33 @@ describe("reportRoute", () => {
       });
     });
   });
+
+  it("redacts unexpected report and diff failures in production", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    const { buildReportArchiveBuffer, buildAnalysisDiffArchiveBuffer } = await import("../services/projectWorkflow");
+    vi.mocked(buildReportArchiveBuffer).mockRejectedValueOnce(new Error("SQL password leaked from C:/secrets/.env"));
+    vi.mocked(buildAnalysisDiffArchiveBuffer).mockRejectedValueOnce(new Error("driver failed for mysql://internal/db"));
+
+    try {
+      await withReportServer(async (baseUrl) => {
+        const report = await fetch(`${baseUrl}/api/projects/42/report.zip`);
+        const diff = await fetch(`${baseUrl}/api/projects/42/analysis-diff.zip?baseRunId=1&compareRunId=2`);
+
+        for (const response of [report, diff]) {
+          expect(response.status).toBe(500);
+          const body = await response.json();
+          expect(body).toMatchObject({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Internal server error",
+          });
+          expect(JSON.stringify(body)).not.toContain("SQL password");
+          expect(JSON.stringify(body)).not.toContain("mysql://internal");
+          expect(JSON.stringify(body)).not.toContain("C:/secrets");
+        }
+      });
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
 });
