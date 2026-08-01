@@ -2,22 +2,67 @@ import { z } from "zod";
 
 export const focusLanguages = ["go", "delphi", "sql"] as const;
 export const projectSourceTypes = ["upload", "git"] as const;
-export const projectStatuses = ["draft", "importing", "ready", "analyzing", "completed", "failed"] as const;
+export const projectStatuses = [
+  "draft",
+  "importing",
+  "ready",
+  "analyzing",
+  "completed",
+  "failed",
+] as const;
 export const fileStatuses = ["stored", "failed"] as const;
-export const analysisStatuses = ["pending", "processing", "completed", "completed_with_warnings", "partial", "failed"] as const;
+export const analysisStatuses = [
+  "pending",
+  "processing",
+  "completed",
+  "completed_with_warnings",
+  "partial",
+  "failed",
+] as const;
 export const reportFormats = ["zip"] as const;
 export const projectJobTypes = ["import_zip", "import_git", "analyze"] as const;
-export const projectJobStatuses = ["queued", "running", "completed", "failed"] as const;
+export const projectJobStatuses = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+] as const;
 export const analysisWarningLevels = ["note", "warning", "error"] as const;
-export const symbolKinds = ["function", "procedure", "method", "query", "table", "class"] as const;
-export const dependencyKinds = ["calls", "reads", "writes", "references"] as const;
-export const dependencyTargetKinds = ["internal", "external", "unresolved"] as const;
-export const dependencyTargetKindDescriptions: Record<(typeof dependencyTargetKinds)[number], string> = {
-  internal: "Project-local symbol, file, function, component, table, or query that Legacy Lens could resolve.",
-  external: "Dependency outside the project with a known source such as a Go package, Delphi system unit, or third-party import.",
-  unresolved: "Dynamic, ambiguous, or unknown reference whose target could not be identified.",
+export const symbolKinds = [
+  "function",
+  "procedure",
+  "method",
+  "query",
+  "table",
+  "class",
+] as const;
+export const dependencyKinds = [
+  "calls",
+  "reads",
+  "writes",
+  "references",
+] as const;
+export const dependencyTargetKinds = [
+  "internal",
+  "external",
+  "unresolved",
+] as const;
+export const dependencyTargetKindDescriptions: Record<
+  (typeof dependencyTargetKinds)[number],
+  string
+> = {
+  internal:
+    "Project-local symbol, file, function, component, table, or query that Legacy Lens could resolve.",
+  external:
+    "Dependency outside the project with a known source such as a Go package, Delphi system unit, or third-party import.",
+  unresolved:
+    "Dynamic, ambiguous, or unknown reference whose target could not be identified.",
 };
-export const fieldDependencyOperationTypes = ["read", "write", "calculate"] as const;
+export const fieldDependencyOperationTypes = [
+  "read",
+  "write",
+  "calculate",
+] as const;
 export const riskSeverities = ["low", "medium", "high", "critical"] as const;
 export const riskTypes = [
   "magic_value",
@@ -27,12 +72,22 @@ export const riskTypes = [
   "inconsistent_logic",
   "other",
 ] as const;
-export const ruleTypes = ["validation", "format", "magic_value", "calculation"] as const;
+export const ruleTypes = [
+  "validation",
+  "format",
+  "magic_value",
+  "calculation",
+] as const;
 
 export const focusLanguageDescription =
   "Primary report focus language. Legacy Lens still scans other supported languages to build cross-file and cross-language relationships.";
+export const PROJECT_NAME_MAX_LENGTH = 255;
+export const PROJECT_DESCRIPTION_MAX_LENGTH = 2_000;
+export const GIT_URL_MAX_LENGTH = 2_048;
 
-export const focusLanguageSchema = z.enum(focusLanguages).describe(focusLanguageDescription);
+export const focusLanguageSchema = z
+  .enum(focusLanguages)
+  .describe(focusLanguageDescription);
 export const projectSourceTypeSchema = z.enum(projectSourceTypes);
 export const projectStatusSchema = z.enum(projectStatuses);
 export const fileStatusSchema = z.enum(fileStatuses);
@@ -44,7 +99,9 @@ export const analysisWarningLevelSchema = z.enum(analysisWarningLevels);
 export const symbolKindSchema = z.enum(symbolKinds);
 export const dependencyKindSchema = z.enum(dependencyKinds);
 export const dependencyTargetKindSchema = z.enum(dependencyTargetKinds);
-export const fieldDependencyOperationTypeSchema = z.enum(fieldDependencyOperationTypes);
+export const fieldDependencyOperationTypeSchema = z.enum(
+  fieldDependencyOperationTypes
+);
 export const riskSeveritySchema = z.enum(riskSeverities);
 export const riskTypeSchema = z.enum(riskTypes);
 export const ruleTypeSchema = z.enum(ruleTypes);
@@ -61,7 +118,9 @@ export type AnalysisWarningLevel = z.infer<typeof analysisWarningLevelSchema>;
 export type SymbolKind = z.infer<typeof symbolKindSchema>;
 export type DependencyKind = z.infer<typeof dependencyKindSchema>;
 export type DependencyTargetKind = z.infer<typeof dependencyTargetKindSchema>;
-export type FieldDependencyOperationType = z.infer<typeof fieldDependencyOperationTypeSchema>;
+export type FieldDependencyOperationType = z.infer<
+  typeof fieldDependencyOperationTypeSchema
+>;
 export type RiskSeverity = z.infer<typeof riskSeveritySchema>;
 export type RiskType = z.infer<typeof riskTypeSchema>;
 export type RuleType = z.infer<typeof ruleTypeSchema>;
@@ -73,6 +132,43 @@ export const importUploadResponseSchema = z.object({
 });
 
 export type ImportUploadResponse = z.infer<typeof importUploadResponseSchema>;
+
+export const projectReimportResponseSchema = z.object({
+  jobId: z.number().int().positive(),
+  jobType: z.enum(["import_zip", "import_git"]),
+});
+
+export type ProjectReimportResponse = z.infer<
+  typeof projectReimportResponseSchema
+>;
+
+export const projectNameInputSchema = z
+  .string()
+  .trim()
+  .min(1, "Project name is required.")
+  .max(PROJECT_NAME_MAX_LENGTH);
+export const projectDescriptionInputSchema = z
+  .string()
+  .trim()
+  .max(PROJECT_DESCRIPTION_MAX_LENGTH);
+export const gitUrlInputSchema = z
+  .string()
+  .trim()
+  .min(1, "Git URL is required.")
+  .max(GIT_URL_MAX_LENGTH);
+
+export const projectCreateInputSchema = z.object({
+  name: projectNameInputSchema,
+  focusLanguage: focusLanguageSchema,
+  sourceType: projectSourceTypeSchema,
+  description: projectDescriptionInputSchema.optional(),
+});
+export type ProjectCreateInput = z.infer<typeof projectCreateInputSchema>;
+
+export const projectImportRequestSchema = projectCreateInputSchema.extend({
+  gitUrl: gitUrlInputSchema.optional(),
+});
+export type ProjectImportRequest = z.infer<typeof projectImportRequestSchema>;
 
 export const importWarningSchema = z.object({
   code: z.string(),
@@ -160,7 +256,12 @@ export const analysisMetricsSchema = z.object({
 export type AnalysisMetrics = z.infer<typeof analysisMetricsSchema>;
 
 export const confidenceLevelSchema = z.enum(["high", "medium", "low"]);
-export const flowOperationSchema = z.enum(["read", "write", "calculate", "unknown"]);
+export const flowOperationSchema = z.enum([
+  "read",
+  "write",
+  "calculate",
+  "unknown",
+]);
 
 export const sqlStatementEvidenceSchema = z.object({
   stableKey: z.string(),
@@ -169,10 +270,28 @@ export const sqlStatementEvidenceSchema = z.object({
   filePath: z.string(),
   startLine: z.number().int().nonnegative(),
   endLine: z.number().int().nonnegative(),
-  operation: z.enum(["select", "insert", "update", "delete", "execute", "unknown"]),
+  operation: z.enum([
+    "select",
+    "insert",
+    "update",
+    "delete",
+    "execute",
+    "unknown",
+  ]),
   normalizedSql: z.string(),
-  tables: z.array(z.object({ name: z.string(), operation: z.enum(["read", "write", "unknown"]) })),
-  fields: z.array(z.object({ table: z.string(), field: z.string(), operation: flowOperationSchema })),
+  tables: z.array(
+    z.object({
+      name: z.string(),
+      operation: z.enum(["read", "write", "unknown"]),
+    })
+  ),
+  fields: z.array(
+    z.object({
+      table: z.string(),
+      field: z.string(),
+      operation: flowOperationSchema,
+    })
+  ),
   dynamic: z.boolean(),
   confidence: confidenceLevelSchema,
   warnings: z.array(z.string()),
@@ -203,7 +322,9 @@ export const delphiPackageResolutionSchema = z.enum([
   "missing",
   "ambiguous",
 ]);
-export type DelphiPackageResolution = z.infer<typeof delphiPackageResolutionSchema>;
+export type DelphiPackageResolution = z.infer<
+  typeof delphiPackageResolutionSchema
+>;
 
 export const delphiPackageResolutionDetailSchema = z.object({
   packageName: z.string(),
@@ -222,7 +343,9 @@ export const delphiPackageResolutionDetailSchema = z.object({
     )
     .optional(),
 });
-export type DelphiPackageResolutionDetail = z.infer<typeof delphiPackageResolutionDetailSchema>;
+export type DelphiPackageResolutionDetail = z.infer<
+  typeof delphiPackageResolutionDetailSchema
+>;
 
 export const delphiBuildDoctorResultSchema = z.object({
   status: z.enum(["not_applicable", "ready", "ready_with_warnings", "blocked"]),
@@ -232,7 +355,14 @@ export const delphiBuildDoctorResultSchema = z.object({
     confidence: confidenceLevelSchema,
     evidence: z.array(z.string()),
   }),
-  projectEntries: z.array(z.object({ path: z.string(), kind: z.string(), lineNumber: z.number().int().positive().nullable(), evidence: z.string() })),
+  projectEntries: z.array(
+    z.object({
+      path: z.string(),
+      kind: z.string(),
+      lineNumber: z.number().int().positive().nullable(),
+      evidence: z.string(),
+    })
+  ),
   configurations: z.array(z.string()),
   platforms: z.array(z.string()),
   defines: z.array(z.string()),
@@ -250,11 +380,24 @@ export const delphiBuildDoctorResultSchema = z.object({
   findings: z.array(delphiBuildFindingSchema),
   limitations: z.array(z.string()),
 });
-export type DelphiBuildDoctorResult = z.infer<typeof delphiBuildDoctorResultSchema>;
+export type DelphiBuildDoctorResult = z.infer<
+  typeof delphiBuildDoctorResultSchema
+>;
 
 export const delphiFlowStepSchema = z.object({
   id: z.string(),
-  type: z.enum(["ui_component", "data_binding", "event", "handler", "method", "call", "sql", "table", "field", "warning"]),
+  type: z.enum([
+    "ui_component",
+    "data_binding",
+    "event",
+    "handler",
+    "method",
+    "call",
+    "sql",
+    "table",
+    "field",
+    "warning",
+  ]),
   label: z.string(),
   filePath: z.string().optional(),
   lineNumber: z.number().int().positive().optional(),
@@ -277,7 +420,13 @@ export const delphiFlowTraceSchema = z.object({
   confidence: confidenceLevelSchema,
   steps: z.array(delphiFlowStepSchema),
   affectedTables: z.array(z.string()),
-  affectedFields: z.array(z.object({ table: z.string(), field: z.string(), operation: flowOperationSchema })),
+  affectedFields: z.array(
+    z.object({
+      table: z.string(),
+      field: z.string(),
+      operation: flowOperationSchema,
+    })
+  ),
   warnings: z.array(z.string()),
   truncated: z.boolean(),
 });
@@ -288,7 +437,9 @@ export const delphiFlowTraceRunSummarySchema = z.object({
   persistedTraceCount: z.number().int().nonnegative(),
   globalTruncated: z.boolean(),
 });
-export type DelphiFlowTraceRunSummary = z.infer<typeof delphiFlowTraceRunSummarySchema>;
+export type DelphiFlowTraceRunSummary = z.infer<
+  typeof delphiFlowTraceRunSummarySchema
+>;
 
 export const analysisRunProjectContextSchema = z.object({
   projectName: z.string(),
@@ -296,7 +447,9 @@ export const analysisRunProjectContextSchema = z.object({
   focusLanguage: z.string().nullable(),
   importWarnings: z.array(importWarningSchema),
 });
-export type AnalysisRunProjectContext = z.infer<typeof analysisRunProjectContextSchema>;
+export type AnalysisRunProjectContext = z.infer<
+  typeof analysisRunProjectContextSchema
+>;
 
 const snapshotSymbolSchema = z.object({
   stableKey: z.string(),
@@ -366,12 +519,14 @@ const snapshotRuleSchema = z.object({
 export const analysisRunSnapshotV1Schema = z.object({
   schemaVersion: z.literal(1),
   projectContext: analysisRunProjectContextSchema.optional(),
-  sourceManifest: z.array(z.object({
-    path: z.string(),
-    fileType: z.string().nullable(),
-    lineCount: z.number().int().nonnegative().nullable(),
-    sha256: z.string().length(64),
-  })),
+  sourceManifest: z.array(
+    z.object({
+      path: z.string(),
+      fileType: z.string().nullable(),
+      lineCount: z.number().int().nonnegative().nullable(),
+      sha256: z.string().length(64),
+    })
+  ),
   metrics: analysisMetricsSchema,
   warnings: z.array(analysisWarningSchema),
   symbols: z.array(snapshotSymbolSchema),
@@ -385,11 +540,17 @@ export const analysisRunSnapshotV1Schema = z.object({
   sqlStatements: z.array(sqlStatementEvidenceSchema).default([]),
   buildDoctor: delphiBuildDoctorResultSchema,
   flowTraces: z.array(delphiFlowTraceSchema),
-  flowTraceSummary: delphiFlowTraceRunSummarySchema.default({ candidateTraceCount: 0, persistedTraceCount: 0, globalTruncated: false }),
+  flowTraceSummary: delphiFlowTraceRunSummarySchema.default({
+    candidateTraceCount: 0,
+    persistedTraceCount: 0,
+    globalTruncated: false,
+  }),
 });
 export type AnalysisRunSnapshotV1 = z.infer<typeof analysisRunSnapshotV1Schema>;
 
-export const analysisRunSnapshotSchema = z.discriminatedUnion("schemaVersion", [analysisRunSnapshotV1Schema]);
+export const analysisRunSnapshotSchema = z.discriminatedUnion("schemaVersion", [
+  analysisRunSnapshotV1Schema,
+]);
 export type AnalysisRunSnapshot = z.infer<typeof analysisRunSnapshotSchema>;
 
 const basePagedQuerySchema = z.object({
@@ -437,7 +598,9 @@ export type FieldsPageInput = z.infer<typeof fieldsPageInputSchema>;
 export type RisksPageInput = z.infer<typeof risksPageInputSchema>;
 export type RulesPageInput = z.infer<typeof rulesPageInputSchema>;
 export type DependenciesPageInput = z.infer<typeof dependenciesPageInputSchema>;
-export type FieldDependenciesPageInput = z.infer<typeof fieldDependenciesPageInputSchema>;
+export type FieldDependenciesPageInput = z.infer<
+  typeof fieldDependenciesPageInputSchema
+>;
 
 export const appErrorCodes = [
   "DATABASE_UNAVAILABLE",
@@ -454,6 +617,7 @@ export const appErrorCodes = [
   "EMPTY_SOURCE",
   "ZIP_INVALID",
   "ZIP_UNSAFE_PATH",
+  "ZIP_DUPLICATE_PATH",
   "IMPORT_FAILED",
   "ANALYSIS_FAILED",
   "ANALYSIS_PARSE_FAILED",
@@ -475,7 +639,13 @@ export interface AppErrorShape {
   details?: string;
 }
 
-export const httpApiErrorCodes = [...appErrorCodes, "UNAUTHORIZED", "RATE_LIMITED", "BAD_REQUEST", "INTERNAL_SERVER_ERROR"] as const;
+export const httpApiErrorCodes = [
+  ...appErrorCodes,
+  "UNAUTHORIZED",
+  "RATE_LIMITED",
+  "BAD_REQUEST",
+  "INTERNAL_SERVER_ERROR",
+] as const;
 export const httpApiErrorCodeSchema = z.enum(httpApiErrorCodes);
 export type HttpApiErrorCode = z.infer<typeof httpApiErrorCodeSchema>;
 
@@ -525,7 +695,8 @@ export const statusDescriptions: Record<ProjectStatus, string> = {
   ready: "Import completed and the project is ready for analysis.",
   analyzing: "Analysis job is processing the persisted project snapshot.",
   completed: "Analysis completed and report artifacts are available.",
-  failed: "The latest import or analysis job failed. Review the recorded error and retry.",
+  failed:
+    "The latest import or analysis job failed. Review the recorded error and retry.",
 };
 
 export const projectRecordSummarySchema = z.object({
@@ -589,7 +760,9 @@ export const analysisSnapshotReportSchema = z.object({
   updatedAt: z.date(),
 });
 
-export type AnalysisSnapshotReport = z.infer<typeof analysisSnapshotReportSchema>;
+export type AnalysisSnapshotReport = z.infer<
+  typeof analysisSnapshotReportSchema
+>;
 
 export const analysisRunListInputSchema = z.object({
   projectId: z.number().int().positive(),
@@ -671,7 +844,9 @@ const analysisMetricDeltaKeys = [
 ] as const;
 
 const analysisMetricDeltaSchema = z.object(
-  Object.fromEntries(analysisMetricDeltaKeys.map((key) => [key, z.number()])) as Record<(typeof analysisMetricDeltaKeys)[number], z.ZodNumber>
+  Object.fromEntries(
+    analysisMetricDeltaKeys.map(key => [key, z.number()])
+  ) as Record<(typeof analysisMetricDeltaKeys)[number], z.ZodNumber>
 );
 
 const diffSourceManifestEntrySchema = z.object({
@@ -688,7 +863,9 @@ export const analysisDiffSchema = z.object({
   files: z.object({
     added: diffBucketSchema(diffSourceManifestEntrySchema),
     removed: diffBucketSchema(diffSourceManifestEntrySchema),
-    changed: diffBucketSchema(diffChangedEntrySchema(diffSourceManifestEntrySchema)),
+    changed: diffBucketSchema(
+      diffChangedEntrySchema(diffSourceManifestEntrySchema)
+    ),
   }),
   symbols: z.object({
     added: diffBucketSchema(snapshotSymbolSchema),
@@ -701,12 +878,16 @@ export const analysisDiffSchema = z.object({
   fields: z.object({
     added: diffBucketSchema(snapshotSchemaFieldSchema),
     removed: diffBucketSchema(snapshotSchemaFieldSchema),
-    changed: diffBucketSchema(diffChangedEntrySchema(snapshotSchemaFieldSchema)),
+    changed: diffBucketSchema(
+      diffChangedEntrySchema(snapshotSchemaFieldSchema)
+    ),
   }),
   fieldDependencies: z.object({
     introduced: diffBucketSchema(snapshotFieldReferenceSchema),
     removed: diffBucketSchema(snapshotFieldReferenceSchema),
-    changed: diffBucketSchema(diffChangedEntrySchema(snapshotFieldReferenceSchema)),
+    changed: diffBucketSchema(
+      diffChangedEntrySchema(snapshotFieldReferenceSchema)
+    ),
   }),
   risks: z.object({
     introduced: diffBucketSchema(snapshotRiskSchema),
@@ -721,7 +902,9 @@ export const analysisDiffSchema = z.object({
   delphiEvents: z.object({
     introduced: diffBucketSchema(delphiEventMapEntrySchema),
     removed: diffBucketSchema(delphiEventMapEntrySchema),
-    resolutionChanged: diffBucketSchema(diffChangedEntrySchema(delphiEventMapEntrySchema)),
+    resolutionChanged: diffBucketSchema(
+      diffChangedEntrySchema(delphiEventMapEntrySchema)
+    ),
   }),
   dataBindings: z.object({
     introduced: diffBucketSchema(delphiDataBindingSchema),
@@ -811,7 +994,9 @@ export const analysisFieldTableSummarySchema = z.object({
   referenceCount: z.number().int().nonnegative(),
 });
 
-export type AnalysisFieldTableSummary = z.infer<typeof analysisFieldTableSummarySchema>;
+export type AnalysisFieldTableSummary = z.infer<
+  typeof analysisFieldTableSummarySchema
+>;
 
 export const analysisSnapshotSummarySchema = z.object({
   report: analysisSnapshotReportSchema.nullable(),
@@ -955,7 +1140,9 @@ export const fieldDependencyListItemSchema = z.object({
   context: z.string().nullable(),
 });
 
-export type FieldDependencyListItem = z.infer<typeof fieldDependencyListItemSchema>;
+export type FieldDependencyListItem = z.infer<
+  typeof fieldDependencyListItemSchema
+>;
 
 export const riskListItemSchema = z.object({
   id: z.string(),
@@ -1038,7 +1225,9 @@ export const projectJobCreateResultSchema = z.object({
   status: projectJobStatusSchema,
 });
 
-export type ProjectJobCreateResult = z.infer<typeof projectJobCreateResultSchema>;
+export type ProjectJobCreateResult = z.infer<
+  typeof projectJobCreateResultSchema
+>;
 
 export const reportArchivePayloadSchema = z.object({
   fileName: z.string().min(1),
@@ -1060,19 +1249,26 @@ export function pagedResultSchema<T extends z.ZodTypeAny>(itemSchema: T) {
 
 export const projectsListOutputSchema = z.array(projectRecordSummarySchema);
 export const projectByIdOutputSchema = projectRecordSummarySchema.nullable();
-export const analysisResultOutputSchema = analysisSnapshotReportSchema.nullable();
+export const analysisResultOutputSchema =
+  analysisSnapshotReportSchema.nullable();
 export const analysisSnapshotOutputSchema = analysisSnapshotSummarySchema;
-export const analysisRunsPageOutputSchema = pagedResultSchema(analysisRunSummarySchema);
+export const analysisRunsPageOutputSchema = pagedResultSchema(
+  analysisRunSummarySchema
+);
 export const analysisRunDetailOutputSchema = analysisRunDetailSchema;
 export const analysisDiffOutputSchema = analysisDiffSchema;
-export const flowTracesPageOutputSchema = pagedResultSchema(delphiFlowTraceSchema);
+export const flowTracesPageOutputSchema = pagedResultSchema(
+  delphiFlowTraceSchema
+);
 export const flowTraceOutputSchema = delphiFlowTraceSchema.nullable();
 export const flowTraceSummaryOutputSchema = flowTraceSummarySchema;
 export const symbolsPageOutputSchema = pagedResultSchema(symbolListItemSchema);
 export const fieldsPageOutputSchema = pagedResultSchema(fieldListItemSchema);
 export const risksPageOutputSchema = pagedResultSchema(riskListItemSchema);
 export const rulesPageOutputSchema = pagedResultSchema(ruleListItemSchema);
-export const dependenciesPageOutputSchema = pagedResultSchema(dependencyListItemSchema).extend({
+export const dependenciesPageOutputSchema = pagedResultSchema(
+  dependencyListItemSchema
+).extend({
   summary: z.object({
     internalCount: z.number().int().nonnegative(),
     externalCount: z.number().int().nonnegative(),
@@ -1082,7 +1278,9 @@ export const dependenciesPageOutputSchema = pagedResultSchema(dependencyListItem
     defaultHideStandardLibrary: z.boolean(),
   }),
 });
-export const fieldDependenciesPageOutputSchema = pagedResultSchema(fieldDependencyListItemSchema);
+export const fieldDependenciesPageOutputSchema = pagedResultSchema(
+  fieldDependencyListItemSchema
+);
 export const jobByIdOutputSchema = projectJobSchema;
 export const projectCreateOutputSchema = z.object({
   success: z.literal(true),
@@ -1092,7 +1290,15 @@ export const projectDeleteOutputSchema = z.object({
   success: z.literal(true),
 });
 
-export const impactTargetTypes = ["auto", "symbol", "file", "sql_table", "sql_field", "risk", "rule"] as const;
+export const impactTargetTypes = [
+  "auto",
+  "symbol",
+  "file",
+  "sql_table",
+  "sql_field",
+  "risk",
+  "rule",
+] as const;
 export const impactTargetTypeSchema = z.enum(impactTargetTypes);
 export type ImpactTargetType = z.infer<typeof impactTargetTypeSchema>;
 

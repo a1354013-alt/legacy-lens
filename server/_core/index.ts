@@ -1,6 +1,6 @@
 import "dotenv/config";
 import express from "express";
-import { createServer } from "http";
+import { createServer, type Server } from "http";
 import net from "net";
 import { JSON_UPLOAD_BODY_LIMIT_BYTES } from "@shared/const";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -20,11 +20,12 @@ import {
   recoverStaleProjectJobsOnStartup,
   startProjectJobWorkerPolling,
   stopProjectJobWorkerPolling,
+  waitForProjectJobWorkerIdle,
 } from "../services/projectWorkflow";
 import { registerProjectUploadRoute } from "../services/projectUploadRoute";
 
 function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     const server = net.createServer();
     server.listen(port, () => {
       server.close(() => resolve(true));
@@ -43,35 +44,85 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-async function gracefulShutdown(signal: string) {
-  logger.info("Server shutdown requested", {
-    action: "server.shutdown.start",
-    status: "ok",
-    signal,
+function closeHttpServer(server: Server) {
+  return new Promise<void>((resolve, reject) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close((error) => (error ? reject(error) : resolve()));
   });
+}
 
-  stopProjectJobWorkerPolling();
+export function createGracefulShutdown(server: Server, options: {
+  timeoutMs?: number;
+  exitProcess?: (code: number) => never;
+  closeDatabase?: () => Promise<void>;
+  stopWorkerPolling?: () => void;
+  waitForWorkerIdle?: (timeoutMs: number) => Promise<boolean>;
+} = {}) {
+  let shutdownPromise: Promise<void> | null = null;
+  const timeoutMs = options.timeoutMs ?? parsePositiveIntEnv("GRACEFUL_SHUTDOWN_TIMEOUT_MS", 10_000);
+  const exitProcess = options.exitProcess ?? ((code: number): never => process.exit(code));
+  const closeDatabase = options.closeDatabase ?? closeDb;
+  const stopWorkerPolling = options.stopWorkerPolling ?? stopProjectJobWorkerPolling;
+  const waitForWorkerIdle = options.waitForWorkerIdle ?? waitForProjectJobWorkerIdle;
 
-  const shutdownTimeoutMs = parsePositiveIntEnv(
-    "GRACEFUL_SHUTDOWN_TIMEOUT_MS",
-    10000
-  );
-  await Promise.race([
-    closeDb(),
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Graceful shutdown timed out.")),
-        shutdownTimeoutMs
-      )
-    ),
-  ]);
+  return (signal: string) => {
+    if (shutdownPromise) {
+      logger.warn("Server shutdown already in progress", { action: "server.shutdown.duplicate", status: "ok", signal });
+      return shutdownPromise;
+    }
 
-  logger.info("Server shutdown completed", {
-    action: "server.shutdown.complete",
-    status: "ok",
-    signal,
-  });
-  process.exit(0);
+    shutdownPromise = (async () => {
+      let forced = false;
+      let timeout: NodeJS.Timeout | null = null;
+      try {
+        logger.info("Server shutdown requested", { action: "server.shutdown.start", status: "ok", signal, timeoutMs });
+        stopWorkerPolling();
+        const timedOut = new Promise<"timeout">((resolve) => {
+          timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+          timeout.unref?.();
+        });
+        const cleanup = (async () => {
+          await closeHttpServer(server);
+          const workerIdle = await waitForWorkerIdle(timeoutMs);
+          if (!workerIdle) {
+            logger.warn("Project job worker did not become idle before shutdown timeout", {
+              action: "server.shutdown.worker_timeout",
+              status: "error",
+              signal,
+            });
+          }
+          await closeDatabase();
+          return "clean" as const;
+        })();
+
+        forced = (await Promise.race([cleanup, timedOut])) === "timeout";
+        if (forced) {
+          logger.error("Server shutdown forced after timeout", { action: "server.shutdown.timeout", status: "error", signal, timeoutMs });
+        } else {
+          logger.info("Server shutdown completed", { action: "server.shutdown.complete", status: "ok", signal });
+        }
+      } catch (error) {
+        forced = true;
+        logger.error("Server shutdown failed", {
+          action: "server.shutdown.failed",
+          status: "error",
+          signal,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+      }
+      exitProcess(forced ? 1 : 0);
+    })();
+
+    return shutdownPromise;
+  };
 }
 
 async function startServer() {
@@ -97,9 +148,7 @@ async function startServer() {
 
   // Body parsers with enough headroom for the shared raw ZIP upload limit after base64 encoding.
   app.use(express.json({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES }));
-  app.use(
-    express.urlencoded({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES, extended: true })
-  );
+  app.use(express.urlencoded({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES, extended: true }));
 
   // Logging middleware
   app.use((req, res, next) => {
@@ -132,9 +181,7 @@ async function startServer() {
 
   if (process.env.NODE_ENV === "development") {
     const viteDevModulePath = "./vite-dev";
-    const { setupVite }: typeof import("./vite-dev") = await import(
-      viteDevModulePath
-    );
+    const { setupVite }: typeof import("./vite-dev") = await import(viteDevModulePath);
     await setupVite(app, server);
   } else {
     serveStatic(app);
@@ -149,9 +196,7 @@ async function startServer() {
       logger.info(`Port ${preferredPort} is busy, using port ${port} instead`);
     }
   } else if (!(await isPortAvailable(preferredPort))) {
-    throw new Error(
-      `Port ${preferredPort} is already in use. Set PORT to a different value before starting the server.`
-    );
+    throw new Error(`Port ${preferredPort} is already in use. Set PORT to a different value before starting the server.`);
   }
 
   server.listen(port, () => {
@@ -166,23 +211,21 @@ async function startServer() {
     });
 
     // Log health endpoint availability
-    logger.info("Health endpoints ready", {
-      action: "server.health",
-      status: "ok",
-      port,
-    });
+    logger.info("Health endpoints ready", { action: "server.health", status: "ok", port });
   });
 
   startProjectJobWorkerPolling();
 
-  // Graceful shutdown handlers
-  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  const gracefulShutdown = createGracefulShutdown(server);
+  process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 }
 
-startServer().catch(error => {
-  logger.error("Failed to start server", {
-    error: error instanceof Error ? error.message : String(error),
+export { startServer };
+
+if (!process.env.VITEST) {
+  startServer().catch((error) => {
+    logger.error("Failed to start server", { error: error instanceof Error ? error.message : String(error) });
+    process.exit(1);
   });
-  process.exit(1);
-});
+}

@@ -3,11 +3,21 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_ZIP_RAW_BYTES, UNAUTHED_ERR_MSG } from "@shared/const";
-import { focusLanguageSchema, importUploadResponseSchema, projectSourceTypeSchema } from "@shared/contracts";
+import {
+  gitUrlInputSchema,
+  importUploadResponseSchema,
+  projectImportRequestSchema,
+  projectReimportResponseSchema,
+} from "@shared/contracts";
 import type { Express, NextFunction, Request, Response } from "express";
 import multer from "multer";
+import { ZodError } from "zod";
 import { AppError } from "../appError";
-import { sendAppErrorResponse, sendHttpErrorResponse } from "../httpApiErrors";
+import {
+  sendAppErrorResponse,
+  sendHttpErrorResponse,
+  sendUnexpectedHttpErrorResponse,
+} from "../httpApiErrors";
 import { parsePositiveIntEnv } from "../_core/env";
 import { sdk } from "../_core/sdk";
 import { logger } from "../_core/logger";
@@ -21,8 +31,15 @@ import {
 } from "./projectWorkflow";
 
 export const uploadTempDir = join(tmpdir(), "legacy-lens-upload");
-export const UPLOAD_TEMP_ZIP_TTL_MS = parsePositiveIntEnv("UPLOAD_TEMP_ZIP_TTL_MS", 86400000);
-export const UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS = parsePositiveIntEnv("UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS", 60 * 60 * 1000);
+export const UPLOAD_TEMP_ZIP_TTL_MS = parsePositiveIntEnv(
+  "UPLOAD_TEMP_ZIP_TTL_MS",
+  86400000
+);
+export const UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS = parsePositiveIntEnv(
+  "UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS",
+  60 * 60 * 1000
+);
+const ACTIVE_IMPORT_PATH_LOOKUP_TIMEOUT_MS = 5_000;
 let uploadTempCleanupTimer: NodeJS.Timeout | null = null;
 
 function buildSafeUploadTempFileName() {
@@ -34,14 +51,17 @@ const upload = multer({
     destination: (_req, _file, callback) => {
       void mkdir(uploadTempDir, { recursive: true })
         .then(() => callback(null, uploadTempDir))
-        .catch((error) => callback(error as Error, uploadTempDir));
+        .catch(error => callback(error as Error, uploadTempDir));
     },
     filename: (_req, _file, callback) => {
       callback(null, buildSafeUploadTempFileName());
     },
   }),
   fileFilter: (_req, file, callback) => {
-    if (typeof file.originalname === "string" && file.originalname.toLowerCase().endsWith(".zip")) {
+    if (
+      typeof file.originalname === "string" &&
+      file.originalname.toLowerCase().endsWith(".zip")
+    ) {
       callback(null, true);
       return;
     }
@@ -62,11 +82,32 @@ export async function cleanupExpiredUploadTempFiles(
 ) {
   await mkdir(uploadTempDir, { recursive: true });
   const expiresBefore = now.getTime() - ttlMs;
-  const activeTempPaths = await getActiveImportZipTempFilePaths().catch(() => new Set<string>());
   const entries = await readdir(uploadTempDir, { withFileTypes: true });
+  let protectedCount = 0;
+  let deletedCount = 0;
+  let skippedCount = 0;
+  const scanCount = entries.length;
+  let activeTempPaths: Set<string>;
+
+  try {
+    activeTempPaths = await loadActiveImportZipTempFilePaths();
+  } catch (error) {
+    logger.warn("Upload temp cleanup aborted", {
+      action: "project.upload.temp.cleanup",
+      status: "error",
+      scanCount,
+      protectedCount,
+      deletedCount,
+      skippedCount,
+      aborted: true,
+      abortReason: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
 
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".zip")) {
+      skippedCount += 1;
       continue;
     }
 
@@ -75,15 +116,19 @@ export async function cleanupExpiredUploadTempFiles(
     try {
       const fileStats = await stat(filePath);
       if (fileStats.mtimeMs > expiresBefore) {
+        skippedCount += 1;
         continue;
       }
 
       if (activeTempPaths.has(filePath)) {
+        protectedCount += 1;
         continue;
       }
 
       await removeFile(filePath, { force: true });
+      deletedCount += 1;
     } catch (error) {
+      skippedCount += 1;
       logger.warn("Upload temp file cleanup skipped an entry", {
         action: "project.upload.temp.cleanup",
         status: "error",
@@ -92,6 +137,17 @@ export async function cleanupExpiredUploadTempFiles(
       });
     }
   }
+
+  logger.info("Upload temp cleanup completed", {
+    action: "project.upload.temp.cleanup",
+    status: "ok",
+    scanCount,
+    protectedCount,
+    deletedCount,
+    skippedCount,
+    aborted: false,
+    abortReason: null,
+  });
 }
 
 async function requireAuthenticatedUser(req: Request, res: Response) {
@@ -103,13 +159,15 @@ async function requireAuthenticatedUser(req: Request, res: Response) {
   }
 }
 
-export function startUploadTempFileCleanupInterval(intervalMs = UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS) {
+export function startUploadTempFileCleanupInterval(
+  intervalMs = UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS
+) {
   if (uploadTempCleanupTimer) {
     return uploadTempCleanupTimer;
   }
 
   uploadTempCleanupTimer = setInterval(() => {
-    void cleanupExpiredUploadTempFiles().catch((error) => {
+    void cleanupExpiredUploadTempFiles().catch(error => {
       logger.warn("Upload temp file cleanup failed during scheduled run", {
         action: "project.upload.temp.cleanup.interval",
         status: "error",
@@ -151,7 +209,11 @@ async function runSingleFileUpload(req: Request, res: Response) {
   });
 }
 
-async function authenticateProjectUploadRequest(req: Request, res: Response, next: NextFunction) {
+async function authenticateProjectUploadRequest(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
   const user = await requireAuthenticatedUser(req, res);
   if (!user) {
     return;
@@ -162,7 +224,7 @@ async function authenticateProjectUploadRequest(req: Request, res: Response, nex
 }
 
 export function registerProjectUploadRoute(app: Express) {
-  void cleanupExpiredUploadTempFiles().catch((error) => {
+  void cleanupExpiredUploadTempFiles().catch(error => {
     logger.warn("Upload temp file cleanup failed during startup", {
       action: "project.upload.temp.cleanup.startup",
       status: "error",
@@ -171,172 +233,285 @@ export function registerProjectUploadRoute(app: Express) {
   });
   startUploadTempFileCleanupInterval();
 
-  app.post("/api/projects/import", authenticateProjectUploadRequest, uploadRateLimiter, async (req, res) => {
-    try {
-      await runSingleFileUpload(req, res);
-    } catch (error) {
-      await cleanupUploadedFile(req.file);
+  app.post(
+    "/api/projects/import",
+    authenticateProjectUploadRequest,
+    uploadRateLimiter,
+    async (req, res) => {
+      try {
+        await runSingleFileUpload(req, res);
+      } catch (error) {
+        await cleanupUploadedFile(req.file);
 
-      if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
-        sendHttpErrorResponse(res, 413, "ZIP_INVALID", `ZIP upload exceeds the raw archive limit (${MAX_ZIP_RAW_BYTES} bytes).`);
-        return;
+        if (
+          error instanceof multer.MulterError &&
+          error.code === "LIMIT_FILE_SIZE"
+        ) {
+          sendHttpErrorResponse(
+            res,
+            413,
+            "ZIP_INVALID",
+            `ZIP upload exceeds the raw archive limit (${MAX_ZIP_RAW_BYTES} bytes).`
+          );
+          return;
+        }
+
+        if (error instanceof AppError) {
+          sendAppErrorResponse(res, error);
+          return;
+        }
+
+        if (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          sendHttpErrorResponse(res, 400, "BAD_REQUEST", message);
+          return;
+        }
       }
 
-      if (error instanceof AppError) {
-        sendAppErrorResponse(res, error);
-        return;
-      }
+      const user = res.locals.user as { id: number } | undefined;
+      const file = req.file;
 
-      if (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", message);
-        return;
-      }
-    }
-
-    const user = res.locals.user as { id: number } | undefined;
-    const file = req.file;
-
-    if (!user) {
-      await cleanupUploadedFile(file);
-      sendHttpErrorResponse(res, 401, "UNAUTHORIZED", UNAUTHED_ERR_MSG);
-      return;
-    }
-
-    try {
-      const name = getRequiredBodyString(req, "name");
-      if (!name) {
+      if (!user) {
         await cleanupUploadedFile(file);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Project name is required.");
+        sendHttpErrorResponse(res, 401, "UNAUTHORIZED", UNAUTHED_ERR_MSG);
         return;
       }
 
-      const focusLanguage = focusLanguageSchema.parse(getRequiredBodyString(req, "focusLanguage"));
-      const sourceType = projectSourceTypeSchema.parse(getRequiredBodyString(req, "sourceType"));
-      const description = getOptionalBodyString(req, "description");
-      const gitUrl = getRequiredBodyString(req, "gitUrl");
+      try {
+        const parsed = projectImportRequestSchema.parse({
+          name: getRequiredBodyString(req, "name"),
+          focusLanguage: getRequiredBodyString(req, "focusLanguage"),
+          sourceType: getRequiredBodyString(req, "sourceType"),
+          description: getOptionalBodyString(req, "description"),
+          gitUrl: getOptionalBodyString(req, "gitUrl"),
+        });
+        const { name, focusLanguage, sourceType, description } = parsed;
+        const gitUrl = parsed.gitUrl ?? "";
 
-      if (sourceType === "upload" && !file) {
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "ZIP file is required for upload imports.");
-        return;
-      }
+        if (sourceType === "upload" && !file) {
+          sendHttpErrorResponse(
+            res,
+            400,
+            "BAD_REQUEST",
+            "ZIP file is required for upload imports."
+          );
+          return;
+        }
 
-      if (sourceType === "git" && !gitUrl) {
-        await cleanupUploadedFile(file);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Git URL is required for Git imports.");
-        return;
-      }
+        if (sourceType === "git" && !gitUrl) {
+          await cleanupUploadedFile(file);
+          sendHttpErrorResponse(
+            res,
+            400,
+            "BAD_REQUEST",
+            "Git URL is required for Git imports."
+          );
+          return;
+        }
 
-      if ((file ? 1 : 0) + (gitUrl ? 1 : 0) !== 1) {
-        await cleanupUploadedFile(file);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Exactly one import source is required.");
-        return;
-      }
+        if ((file ? 1 : 0) + (gitUrl ? 1 : 0) !== 1) {
+          await cleanupUploadedFile(file);
+          sendHttpErrorResponse(
+            res,
+            400,
+            "BAD_REQUEST",
+            "Exactly one import source is required."
+          );
+          return;
+        }
 
-      if (file) {
-        const job = await createProjectWithQueuedZipImport(
+        if (file) {
+          const job = await createProjectWithQueuedZipImport(
+            user.id,
+            { name, description, focusLanguage, sourceType: "upload" },
+            file.path,
+            file.originalname
+          );
+          res.json(
+            importUploadResponseSchema.parse({
+              projectId: job.projectId,
+              jobId: job.jobId,
+              jobType: "import_zip",
+            })
+          );
+          return;
+        }
+
+        const job = await createProjectWithQueuedGitImport(
           user.id,
-          { name, description, focusLanguage, sourceType: "upload" },
-          file.path,
-          file.originalname
+          { name, description, focusLanguage, sourceType: "git" },
+          gitUrl
         );
-        res.json(importUploadResponseSchema.parse({ projectId: job.projectId, jobId: job.jobId, jobType: "import_zip" }));
-        return;
-      }
-
-      const job = await createProjectWithQueuedGitImport(user.id, { name, description, focusLanguage, sourceType: "git" }, gitUrl);
-      res.json(importUploadResponseSchema.parse({ projectId: job.projectId, jobId: job.jobId, jobType: "import_git" }));
-    } catch (caughtError) {
-      await cleanupUploadedFile(file);
-      const errorToSend =
-        caughtError instanceof AppError ? caughtError.message : caughtError instanceof Error ? caughtError.message : String(caughtError);
-      logger.warn("Project atomic import route failed", {
-        action: "project.import.route",
-        status: "error",
-        message: errorToSend,
-      });
-      if (caughtError instanceof AppError) {
-        sendAppErrorResponse(res, caughtError);
-        return;
-      }
-      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", "Import failed unexpectedly. Please try again later.");
-    }
-  });
-
-  app.post("/api/projects/:projectId/upload", authenticateProjectUploadRequest, uploadRateLimiter, async (req, res) => {
-    try {
-      await runSingleFileUpload(req, res);
-    } catch (error) {
-      await cleanupUploadedFile(req.file);
-
-      if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
-        sendHttpErrorResponse(res, 413, "ZIP_INVALID", `ZIP upload exceeds the raw archive limit (${MAX_ZIP_RAW_BYTES} bytes).`);
-        return;
-      }
-
-      if (error instanceof AppError) {
-        sendAppErrorResponse(res, error);
-        return;
-      }
-
-      if (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", message);
-        return;
-      }
-    }
-
-    const user = res.locals.user as { id: number } | undefined;
-    if (!user) {
-      await cleanupUploadedFile(req.file);
-      sendHttpErrorResponse(res, 401, "UNAUTHORIZED", UNAUTHED_ERR_MSG);
-      return;
-    }
-
-    const file = req.file;
-
-    try {
-      const projectId = Number(req.params.projectId);
-      if (!Number.isInteger(projectId) || projectId <= 0) {
+        res.json(
+          importUploadResponseSchema.parse({
+            projectId: job.projectId,
+            jobId: job.jobId,
+            jobType: "import_git",
+          })
+        );
+      } catch (caughtError) {
         await cleanupUploadedFile(file);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Invalid project id.");
-        return;
+        const errorToSend =
+          caughtError instanceof AppError
+            ? caughtError.message
+            : caughtError instanceof Error
+              ? caughtError.message
+              : String(caughtError);
+        logger.warn("Project atomic import route failed", {
+          action: "project.import.route",
+          status: "error",
+          message: errorToSend,
+        });
+        if (caughtError instanceof AppError) {
+          sendAppErrorResponse(res, caughtError);
+          return;
+        }
+        if (caughtError instanceof ZodError) {
+          sendValidationError(res, caughtError);
+          return;
+        }
+        sendUnexpectedHttpErrorResponse(res, caughtError, {
+          action: "project.import.route",
+          fallbackMessage:
+            "Import failed unexpectedly. Please try again later.",
+        });
       }
-
-      const gitUrl = typeof req.body.gitUrl === "string" ? req.body.gitUrl.trim() : "";
-
-      if ((file ? 1 : 0) + (gitUrl ? 1 : 0) !== 1) {
-        await cleanupUploadedFile(file);
-        sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Exactly one import source is required.");
-        return;
-      }
-
-      if (file) {
-        const job = await queueImportProjectZipFromTempFile(projectId, user.id, file.path, file.originalname);
-        res.json({ jobId: job.jobId, jobType: "import_zip" as const });
-        return;
-      }
-
-      const job = await queueImportProjectGit(projectId, user.id, gitUrl);
-      res.json({ jobId: job.jobId, jobType: "import_git" as const });
-    } catch (caughtError) {
-      await cleanupUploadedFile(file);
-      const projectId = Number(req.params.projectId);
-      const errorToSend =
-        caughtError instanceof AppError ? caughtError.message : caughtError instanceof Error ? caughtError.message : String(caughtError);
-      logger.warn("Project upload route failed", {
-        action: "project.upload.route",
-        status: "error",
-        projectId: Number.isInteger(projectId) ? projectId : null,
-        message: errorToSend,
-      });
-      if (caughtError instanceof AppError) {
-        sendAppErrorResponse(res, caughtError);
-        return;
-      }
-      sendHttpErrorResponse(res, 500, "INTERNAL_SERVER_ERROR", errorToSend);
     }
-  });
+  );
+
+  app.post(
+    "/api/projects/:projectId/upload",
+    authenticateProjectUploadRequest,
+    uploadRateLimiter,
+    async (req, res) => {
+      try {
+        await runSingleFileUpload(req, res);
+      } catch (error) {
+        await cleanupUploadedFile(req.file);
+
+        if (
+          error instanceof multer.MulterError &&
+          error.code === "LIMIT_FILE_SIZE"
+        ) {
+          sendHttpErrorResponse(
+            res,
+            413,
+            "ZIP_INVALID",
+            `ZIP upload exceeds the raw archive limit (${MAX_ZIP_RAW_BYTES} bytes).`
+          );
+          return;
+        }
+
+        if (error instanceof AppError) {
+          sendAppErrorResponse(res, error);
+          return;
+        }
+
+        if (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          sendHttpErrorResponse(res, 400, "BAD_REQUEST", message);
+          return;
+        }
+      }
+
+      const user = res.locals.user as { id: number } | undefined;
+      if (!user) {
+        await cleanupUploadedFile(req.file);
+        sendHttpErrorResponse(res, 401, "UNAUTHORIZED", UNAUTHED_ERR_MSG);
+        return;
+      }
+
+      const file = req.file;
+
+      try {
+        const projectId = Number(req.params.projectId);
+        if (!Number.isInteger(projectId) || projectId <= 0) {
+          await cleanupUploadedFile(file);
+          sendHttpErrorResponse(res, 400, "BAD_REQUEST", "Invalid project id.");
+          return;
+        }
+
+        const gitUrl = getOptionalBodyString(req, "gitUrl");
+        if (gitUrl) {
+          gitUrlInputSchema.parse(gitUrl);
+        }
+
+        if ((file ? 1 : 0) + (gitUrl ? 1 : 0) !== 1) {
+          await cleanupUploadedFile(file);
+          sendHttpErrorResponse(
+            res,
+            400,
+            "BAD_REQUEST",
+            "Exactly one import source is required."
+          );
+          return;
+        }
+
+        if (file) {
+          const job = await queueImportProjectZipFromTempFile(
+            projectId,
+            user.id,
+            file.path,
+            file.originalname
+          );
+          res.json(
+            projectReimportResponseSchema.parse({
+              jobId: job.jobId,
+              jobType: "import_zip",
+            })
+          );
+          return;
+        }
+
+        if (!gitUrl) {
+          sendHttpErrorResponse(
+            res,
+            400,
+            "BAD_REQUEST",
+            "Git URL is required for Git imports."
+          );
+          return;
+        }
+
+        const job = await queueImportProjectGit(projectId, user.id, gitUrl);
+        res.json(
+          projectReimportResponseSchema.parse({
+            jobId: job.jobId,
+            jobType: "import_git",
+          })
+        );
+      } catch (caughtError) {
+        await cleanupUploadedFile(file);
+        const projectId = Number(req.params.projectId);
+        const errorToSend =
+          caughtError instanceof AppError
+            ? caughtError.message
+            : caughtError instanceof Error
+              ? caughtError.message
+              : String(caughtError);
+        logger.warn("Project upload route failed", {
+          action: "project.upload.route",
+          status: "error",
+          projectId: Number.isInteger(projectId) ? projectId : null,
+          message: errorToSend,
+        });
+        if (caughtError instanceof AppError) {
+          sendAppErrorResponse(res, caughtError);
+          return;
+        }
+        if (caughtError instanceof ZodError) {
+          sendValidationError(res, caughtError);
+          return;
+        }
+        sendUnexpectedHttpErrorResponse(res, caughtError, {
+          action: "project.upload.route",
+          extra: { projectId: Number.isInteger(projectId) ? projectId : null },
+        });
+      }
+    }
+  );
 }
 
 function getRequiredBodyString(req: Request, key: string) {
@@ -347,4 +522,29 @@ function getRequiredBodyString(req: Request, key: string) {
 function getOptionalBodyString(req: Request, key: string) {
   const value = getRequiredBodyString(req, key);
   return value.length > 0 ? value : undefined;
+}
+
+function sendValidationError(res: Response, error: ZodError) {
+  const message = error.issues[0]?.message ?? "Invalid request.";
+  sendHttpErrorResponse(res, 400, "BAD_REQUEST", message);
+}
+
+async function loadActiveImportZipTempFilePaths() {
+  let timeout: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      getActiveImportZipTempFilePaths(),
+      new Promise<Set<string>>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error("Active import ZIP lookup timed out."));
+        }, ACTIVE_IMPORT_PATH_LOOKUP_TIMEOUT_MS);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }

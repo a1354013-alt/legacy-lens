@@ -214,14 +214,35 @@ describe("zipHandler", () => {
     });
   });
 
+  it.each([
+    ["exact duplicate paths", ["src/main.go", "src/main.go"]],
+    ["slash and backslash equivalent paths", ["src/main.go", "src\\main.go"]],
+    ["case-insensitive path collisions", ["src/Main.go", "src/main.go"]],
+    ["directory and file path collisions", ["src/main.go/", "src/main.go"]],
+  ])("rejects archives with %s", async (_caseName, paths) => {
+    vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
+      files: paths.map((path) => ({
+        path,
+        type: path.endsWith("/") ? "Directory" : "File",
+        vars: { uncompressedSize: 13 },
+        stream: () => Readable.from([Buffer.from("package main\n")]),
+      })),
+    } as any);
+
+    await expect(extractFilesFromZip("ZmFrZQ==")).rejects.toMatchObject({
+      code: "ZIP_DUPLICATE_PATH",
+      message: expect.stringContaining("duplicate normalized paths"),
+    });
+  });
+
   it("rejects archives whose extracted supported-source bytes exceed the limit", async () => {
-    const nearSingleFileLimitBuffer = Buffer.alloc(MAX_SINGLE_FILE_BYTES, "a");
+    const tinyFileBuffer = Buffer.from("package main\n");
     const openBufferSpy = vi.spyOn(unzipper.Open, "buffer").mockResolvedValue({
       files: Array.from({ length: 101 }, (_, index) => ({
         path: `src/file-${index}.go`,
         type: "File",
-        vars: { uncompressedSize: nearSingleFileLimitBuffer.length },
-        stream: () => Readable.from([nearSingleFileLimitBuffer]),
+        vars: { uncompressedSize: MAX_SINGLE_FILE_BYTES },
+        stream: () => Readable.from([tinyFileBuffer]),
       })),
     } as any);
 

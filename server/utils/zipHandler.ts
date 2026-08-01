@@ -107,6 +107,13 @@ export function assertUnsafeArchivePath(rawPath: string) {
   throw new AppError("ZIP_UNSAFE_PATH", `Archive contains an unsafe path and was rejected: ${rawPath}. Fix the ZIP contents and upload it again.`);
 }
 
+export function assertDuplicateArchivePath(rawPath: string, normalizedPath: string) {
+  throw new AppError(
+    "ZIP_DUPLICATE_PATH",
+    `Archive contains duplicate normalized paths and was rejected: ${normalizedPath}. Conflicting entry: ${rawPath}. Fix the ZIP contents and upload it again.`
+  );
+}
+
 export function assertSingleFileSize(byteLength: number, filePath: string) {
   if (byteLength > MAX_SINGLE_FILE_BYTES) {
     throw new AppError(
@@ -119,6 +126,10 @@ export function assertSingleFileSize(byteLength: number, filePath: string) {
 // Exported for tests (import safety must remain stable).
 export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
+}
+
+function normalizeArchivePathCollisionKey(normalizedPath: string) {
+  return normalizedPath.replace(/\/+$/g, "").toLowerCase();
 }
 
 // Exported for tests (import safety must remain stable).
@@ -226,7 +237,9 @@ export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<Extract
     const extractedFiles: ExtractedFile[] = [];
     const warnings: ImportWarning[] = [];
     let totalExtractedSize = 0;
+    let totalDeclaredSupportedSize = 0;
     let sourceCandidateCount = 0;
+    const seenNormalizedPaths = new Set<string>();
 
     const entries = zip.files as ZipDirectoryEntry[];
     if (entries.length > MAX_TOTAL_ARCHIVE_ENTRIES) {
@@ -235,6 +248,15 @@ export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<Extract
 
     for (const entry of entries) {
       const rawPath = entry.path;
+      const normalizedPath = normalizePath(rawPath);
+      const collisionKey = normalizeArchivePathCollisionKey(normalizedPath);
+      if (collisionKey && seenNormalizedPaths.has(collisionKey)) {
+        assertDuplicateArchivePath(rawPath, normalizedPath);
+      }
+      if (collisionKey) {
+        seenNormalizedPaths.add(collisionKey);
+      }
+
       if (entry.type === "Directory") {
         continue;
       }
@@ -243,7 +265,6 @@ export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<Extract
         assertUnsafeArchivePath(rawPath);
       }
 
-      const normalizedPath = normalizePath(rawPath);
       if (!isSafeRelativePath(normalizedPath)) {
         assertUnsafeArchivePath(rawPath);
       }
@@ -273,7 +294,8 @@ export async function extractFilesFromZipBuffer(buffer: Buffer): Promise<Extract
       }
 
       if (declaredSize > 0) {
-        assertExtractedSize(totalExtractedSize + declaredSize);
+        totalDeclaredSupportedSize += declaredSize;
+        assertExtractedSize(totalDeclaredSupportedSize);
       }
 
       let fileBuffer: Buffer;
