@@ -24,10 +24,12 @@ import {
   impactAnalysisResultSchema,
   jobByIdOutputSchema,
   projectByIdOutputSchema,
+  projectCreateInputSchema,
   projectCreateOutputSchema,
   projectDeleteOutputSchema,
   projectsListOutputSchema,
   projectSourceTypeSchema,
+  gitUrlInputSchema,
   reportArchivePayloadSchema,
   risksPageOutputSchema,
   risksPageInputSchema,
@@ -39,15 +41,16 @@ import {
   type ProjectStatus,
 } from "@shared/contracts";
 import { TRPCError } from "@trpc/server";
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { analysisResults, projects } from "../drizzle/schema";
+import { projects } from "../drizzle/schema";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { AppError } from "./appError";
 import { getDb } from "./db";
 import { logger } from "./_core/logger";
+import { getProjectApiAnalysisStatusByProjectId } from "./services/analysisHistory";
 import {
   buildReportArchive,
   createProjectForUser,
@@ -79,13 +82,6 @@ import {
 
 const projectIdSchema = z.number().int().positive();
 
-const createProjectSchema = z.object({
-  name: z.string().trim().min(1).max(255),
-  focusLanguage: focusLanguageSchema,
-  sourceType: projectSourceTypeSchema,
-  description: z.string().trim().max(2_000).optional(),
-});
-
 const uploadFilesSchema = z.object({
   projectId: projectIdSchema,
   zipContent: z.string().min(1).refine((value) => Buffer.from(value, "base64").length <= MAX_LEGACY_BASE64_ZIP_BYTES, {
@@ -95,7 +91,7 @@ const uploadFilesSchema = z.object({
 
 const cloneGitSchema = z.object({
   projectId: projectIdSchema,
-  gitUrl: z.string().trim().min(1),
+  gitUrl: gitUrlInputSchema,
 });
 
 function deriveProjectAnalysisStatus(projectStatus: ProjectStatus, reportStatus?: AnalysisStatus): AnalysisStatus {
@@ -136,6 +132,7 @@ export function toTrpcError(error: unknown): TRPCError {
       EMPTY_SOURCE: "BAD_REQUEST",
       ZIP_INVALID: "BAD_REQUEST",
       ZIP_UNSAFE_PATH: "BAD_REQUEST",
+      ZIP_DUPLICATE_PATH: "BAD_REQUEST",
       IMPORT_FAILED: "INTERNAL_SERVER_ERROR",
       ANALYSIS_FAILED: "INTERNAL_SERVER_ERROR",
       ANALYSIS_PARSE_FAILED: "INTERNAL_SERVER_ERROR",
@@ -223,12 +220,7 @@ export const appRouter = router({
           return [];
         }
 
-        const reportRows = await db
-          .select({ projectId: analysisResults.projectId, status: analysisResults.status })
-          .from(analysisResults)
-          .where(inArray(analysisResults.projectId, projectRows.map((project) => project.id)));
-
-        const analysisStatusByProjectId = new Map(reportRows.map((row) => [row.projectId, row.status]));
+        const analysisStatusByProjectId = await getProjectApiAnalysisStatusByProjectId(db, projectRows);
         const latestJobsByProjectId = await getLatestJobsByProjectIds(projectRows.map((project) => project.id), ctx.user.id);
 
         const visibleProjectRows = projectRows.filter((project) => project.status !== "draft" || latestJobsByProjectId.has(project.id));
@@ -251,21 +243,16 @@ export const appRouter = router({
         if (!db) return null;
 
         const project = await getOwnedProject(input, ctx.user.id);
-        const [report] = await db
-          .select({ status: analysisResults.status })
-          .from(analysisResults)
-          .where(eq(analysisResults.projectId, input))
-          .limit(1);
-
+        const analysisStatusByProjectId = await getProjectApiAnalysisStatusByProjectId(db, [project]);
         const latestJobsByProjectId = await getLatestJobsByProjectIds([input], ctx.user.id);
 
-        return toProjectSummary(project, deriveProjectAnalysisStatus(project.status, report?.status), latestJobsByProjectId.get(input) ?? null);
+        return toProjectSummary(project, analysisStatusByProjectId.get(input) ?? deriveProjectAnalysisStatus(project.status), latestJobsByProjectId.get(input) ?? null);
       } catch (error) {
         raiseAsTrpc(error);
       }
     }),
 
-    create: protectedProcedure.input(createProjectSchema).output(projectCreateOutputSchema).mutation(async ({ ctx, input }) => {
+    create: protectedProcedure.input(projectCreateInputSchema).output(projectCreateOutputSchema).mutation(async ({ ctx, input }) => {
       try {
         const projectId = await createProjectForUser(ctx.user.id, {
           name: input.name,

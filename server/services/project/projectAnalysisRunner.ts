@@ -87,11 +87,6 @@ export type ProjectAnalysisRunnerDeps = {
     result: ProjectAnalysisResult,
     context?: { importWarnings?: ImportWarning[]; fileTypes?: string[] }
   ) => ProjectAnalysisResult;
-  replaceAnalysisResult: (
-    db: DbHandle,
-    projectId: number,
-    values: Omit<typeof analysisResults.$inferInsert, "projectId">
-  ) => Promise<void>;
   getAnalysisResultErrorMessage: (result: Pick<ProjectAnalysisResult, "status">) => string | null;
   throwAnalysisPersistError: (
     error: unknown,

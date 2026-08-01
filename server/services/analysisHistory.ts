@@ -1,5 +1,6 @@
 import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 import type {
+  AnalysisStatus,
   AnalysisDiff,
   AnalysisRunDetail,
   AnalysisRunProjectContext,
@@ -270,6 +271,98 @@ export async function getLatestUsableCurrentSourceRun(db: DbHandle, projectId: n
     .orderBy(desc(analysisResults.runNumber), desc(analysisResults.createdAt), desc(analysisResults.id))
     .limit(1);
   return report ?? null;
+}
+
+export async function getProjectApiAnalysisStatusByProjectId(
+  db: DbHandle,
+  projectRows: Array<{ id: number; status: string; sourceFingerprint?: string | null }>
+) {
+  const projectIds = projectRows.map((project) => project.id);
+  const statusByProjectId = new Map<number, AnalysisStatus>();
+  if (projectIds.length === 0) {
+    return statusByProjectId;
+  }
+
+  const currentFingerprintByProjectId = new Map<number, string>();
+  for (const project of projectRows) {
+    if (project.sourceFingerprint) {
+      currentFingerprintByProjectId.set(project.id, project.sourceFingerprint);
+    }
+  }
+
+  const projectsNeedingFingerprint = projectRows.filter((project) => !project.sourceFingerprint);
+  if (projectsNeedingFingerprint.length > 0) {
+    const fileRows = await db.select().from(files).where(inArray(files.projectId, projectsNeedingFingerprint.map((project) => project.id)));
+    const filesByProjectId = new Map<number, ProjectFileRecord[]>();
+    for (const file of fileRows) {
+      const projectId = Number(file.projectId);
+      const existing = filesByProjectId.get(projectId) ?? [];
+      existing.push(file);
+      filesByProjectId.set(projectId, existing);
+    }
+
+    for (const project of projectsNeedingFingerprint) {
+      const projectFiles = filesByProjectId.get(project.id) ?? [];
+      if (projectFiles.length === 0) {
+        continue;
+      }
+      const fingerprint = calculateSourceFingerprint(projectFiles);
+      currentFingerprintByProjectId.set(project.id, fingerprint);
+      await db.update(projects).set({ sourceFingerprint: fingerprint, updatedAt: new Date() }).where(eq(projects.id, project.id));
+    }
+  }
+
+  const currentFingerprints = [...new Set(currentFingerprintByProjectId.values())];
+  const usableCurrentRuns = currentFingerprints.length
+    ? await db
+        .select()
+        .from(analysisResults)
+        .where(
+          and(
+            inArray(analysisResults.projectId, projectIds),
+            inArray(analysisResults.sourceFingerprint, currentFingerprints),
+            inArray(analysisResults.status, [...USABLE_STATUSES])
+          )
+        )
+    : [];
+
+  const sortedRuns = [...usableCurrentRuns].sort((left, right) => {
+    const runNumberDelta = Number(right.runNumber ?? 0) - Number(left.runNumber ?? 0);
+    if (runNumberDelta !== 0) return runNumberDelta;
+    const leftCreatedAt = left.createdAt instanceof Date ? left.createdAt.getTime() : new Date(String(left.createdAt ?? 0)).getTime();
+    const rightCreatedAt = right.createdAt instanceof Date ? right.createdAt.getTime() : new Date(String(right.createdAt ?? 0)).getTime();
+    if (rightCreatedAt !== leftCreatedAt) return rightCreatedAt - leftCreatedAt;
+    return Number(right.id ?? 0) - Number(left.id ?? 0);
+  });
+
+  for (const run of sortedRuns) {
+    const currentFingerprint = currentFingerprintByProjectId.get(run.projectId);
+    if (!currentFingerprint || run.sourceFingerprint !== currentFingerprint || statusByProjectId.has(run.projectId)) {
+      continue;
+    }
+    statusByProjectId.set(run.projectId, run.status);
+  }
+
+  for (const project of projectRows) {
+    if (statusByProjectId.has(project.id)) {
+      continue;
+    }
+    switch (project.status) {
+      case "analyzing":
+        statusByProjectId.set(project.id, "processing");
+        break;
+      case "completed":
+        statusByProjectId.set(project.id, "completed");
+        break;
+      case "failed":
+        statusByProjectId.set(project.id, "failed");
+        break;
+      default:
+        statusByProjectId.set(project.id, "pending");
+    }
+  }
+
+  return statusByProjectId;
 }
 
 async function getUsableRunById(db: DbHandle, projectId: number, runId: number) {
