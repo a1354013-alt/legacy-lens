@@ -5792,7 +5792,7 @@ describe("project workflow", () => {
     expect(metadata.runNumber).toBe(1);
     expect(metadata.analysisResultId).toBe(1);
     expect(metadata.isHistoricalExport).toBe(true);
-    expect(metadata.analyzerVersion).toBe("1.1.0");
+    expect(metadata.analyzerVersion).toBe("1.1.0-rc3");
     expect(metadata.exporterVersion).toBeTypeOf("string");
     await expect(
       zip.file("analysis-summary.json")!.async("text")

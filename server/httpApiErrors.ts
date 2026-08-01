@@ -26,6 +26,8 @@ export function getHttpStatusForAppError(error: AppError) {
       return 413;
     case "DATABASE_UNAVAILABLE":
     case "PROJECT_JOB_STALE":
+    case "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_LOOKUP_FAILED":
+    case "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_PAYLOAD_INVALID":
     case "IMPORT_FAILED":
     case "ANALYSIS_FAILED":
     case "ANALYSIS_PARSE_FAILED":

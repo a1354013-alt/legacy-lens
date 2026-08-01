@@ -177,4 +177,92 @@ describe("dev auth bypass gating", () => {
       }).PROJECT_WORKER_POLL_INTERVAL_MS
     ).toBe("2000");
   });
+
+  it("allows an explicit localhost HTTP origin for production demo mode", async () => {
+    const { parseCanonicalPublicOrigin } = await import("./env");
+
+    expect(
+      parseCanonicalPublicOrigin({
+        NODE_ENV: "production",
+        PUBLIC_ORIGIN: "http://localhost:3000",
+        DEV_AUTH_BYPASS_UNSAFE_ALLOW: "1",
+      })
+    ).toBe("http://localhost:3000");
+  });
+
+  it.each([
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://[::1]:3000",
+  ])(
+    "allows loopback HTTP origins only when the unsafe demo gate is enabled: %s",
+    async origin => {
+      const { parseCanonicalPublicOrigin } = await import("./env");
+
+      expect(
+        parseCanonicalPublicOrigin({
+          NODE_ENV: "production",
+          PUBLIC_ORIGIN: origin,
+          DEV_AUTH_BYPASS_UNSAFE_ALLOW: "1",
+        })
+      ).toBe(origin);
+    }
+  );
+
+  it.each([
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://[::1]:3000",
+  ])(
+    "rejects loopback HTTP origins in production without the unsafe demo gate: %s",
+    async origin => {
+      const { parseCanonicalPublicOrigin } = await import("./env");
+
+      expect(() =>
+        parseCanonicalPublicOrigin({
+          NODE_ENV: "production",
+          PUBLIC_ORIGIN: origin,
+        })
+      ).toThrow(
+        "PUBLIC_ORIGIN must use https in production unless DEV_AUTH_BYPASS_UNSAFE_ALLOW explicitly permits a loopback demo origin."
+      );
+    }
+  );
+
+  it.each([
+    "http://example.com",
+    "http://192.168.1.25:3000",
+    "http://10.0.0.10:3000",
+  ])(
+    "rejects non-loopback HTTP origins even with the unsafe demo gate: %s",
+    async origin => {
+      const { parseCanonicalPublicOrigin } = await import("./env");
+
+      expect(() =>
+        parseCanonicalPublicOrigin({
+          NODE_ENV: "production",
+          PUBLIC_ORIGIN: origin,
+          DEV_AUTH_BYPASS_UNSAFE_ALLOW: "1",
+        })
+      ).toThrow(
+        "PUBLIC_ORIGIN must use https in production unless DEV_AUTH_BYPASS_UNSAFE_ALLOW explicitly permits a loopback demo origin."
+      );
+    }
+  );
+
+  it.each([
+    "https://user:pass@legacy.example.com",
+    "https://legacy.example.com/path",
+    "https://legacy.example.com?debug=1",
+    "https://legacy.example.com#frag",
+  ])("rejects non-canonical PUBLIC_ORIGIN values: %s", async origin => {
+    const { parseCanonicalPublicOrigin } = await import("./env");
+
+    expect(() =>
+      parseCanonicalPublicOrigin({
+        NODE_ENV: "production",
+        PUBLIC_ORIGIN: origin,
+      })
+    ).toThrow();
+  });
 });

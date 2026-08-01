@@ -434,6 +434,82 @@ maybeDescribe("Drizzle migration smoke", () => {
   );
 
   it(
+    "rejects invalid baseline rows before applying 0016 DDL and succeeds after data correction",
+    async () => {
+      const dbName = await createDatabase(
+        DATABASE_URL as string,
+        "baseline_preflight"
+      );
+      const connection = await connectToDatabase(
+        DATABASE_URL as string,
+        dbName
+      );
+
+      try {
+        await applyMigrationFiles(
+          connection,
+          getMigrationFiles().slice(0, 16)
+        );
+
+        await connection.query(
+          "INSERT INTO `users` (`id`, `openId`, `role`) VALUES (1, 'user-baseline', 'user')"
+        );
+        await connection.query(
+          "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (1, 1, 'baseline-project', 'go', 'upload', 'completed', 100, 100), (2, 1, 'other-project', 'go', 'upload', 'completed', 100, 100)"
+        );
+        await connection.query(
+          "INSERT INTO `analysisResults` (`id`, `projectId`, `runNumber`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (1, 2, 1, 'completed', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+        );
+        await connection.query(
+          "INSERT INTO `analysisBaselines` (`projectId`, `analysisResultId`) VALUES (1, 1)"
+        );
+
+        const migration0016 = getMigrationFiles().slice(16);
+        await expect(
+          applyMigrationFiles(connection, migration0016)
+        ).rejects.toThrow(
+          "0016 preflight failed: analysisBaselines contains rows without a matching analysisResults(projectId,id) pair."
+        );
+
+        const [missingUniqueIndex] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_id_unique'"
+        );
+        const [missingCompositeFk] = await connection.query<mysql.RowDataPacket[]>(
+          "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'analysisBaselines' AND CONSTRAINT_NAME = 'analysisBaselines_projectId_analysisResultId_fk'",
+          [dbName]
+        );
+        expect(missingUniqueIndex).toHaveLength(0);
+        expect(missingCompositeFk).toHaveLength(0);
+
+        await connection.query("DELETE FROM `analysisBaselines` WHERE `projectId` = 1");
+        await connection.query(
+          "INSERT INTO `analysisResults` (`id`, `projectId`, `runNumber`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (2, 1, 1, 'completed', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+        );
+        await connection.query(
+          "INSERT INTO `analysisBaselines` (`projectId`, `analysisResultId`) VALUES (1, 2)"
+        );
+
+        await applyMigrationFiles(connection, migration0016);
+
+        const [uniqueIndex] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_id_unique'"
+        );
+        const [compositeFk] = await connection.query<mysql.RowDataPacket[]>(
+          "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'analysisBaselines' AND CONSTRAINT_NAME = 'analysisBaselines_projectId_analysisResultId_fk'",
+          [dbName]
+        );
+
+        expect(uniqueIndex.length).toBeGreaterThan(0);
+        expect(compositeFk.length).toBeGreaterThan(0);
+      } finally {
+        await connection.end();
+        await dropDatabase(DATABASE_URL as string, dbName);
+      }
+    },
+    MIGRATION_TEST_TIMEOUT_MS
+  );
+
+  it(
     "keeps project sourceFingerprint safe on fresh databases and 0014 -> 0015 upgrades",
     async () => {
       const freshDbName = await createDatabase(

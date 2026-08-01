@@ -169,9 +169,6 @@ export function parseCanonicalPublicOrigin(
   if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error("[Config] PUBLIC_ORIGIN must use http or https.");
   }
-  if (isProduction && parsed.protocol !== "https:") {
-    throw new Error("[Config] PUBLIC_ORIGIN must use https in production.");
-  }
   if (parsed.username || parsed.password) {
     throw new Error("[Config] PUBLIC_ORIGIN must not include credentials.");
   }
@@ -180,8 +177,32 @@ export function parseCanonicalPublicOrigin(
       "[Config] PUBLIC_ORIGIN must contain only the origin without path, query, or fragment."
     );
   }
+  if (
+    isProduction &&
+    parsed.protocol !== "https:" &&
+    !isAllowedUnsafeDemoPublicOrigin(parsed, source)
+  ) {
+    throw new Error(
+      "[Config] PUBLIC_ORIGIN must use https in production unless DEV_AUTH_BYPASS_UNSAFE_ALLOW explicitly permits a loopback demo origin."
+    );
+  }
 
   return parsed.origin;
+}
+
+function isAllowedUnsafeDemoPublicOrigin(
+  parsed: URL,
+  source: NodeJS.ProcessEnv
+) {
+  return (
+    parsed.protocol === "http:" &&
+    isTruthy(source.DEV_AUTH_BYPASS_UNSAFE_ALLOW) &&
+    isLoopbackHostname(parsed.hostname)
+  );
+}
+
+function isLoopbackHostname(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 }
 
 const parsedEnv = runtimeEnvSchema.safeParse(process.env);

@@ -6,6 +6,7 @@ This document summarizes the production-facing boundaries that matter for Legacy
 
 - Runtime numeric env values are strictly parsed before use. Invalid configured values fail fast instead of falling back silently.
 - `PUBLIC_ORIGIN` is required in production and must be a canonical HTTPS origin only; path, query, fragment, and credentials are rejected.
+- The only production HTTP exception is an explicit local demo gate: `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1` may pair with `PUBLIC_ORIGIN=http://localhost:<port>` (or `127.0.0.1` / `[::1]`) for loopback-only demo containers.
 - Positive-integer settings reject `0`, negative values, decimals, blanks, and mixed strings such as `30abc`.
 - `DB_QUEUE_LIMIT` is intentionally non-negative and may be set to `0`; all job lease, timeout, polling, upload cleanup, throttle, connection-limit, and port settings must be positive integers.
 - Keep `.env.example` aligned with production runtime settings when adding new env reads.
@@ -18,6 +19,7 @@ This document summarizes the production-facing boundaries that matter for Legacy
 - Lease renewal is owned by the parent worker dispatcher, not by the CPU-bound worker thread, and stops when the dispatched job resolves, rejects, loses ownership, or worker polling is stopped.
 - Worker-enabled replicas poll MySQL for `queued` jobs and expired `running` leases, so a web-only replica can enqueue work without directly waking a local worker process.
 - `PROJECT_JOB_EXECUTION_TIMEOUT_MS` bounds one claimed worker-thread execution. When it expires, the stuck worker thread is terminated and the DB lease/stale recovery path is responsible for retrying the job.
+- `PROJECT_JOB_WORKER_START_TIMEOUT_MS` bounds worker-thread startup readiness and must be a positive integer when overridden.
 - `PROJECT_WORKER_POLL_INTERVAL_MS` defaults to `2000` ms and must be set to a positive integer when overridden.
 - `PROJECT_JOB_LEASE_MS`, `PROJECT_JOB_HEARTBEAT_MS`, `PROJECT_JOB_STALE_MS`, `PROJECT_JOB_MAX_ATTEMPTS`, and worker timeout env values are all strict positive integers when overridden.
 - `PROJECT_JOB_HEARTBEAT_MS` must be lower than `PROJECT_JOB_LEASE_MS` and no more than one third of the lease duration; invalid production values fail fast.

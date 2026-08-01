@@ -400,7 +400,7 @@ DATABASE_URL=mysql://root:password@127.0.0.1:3306/legacy_lens_dev pnpm test:migr
 `docker-compose.yml` extends `docker-compose.prod.yml` and does not enable demo auth, weak demo secrets, or fake users. It expects production-like environment values:
 
 ```bash
-APP_VERSION=1.1.0 \
+APP_VERSION=1.1.0-rc3 \
 PUBLIC_ORIGIN=https://legacy.example.com \
 DATABASE_URL=mysql://user:password@host:3306/legacy_lens \
 JWT_SECRET=replace-with-at-least-32-characters \
@@ -455,6 +455,7 @@ The Docker smoke script and compose stack use a small set of env vars to keep CI
 - `LEGACY_LENS_GIT_HOST_ALLOWLIST`: production Git host allowlist override
 - `LEGACY_LENS_TRUST_PROXY`: only set this when the app is actually behind a trusted reverse proxy or load balancer
 - `PROJECT_JOB_EXECUTION_TIMEOUT_MS`: maximum wall-clock time a worker thread may spend on one claimed job before the thread is terminated and DB lease recovery retries the job
+- `PROJECT_JOB_WORKER_START_TIMEOUT_MS`: maximum time the parent process waits for the worker thread bundle to become ready before failing the claimed job
 - `UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS`: scheduled cleanup interval for expired upload temp ZIP files; active queued/running import temp paths remain protected
 - `UPLOAD_TEMP_ZIP_TTL_MS`: age threshold for orphan upload temp ZIP cleanup
 - Numeric runtime env values are strictly parsed. Positive-integer settings reject `0`, negative values, decimals, blanks, and mixed strings such as `30abc`; `DB_QUEUE_LIMIT` is the only current non-negative integer setting where `0` is valid.

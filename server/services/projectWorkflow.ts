@@ -3913,38 +3913,66 @@ export async function getActiveImportZipTempFilePaths() {
   const db = await getDb();
   if (!db) {
     throw new AppError(
-      "DATABASE_UNAVAILABLE",
-      "Database connection is not configured."
+      "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_LOOKUP_FAILED",
+      "Upload temp cleanup could not load active import jobs because the database connection is not configured."
     );
   }
 
-  const rows = await db
-    .select()
-    .from(projectJobs)
-    .where(
-      and(
-        eq(projectJobs.type, "import_zip"),
-        inArray(projectJobs.status, ["queued", "running"])
-      )
+  let rows: ProjectJobRow[];
+  try {
+    rows = await db
+      .select()
+      .from(projectJobs)
+      .where(
+        and(
+          eq(projectJobs.type, "import_zip"),
+          inArray(projectJobs.status, ["queued", "running"])
+        )
+      );
+  } catch (error) {
+    throw new AppError(
+      "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_LOOKUP_FAILED",
+      "Upload temp cleanup could not load active import jobs.",
+      error instanceof Error ? error.message : String(error)
     );
+  }
+
   const activeTempPaths = new Set<string>();
 
   for (const row of rows) {
-    if (!row.payloadJson) {
-      continue;
+    if (!row.payloadJson?.trim()) {
+      throw new AppError(
+        "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_PAYLOAD_INVALID",
+        `Upload temp cleanup aborted because active import job ${row.id} has no payload.`,
+        `jobId=${row.id} jobStatus=${row.status} jobType=${row.type}`
+      );
     }
 
     try {
       const payload = parseProjectJobPayload(row);
       const tempFilePath = getImportZipPayloadTempPath(payload);
-      if (tempFilePath) {
-        activeTempPaths.add(tempFilePath);
+      if (!tempFilePath?.trim()) {
+        throw new AppError(
+          "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_PAYLOAD_INVALID",
+          `Upload temp cleanup aborted because active import job ${row.id} has no temp ZIP path.`,
+          `jobId=${row.id} jobStatus=${row.status} jobType=${row.type}`
+        );
       }
+      activeTempPaths.add(tempFilePath);
     } catch (error) {
+      if (
+        error instanceof AppError &&
+        error.code === "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_PAYLOAD_INVALID"
+      ) {
+        throw error;
+      }
+
       throw new AppError(
-        "PROJECT_JOB_STALE",
-        `Project job ${row.id} cannot be used to protect upload cleanup because its payload is invalid.`,
-        error instanceof Error ? error.message : String(error)
+        "UPLOAD_TEMP_CLEANUP_ACTIVE_JOB_PAYLOAD_INVALID",
+        `Upload temp cleanup aborted because active import job ${row.id} has an invalid payload.`,
+        error instanceof Error
+          ? `${error.message}; jobId=${row.id} jobStatus=${row.status} jobType=${row.type}`
+          : `jobId=${row.id} jobStatus=${row.status} jobType=${row.type}; cause=${String(error)}`
       );
     }
   }

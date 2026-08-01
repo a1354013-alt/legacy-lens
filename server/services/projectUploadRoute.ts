@@ -95,12 +95,14 @@ export async function cleanupExpiredUploadTempFiles(
     logger.warn("Upload temp cleanup aborted", {
       action: "project.upload.temp.cleanup",
       status: "error",
+      errorCode: error instanceof AppError ? error.code : null,
       scanCount,
       protectedCount,
       deletedCount,
       skippedCount,
       aborted: true,
       abortReason: error instanceof Error ? error.message : String(error),
+      details: error instanceof AppError ? error.details ?? null : null,
     });
     return;
   }

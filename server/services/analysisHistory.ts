@@ -37,7 +37,7 @@ import {
 } from "./sourceFingerprint";
 
 export const ANALYSIS_SNAPSHOT_SCHEMA_VERSION = 1;
-export const ANALYZER_VERSION = "1.1.0";
+export const ANALYZER_VERSION = "1.1.0-rc3";
 export const MAX_SNAPSHOT_BYTES = 15 * 1024 * 1024;
 const DIFF_LIMIT = 200;
 const USABLE_STATUSES = [

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 - 2026-08-01
+## 1.1.0-rc3 - 2026-08-01
 
 ### Added
 
@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Promoted the release version from `1.1.0-rc2` to `1.1.0`.
+- Promoted the release candidate version from `1.1.0-rc2` to `1.1.0-rc3`.
 - Aligned production runtime configuration around canonical `PUBLIC_ORIGIN`, worker/runtime env contracts, and graceful shutdown bounds.
 
 ### Fixed
@@ -24,7 +24,7 @@
 ### Deployment Notes
 
 - Set `PUBLIC_ORIGIN` to the canonical HTTPS origin before running `docker compose -f docker-compose.prod.yml up`.
-- Inject `APP_VERSION=1.1.0` and `GIT_COMMIT` during production builds.
+- Inject `APP_VERSION=1.1.0-rc3` and `GIT_COMMIT` during production builds.
 
 ### Known Limitations
 
@@ -33,4 +33,4 @@
 
 ### Upgrade Notes
 
-- Apply migration `0016_release_baseline_integrity.sql` before tagging or deploying `v1.1.0`.
+- Apply migration `0016_release_baseline_integrity.sql` before tagging or deploying `v1.1.0-rc3`.

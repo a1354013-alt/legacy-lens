@@ -132,8 +132,8 @@ function createModel(overrides: Record<string, unknown> = {}) {
     analysisRunsQuery: {
       data: {
         items: [
-          { id: 101, runNumber: 9, status: "completed", fingerprint: "current", createdAt: new Date("2026-07-26T00:00:00.000Z"), metricsSummary: { files: 10, symbols: 5 }, riskCount: 0, confidence: { score: 88, level: "high" }, isLatestUsable: true, isBaseline: false, analyzerVersion: "1.1.0", exporterVersion: "1.1.0", jobStatus: "completed", warningCount: 0, snapshotAvailable: true },
-          { id: 55, runNumber: 8, status: "completed", fingerprint: "older", createdAt: new Date("2026-07-25T00:00:00.000Z"), metricsSummary: { files: 9, symbols: 4 }, riskCount: 1, confidence: { score: 70, level: "medium" }, isLatestUsable: false, isBaseline: true, analyzerVersion: "1.1.0", exporterVersion: "1.1.0", jobStatus: "completed", warningCount: 1, snapshotAvailable: true },
+          { id: 101, runNumber: 9, status: "completed", fingerprint: "current", createdAt: new Date("2026-07-26T00:00:00.000Z"), metricsSummary: { files: 10, symbols: 5 }, riskCount: 0, confidence: { score: 88, level: "high" }, isLatestUsable: true, isBaseline: false, analyzerVersion: "1.1.0-rc3", exporterVersion: "1.1.0-rc3", jobStatus: "completed", warningCount: 0, snapshotAvailable: true },
+          { id: 55, runNumber: 8, status: "completed", fingerprint: "older", createdAt: new Date("2026-07-25T00:00:00.000Z"), metricsSummary: { files: 9, symbols: 4 }, riskCount: 1, confidence: { score: 70, level: "medium" }, isLatestUsable: false, isBaseline: true, analyzerVersion: "1.1.0-rc3", exporterVersion: "1.1.0-rc3", jobStatus: "completed", warningCount: 1, snapshotAvailable: true },
         ],
         total: 2,
         page: 1,
