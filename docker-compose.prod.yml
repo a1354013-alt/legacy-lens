@@ -26,17 +26,46 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - APP_VERSION=${APP_VERSION:?Set APP_VERSION}
+      - PUBLIC_ORIGIN=${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the canonical HTTPS app origin}
       - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL}
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET with at least 32 characters}
       - VITE_APP_ID=${VITE_APP_ID:?Set VITE_APP_ID}
       - VITE_OAUTH_PORTAL_URL=${VITE_OAUTH_PORTAL_URL:?Set VITE_OAUTH_PORTAL_URL}
       - OAUTH_SERVER_URL=${OAUTH_SERVER_URL:?Set OAUTH_SERVER_URL}
+      - LEGACY_LENS_TRUST_PROXY=${LEGACY_LENS_TRUST_PROXY:-loopback}
       - LEGACY_LENS_GIT_HOST_ALLOWLIST=${LEGACY_LENS_GIT_HOST_ALLOWLIST:-github.com,gitlab.com}
+      - PROJECT_WORKER_ENABLED=${PROJECT_WORKER_ENABLED:-true}
+      - PROJECT_WORKER_ID=${PROJECT_WORKER_ID:-prod-worker-1}
+      - PROJECT_JOB_STALE_MS=${PROJECT_JOB_STALE_MS:-900000}
+      - PROJECT_JOB_LEASE_MS=${PROJECT_JOB_LEASE_MS:-30000}
+      - PROJECT_JOB_HEARTBEAT_MS=${PROJECT_JOB_HEARTBEAT_MS:-10000}
+      - PROJECT_JOB_MAX_ATTEMPTS=${PROJECT_JOB_MAX_ATTEMPTS:-3}
+      - PROJECT_JOB_EXECUTION_TIMEOUT_MS=${PROJECT_JOB_EXECUTION_TIMEOUT_MS:-1800000}
+      - PROJECT_WORKER_POLL_INTERVAL_MS=${PROJECT_WORKER_POLL_INTERVAL_MS:-2000}
+      - UPLOAD_TEMP_ZIP_TTL_MS=${UPLOAD_TEMP_ZIP_TTL_MS:-86400000}
+      - UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS=${UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS:-3600000}
+      - DB_CONNECTION_LIMIT=${DB_CONNECTION_LIMIT:-10}
+      - DB_QUEUE_LIMIT=${DB_QUEUE_LIMIT:-0}
+      - DB_WAIT_FOR_CONNECTIONS=${DB_WAIT_FOR_CONNECTIONS:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - CSP_ALLOW_UNSAFE_EVAL=${CSP_ALLOW_UNSAFE_EVAL:-}
+      - LAST_SIGNED_IN_WRITE_THROTTLE_MS=${LAST_SIGNED_IN_WRITE_THROTTLE_MS:-900000}
+      - GRACEFUL_SHUTDOWN_TIMEOUT_MS=${GRACEFUL_SHUTDOWN_TIMEOUT_MS:-10000}
+      - GIT_COMMIT=${GIT_COMMIT:-unknown}
     depends_on:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/ready"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3000/ready",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3

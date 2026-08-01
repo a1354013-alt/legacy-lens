@@ -6,19 +6,22 @@ import { normalizeJsonArrayField } from "./_core/jsonNormalization";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const migrationDir = path.join(process.cwd(), "drizzle");
-const MIGRATION_TEST_TIMEOUT_MS = Number.parseInt(process.env.MIGRATION_TEST_TIMEOUT_MS ?? "30000", 10);
+const MIGRATION_TEST_TIMEOUT_MS = Number.parseInt(
+  process.env.MIGRATION_TEST_TIMEOUT_MS ?? "30000",
+  10
+);
 
 function getMigrationFiles() {
   return fs
     .readdirSync(migrationDir)
-    .filter((file) => /^\d+_.+\.sql$/.test(file))
+    .filter(file => /^\d+_.+\.sql$/.test(file))
     .sort((left, right) => left.localeCompare(right));
 }
 
 function splitSqlStatements(sqlText: string) {
   return sqlText
     .split("--> statement-breakpoint")
-    .map((statement) => statement.trim())
+    .map(statement => statement.trim())
     .filter(Boolean);
 }
 
@@ -33,7 +36,9 @@ function parseConnectionOptions(connectionString: string) {
 }
 
 async function createDatabase(connectionString: string, suffix: string) {
-  const admin = await mysql.createConnection(parseConnectionOptions(connectionString));
+  const admin = await mysql.createConnection(
+    parseConnectionOptions(connectionString)
+  );
   const dbName = `legacy_lens_${suffix}_${Date.now()}`;
   await admin.query(`CREATE DATABASE \`${dbName}\``);
   await admin.end();
@@ -41,7 +46,9 @@ async function createDatabase(connectionString: string, suffix: string) {
 }
 
 async function dropDatabase(connectionString: string, dbName: string) {
-  const admin = await mysql.createConnection(parseConnectionOptions(connectionString));
+  const admin = await mysql.createConnection(
+    parseConnectionOptions(connectionString)
+  );
   await admin.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
   await admin.end();
 }
@@ -55,7 +62,10 @@ async function connectToDatabase(connectionString: string, dbName: string) {
   });
 }
 
-async function applyMigrationFiles(connection: mysql.Connection, files: string[]) {
+async function applyMigrationFiles(
+  connection: mysql.Connection,
+  files: string[]
+) {
   for (const file of files) {
     const sqlText = fs.readFileSync(path.join(migrationDir, file), "utf8");
     for (const statement of splitSqlStatements(sqlText)) {
@@ -64,7 +74,11 @@ async function applyMigrationFiles(connection: mysql.Connection, files: string[]
   }
 }
 
-async function tableExists(connection: mysql.Connection, dbName: string, tableName: string) {
+async function tableExists(
+  connection: mysql.Connection,
+  dbName: string,
+  tableName: string
+) {
   const [rows] = await connection.query<mysql.RowDataPacket[]>(
     "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
     [dbName, tableName]
@@ -72,8 +86,15 @@ async function tableExists(connection: mysql.Connection, dbName: string, tableNa
   return Number(rows[0]?.count ?? 0) > 0;
 }
 
-async function getColumnType(connection: mysql.Connection, tableName: string, columnName: string) {
-  const [rows] = await connection.query<mysql.RowDataPacket[]>(`SHOW COLUMNS FROM \`${tableName}\` LIKE ?`, [columnName]);
+async function getColumnType(
+  connection: mysql.Connection,
+  tableName: string,
+  columnName: string
+) {
+  const [rows] = await connection.query<mysql.RowDataPacket[]>(
+    `SHOW COLUMNS FROM \`${tableName}\` LIKE ?`,
+    [columnName]
+  );
   return String(rows[0]?.Type ?? "");
 }
 
@@ -83,61 +104,135 @@ maybeDescribe("Drizzle migration smoke", () => {
   it(
     "runs all migrations on a fresh database and creates the latest tables",
     async () => {
-    const dbName = await createDatabase(DATABASE_URL as string, "fresh");
-    const connection = await connectToDatabase(DATABASE_URL as string, dbName);
+      const dbName = await createDatabase(DATABASE_URL as string, "fresh");
+      const connection = await connectToDatabase(
+        DATABASE_URL as string,
+        dbName
+      );
 
-    try {
-      await applyMigrationFiles(connection, getMigrationFiles());
+      try {
+        await applyMigrationFiles(connection, getMigrationFiles());
 
-      await expect(tableExists(connection, dbName, "projects")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "files")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "analysisResults")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "symbols")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "dependencies")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "fields")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "fieldDependencies")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "risks")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "rules")).resolves.toBe(true);
-      await expect(tableExists(connection, dbName, "projectJobs")).resolves.toBe(true);
+        await expect(tableExists(connection, dbName, "projects")).resolves.toBe(
+          true
+        );
+        await expect(tableExists(connection, dbName, "files")).resolves.toBe(
+          true
+        );
+        await expect(
+          tableExists(connection, dbName, "analysisResults")
+        ).resolves.toBe(true);
+        await expect(tableExists(connection, dbName, "symbols")).resolves.toBe(
+          true
+        );
+        await expect(
+          tableExists(connection, dbName, "dependencies")
+        ).resolves.toBe(true);
+        await expect(tableExists(connection, dbName, "fields")).resolves.toBe(
+          true
+        );
+        await expect(
+          tableExists(connection, dbName, "fieldDependencies")
+        ).resolves.toBe(true);
+        await expect(tableExists(connection, dbName, "risks")).resolves.toBe(
+          true
+        );
+        await expect(tableExists(connection, dbName, "rules")).resolves.toBe(
+          true
+        );
+        await expect(
+          tableExists(connection, dbName, "projectJobs")
+        ).resolves.toBe(true);
 
-      const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
-      const [jobColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'");
-      const [payloadColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'payloadJson'");
-      const [activeKeyColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
-      const [lockedByColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'lockedBy'");
-      const [leaseUntilColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'leaseUntil'");
-      const [heartbeatAtColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
-      const [attemptCountColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
-      const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
-      const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
-      const analysisStatusType = await getColumnType(connection, "analysisResults", "status");
-      const [runNumberColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'runNumber'");
-      const [snapshotColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'snapshotJson'");
-      const [oldProjectUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_unique'");
-      const [runNumberUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_runNumber_unique'");
-      const [latestIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_createdAt_id_idx'");
+        const [projectColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'"
+        );
+        const [jobColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'"
+        );
+        const [payloadColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `projectJobs` LIKE 'payloadJson'"
+        );
+        const [activeKeyColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
+        const [lockedByColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `projectJobs` LIKE 'lockedBy'"
+        );
+        const [leaseUntilColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'leaseUntil'");
+        const [heartbeatAtColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
+        const [attemptCountColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
+        const [maxAttemptsColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
+        const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'"
+        );
+        const analysisStatusType = await getColumnType(
+          connection,
+          "analysisResults",
+          "status"
+        );
+        const [runNumberColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `analysisResults` LIKE 'runNumber'");
+        const [snapshotColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `analysisResults` LIKE 'snapshotJson'"
+        );
+        const [oldProjectUnique] = await connection.query<
+          mysql.RowDataPacket[]
+        >(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_unique'"
+        );
+        const [runNumberUnique] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_runNumber_unique'"
+        );
+        const [projectIdIdUnique] = await connection.query<
+          mysql.RowDataPacket[]
+        >(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_id_unique'"
+        );
+        const [latestIndexes] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_createdAt_id_idx'"
+        );
+        const [baselineCompositeFk] = await connection.query<
+          mysql.RowDataPacket[]
+        >(
+          "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'analysisBaselines' AND CONSTRAINT_NAME = 'analysisBaselines_projectId_analysisResultId_fk'",
+          [dbName]
+        );
 
-      expect(projectColumns).toHaveLength(1);
-      expect(jobColumns).toHaveLength(1);
-      expect(payloadColumns).toHaveLength(1);
-      expect(activeKeyColumns).toHaveLength(1);
-      expect(lockedByColumns).toHaveLength(1);
-      expect(leaseUntilColumns).toHaveLength(1);
-      expect(heartbeatAtColumns).toHaveLength(1);
-      expect(attemptCountColumns).toHaveLength(1);
-      expect(maxAttemptsColumns).toHaveLength(1);
-      expect(claimIndexes).toHaveLength(4);
-      expect(analysisStatusType).toContain("completed_with_warnings");
-      expect(runNumberColumns).toHaveLength(1);
-      expect(snapshotColumns).toHaveLength(1);
-      expect(oldProjectUnique).toHaveLength(0);
-      expect(runNumberUnique.length).toBeGreaterThan(0);
-      expect(latestIndexes.length).toBeGreaterThan(0);
-      await expect(tableExists(connection, dbName, "analysisBaselines")).resolves.toBe(true);
-    } finally {
-      await connection.end();
-      await dropDatabase(DATABASE_URL as string, dbName);
-    }
+        expect(projectColumns).toHaveLength(1);
+        expect(jobColumns).toHaveLength(1);
+        expect(payloadColumns).toHaveLength(1);
+        expect(activeKeyColumns).toHaveLength(1);
+        expect(lockedByColumns).toHaveLength(1);
+        expect(leaseUntilColumns).toHaveLength(1);
+        expect(heartbeatAtColumns).toHaveLength(1);
+        expect(attemptCountColumns).toHaveLength(1);
+        expect(maxAttemptsColumns).toHaveLength(1);
+        expect(claimIndexes).toHaveLength(4);
+        expect(analysisStatusType).toContain("completed_with_warnings");
+        expect(runNumberColumns).toHaveLength(1);
+        expect(snapshotColumns).toHaveLength(1);
+        expect(oldProjectUnique).toHaveLength(0);
+        expect(runNumberUnique.length).toBeGreaterThan(0);
+        expect(projectIdIdUnique.length).toBeGreaterThan(0);
+        expect(latestIndexes.length).toBeGreaterThan(0);
+        await expect(
+          tableExists(connection, dbName, "analysisBaselines")
+        ).resolves.toBe(true);
+        expect(baselineCompositeFk.length).toBeGreaterThan(0);
+      } finally {
+        await connection.end();
+        await dropDatabase(DATABASE_URL as string, dbName);
+      }
     },
     MIGRATION_TEST_TIMEOUT_MS
   );
@@ -145,120 +240,195 @@ maybeDescribe("Drizzle migration smoke", () => {
   it(
     "upgrades a pre-0006 schema without breaking legacy data",
     async () => {
-    const dbName = await createDatabase(DATABASE_URL as string, "upgrade");
-    const connection = await connectToDatabase(DATABASE_URL as string, dbName);
-
-    try {
-      await applyMigrationFiles(connection, getMigrationFiles().slice(0, 6));
-
-      await connection.query(
-        "INSERT INTO `users` (`id`, `openId`, `role`) VALUES (1, 'user-1', 'user')"
-      );
-      await connection.query(
-        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (1, 1, 'legacy-project', 'go', 'upload', 'completed', 100, 100)"
-      );
-      await connection.query(
-        "INSERT INTO `files` (`id`, `projectId`, `filePath`, `fileName`, `fileType`, `status`, `content`) VALUES (1, 1, 'main.go', 'main.go', '.go', 'stored', 'package main')"
-      );
-      await connection.query(
-        "INSERT INTO `symbols` (`id`, `projectId`, `fileId`, `name`, `type`, `startLine`, `endLine`) VALUES (1, 1, 1, 'main', 'function', 1, 3), (2, 1, 1, 'repo', 'method', 4, 6)"
-      );
-      await connection.query(
-        "INSERT INTO `dependencies` (`id`, `projectId`, `sourceSymbolId`, `targetSymbolId`, `dependencyType`) VALUES (1, 1, 1, 2, 'calls')"
-      );
-      await connection.query(
-        "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (1, 1, 'completed', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+      const dbName = await createDatabase(DATABASE_URL as string, "upgrade");
+      const connection = await connectToDatabase(
+        DATABASE_URL as string,
+        dbName
       );
 
-      await applyMigrationFiles(connection, getMigrationFiles().slice(6));
+      try {
+        await applyMigrationFiles(connection, getMigrationFiles().slice(0, 6));
 
-      const [projectRows] = await connection.query<mysql.RowDataPacket[]>("SELECT `status`, `importWarningsJson` FROM `projects` WHERE `id` = 1");
-      const [analysisRows] = await connection.query<mysql.RowDataPacket[]>("SELECT `status`, `warningsJson` FROM `analysisResults` WHERE `id` = 1");
-      const [dependencyRows] = await connection.query<mysql.RowDataPacket[]>("SELECT `targetSymbolId`, `targetKind` FROM `dependencies` WHERE `id` = 1");
-      const [fileColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `files` LIKE 'content'");
-      const [analysisColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'flowMarkdown'");
-      const [jobColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'");
-      const [activeKeyColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
-      const [lockedByColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'lockedBy'");
-      const [leaseUntilColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'leaseUntil'");
-      const [heartbeatAtColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
-      const [attemptCountColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
-      const [maxAttemptsColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
-      const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'");
-      const [projectColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'");
-      const analysisStatusType = await getColumnType(connection, "analysisResults", "status");
-      const [runNumberColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'runNumber'");
-      const [snapshotColumns] = await connection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `analysisResults` LIKE 'snapshotJson'");
-      const [oldProjectUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_unique'");
-      const [runNumberUnique] = await connection.query<mysql.RowDataPacket[]>("SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_runNumber_unique'");
+        await connection.query(
+          "INSERT INTO `users` (`id`, `openId`, `role`) VALUES (1, 'user-1', 'user')"
+        );
+        await connection.query(
+          "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (1, 1, 'legacy-project', 'go', 'upload', 'completed', 100, 100)"
+        );
+        await connection.query(
+          "INSERT INTO `files` (`id`, `projectId`, `filePath`, `fileName`, `fileType`, `status`, `content`) VALUES (1, 1, 'main.go', 'main.go', '.go', 'stored', 'package main')"
+        );
+        await connection.query(
+          "INSERT INTO `symbols` (`id`, `projectId`, `fileId`, `name`, `type`, `startLine`, `endLine`) VALUES (1, 1, 1, 'main', 'function', 1, 3), (2, 1, 1, 'repo', 'method', 4, 6)"
+        );
+        await connection.query(
+          "INSERT INTO `dependencies` (`id`, `projectId`, `sourceSymbolId`, `targetSymbolId`, `dependencyType`) VALUES (1, 1, 1, 2, 'calls')"
+        );
+        await connection.query(
+          "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (1, 1, 'completed', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+        );
 
-      expect(projectRows[0]?.status).toBe("completed");
-      expect(projectRows[0]?.importWarningsJson).toBeDefined();
-      // Normalize JSON array field: MySQL driver may return parsed [] or string "[]"
-      const normalizedProjectWarnings = normalizeJsonArrayField(projectRows[0]?.importWarningsJson);
-      expect(normalizedProjectWarnings).toEqual([]);
-      
-      // Verify analysisResults.warningsJson was also migrated correctly
-      expect(analysisRows[0]?.status).toBe("completed");
-      const normalizedAnalysisWarnings = normalizeJsonArrayField(analysisRows[0]?.warningsJson);
-      expect(normalizedAnalysisWarnings).toEqual([]);
-      
-      expect(dependencyRows[0]?.targetSymbolId).toBe(2);
-      expect(dependencyRows[0]?.targetKind).toBe("internal");
-      expect(String(fileColumns[0]?.Type ?? "")).toBe("mediumtext");
-      expect(String(analysisColumns[0]?.Type ?? "")).toBe("mediumtext");
-      await expect(tableExists(connection, dbName, "projectJobs")).resolves.toBe(true);
-      expect(jobColumns).toHaveLength(1);
-      expect(activeKeyColumns).toHaveLength(1);
-      expect(lockedByColumns).toHaveLength(1);
-      expect(leaseUntilColumns).toHaveLength(1);
-      expect(heartbeatAtColumns).toHaveLength(1);
-      expect(attemptCountColumns).toHaveLength(1);
-      expect(maxAttemptsColumns).toHaveLength(1);
-      expect(claimIndexes).toHaveLength(4);
-      expect(projectColumns).toHaveLength(1);
-      expect(analysisStatusType).toContain("completed_with_warnings");
-      expect(runNumberColumns).toHaveLength(1);
-      expect(snapshotColumns).toHaveLength(1);
-      expect(oldProjectUnique).toHaveLength(0);
-      expect(runNumberUnique.length).toBeGreaterThan(0);
-      await expect(tableExists(connection, dbName, "analysisBaselines")).resolves.toBe(true);
+        await applyMigrationFiles(connection, getMigrationFiles().slice(6));
 
-      await connection.query(
-        "UPDATE `analysisResults` SET `status` = 'completed_with_warnings' WHERE `id` = 1"
-      );
-      await connection.query(
-        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (2, 1, 'status-check', 'go', 'upload', 'completed', 100, 100)"
-      );
-      await connection.query(
-        "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (2, 2, 'completed', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
-      );
-      await connection.query(
-        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (3, 1, 'status-partial', 'go', 'upload', 'completed', 100, 100)"
-      );
-      await connection.query(
-        "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (3, 3, 'partial', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
-      );
-      await connection.query(
-        "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (4, 1, 'status-failed', 'go', 'upload', 'failed', 100, 100)"
-      );
-      await connection.query(
-        "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (4, 4, 'failed', NULL, NULL, NULL, NULL)"
-      );
+        const [projectRows] = await connection.query<mysql.RowDataPacket[]>(
+          "SELECT `status`, `importWarningsJson` FROM `projects` WHERE `id` = 1"
+        );
+        const [analysisRows] = await connection.query<mysql.RowDataPacket[]>(
+          "SELECT `status`, `warningsJson` FROM `analysisResults` WHERE `id` = 1"
+        );
+        const [dependencyRows] = await connection.query<mysql.RowDataPacket[]>(
+          "SELECT `targetSymbolId`, `targetKind` FROM `dependencies` WHERE `id` = 1"
+        );
+        const [fileColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `files` LIKE 'content'"
+        );
+        const [analysisColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `analysisResults` LIKE 'flowMarkdown'"
+        );
+        const [jobColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `projectJobs` LIKE 'finishedAt'"
+        );
+        const [activeKeyColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'activeKey'");
+        const [lockedByColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `projectJobs` LIKE 'lockedBy'"
+        );
+        const [leaseUntilColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'leaseUntil'");
+        const [heartbeatAtColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'heartbeatAt'");
+        const [attemptCountColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'attemptCount'");
+        const [maxAttemptsColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projectJobs` LIKE 'maxAttempts'");
+        const [claimIndexes] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW INDEX FROM `projectJobs` WHERE Key_name = 'projectJobs_claim_idx'"
+        );
+        const [projectColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `projects` LIKE 'lastAnalyzedAt'"
+        );
+        const analysisStatusType = await getColumnType(
+          connection,
+          "analysisResults",
+          "status"
+        );
+        const [runNumberColumns] = await connection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `analysisResults` LIKE 'runNumber'");
+        const [snapshotColumns] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW COLUMNS FROM `analysisResults` LIKE 'snapshotJson'"
+        );
+        const [oldProjectUnique] = await connection.query<
+          mysql.RowDataPacket[]
+        >(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_unique'"
+        );
+        const [runNumberUnique] = await connection.query<mysql.RowDataPacket[]>(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_runNumber_unique'"
+        );
+        const [projectIdIdUnique] = await connection.query<
+          mysql.RowDataPacket[]
+        >(
+          "SHOW INDEX FROM `analysisResults` WHERE Key_name = 'analysisResults_projectId_id_unique'"
+        );
+        const [baselineCompositeFk] = await connection.query<
+          mysql.RowDataPacket[]
+        >(
+          "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'analysisBaselines' AND CONSTRAINT_NAME = 'analysisBaselines_projectId_analysisResultId_fk'",
+          [dbName]
+        );
 
-      const [statusRows] = await connection.query<mysql.RowDataPacket[]>(
-        "SELECT `projectId`, `status` FROM `analysisResults` WHERE `projectId` IN (1, 2, 3, 4) ORDER BY `projectId` ASC"
-      );
-      expect(statusRows).toEqual([
-        { projectId: 1, status: "completed_with_warnings" },
-        { projectId: 2, status: "completed" },
-        { projectId: 3, status: "partial" },
-        { projectId: 4, status: "failed" },
-      ]);
-    } finally {
-      await connection.end();
-      await dropDatabase(DATABASE_URL as string, dbName);
-    }
+        expect(projectRows[0]?.status).toBe("completed");
+        expect(projectRows[0]?.importWarningsJson).toBeDefined();
+        // Normalize JSON array field: MySQL driver may return parsed [] or string "[]"
+        const normalizedProjectWarnings = normalizeJsonArrayField(
+          projectRows[0]?.importWarningsJson
+        );
+        expect(normalizedProjectWarnings).toEqual([]);
+
+        // Verify analysisResults.warningsJson was also migrated correctly
+        expect(analysisRows[0]?.status).toBe("completed");
+        const normalizedAnalysisWarnings = normalizeJsonArrayField(
+          analysisRows[0]?.warningsJson
+        );
+        expect(normalizedAnalysisWarnings).toEqual([]);
+
+        expect(dependencyRows[0]?.targetSymbolId).toBe(2);
+        expect(dependencyRows[0]?.targetKind).toBe("internal");
+        expect(String(fileColumns[0]?.Type ?? "")).toBe("mediumtext");
+        expect(String(analysisColumns[0]?.Type ?? "")).toBe("mediumtext");
+        await expect(
+          tableExists(connection, dbName, "projectJobs")
+        ).resolves.toBe(true);
+        expect(jobColumns).toHaveLength(1);
+        expect(activeKeyColumns).toHaveLength(1);
+        expect(lockedByColumns).toHaveLength(1);
+        expect(leaseUntilColumns).toHaveLength(1);
+        expect(heartbeatAtColumns).toHaveLength(1);
+        expect(attemptCountColumns).toHaveLength(1);
+        expect(maxAttemptsColumns).toHaveLength(1);
+        expect(claimIndexes).toHaveLength(4);
+        expect(projectColumns).toHaveLength(1);
+        expect(analysisStatusType).toContain("completed_with_warnings");
+        expect(runNumberColumns).toHaveLength(1);
+        expect(snapshotColumns).toHaveLength(1);
+        expect(oldProjectUnique).toHaveLength(0);
+        expect(runNumberUnique.length).toBeGreaterThan(0);
+        expect(projectIdIdUnique.length).toBeGreaterThan(0);
+        await expect(
+          tableExists(connection, dbName, "analysisBaselines")
+        ).resolves.toBe(true);
+        expect(baselineCompositeFk.length).toBeGreaterThan(0);
+
+        await connection.query(
+          "UPDATE `analysisResults` SET `status` = 'completed_with_warnings' WHERE `id` = 1"
+        );
+        await connection.query(
+          "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (2, 1, 'status-check', 'go', 'upload', 'completed', 100, 100)"
+        );
+        await connection.query(
+          "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (2, 2, 'completed', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+        );
+        await connection.query(
+          "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (3, 1, 'status-partial', 'go', 'upload', 'completed', 100, 100)"
+        );
+        await connection.query(
+          "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (3, 3, 'partial', '# FLOW', '# DATA', '# RISKS', 'rules: []')"
+        );
+        await connection.query(
+          "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (4, 1, 'status-failed', 'go', 'upload', 'failed', 100, 100)"
+        );
+        await connection.query(
+          "INSERT INTO `analysisResults` (`id`, `projectId`, `status`, `flowMarkdown`, `dataDependencyMarkdown`, `risksMarkdown`, `rulesYaml`) VALUES (4, 4, 'failed', NULL, NULL, NULL, NULL)"
+        );
+
+        const [statusRows] = await connection.query<mysql.RowDataPacket[]>(
+          "SELECT `projectId`, `status` FROM `analysisResults` WHERE `projectId` IN (1, 2, 3, 4) ORDER BY `projectId` ASC"
+        );
+        expect(statusRows).toEqual([
+          { projectId: 1, status: "completed_with_warnings" },
+          { projectId: 2, status: "completed" },
+          { projectId: 3, status: "partial" },
+          { projectId: 4, status: "failed" },
+        ]);
+
+        await connection.query(
+          "INSERT INTO `analysisBaselines` (`projectId`, `analysisResultId`) VALUES (2, 2)"
+        );
+        await expect(
+          connection.query(
+            "INSERT INTO `analysisBaselines` (`projectId`, `analysisResultId`) VALUES (2, 1)"
+          )
+        ).rejects.toThrow();
+      } finally {
+        await connection.end();
+        await dropDatabase(DATABASE_URL as string, dbName);
+      }
     },
     MIGRATION_TEST_TIMEOUT_MS
   );
@@ -266,13 +436,21 @@ maybeDescribe("Drizzle migration smoke", () => {
   it(
     "keeps project sourceFingerprint safe on fresh databases and 0014 -> 0015 upgrades",
     async () => {
-      const freshDbName = await createDatabase(DATABASE_URL as string, "sourcefp_fresh");
-      const freshConnection = await connectToDatabase(DATABASE_URL as string, freshDbName);
+      const freshDbName = await createDatabase(
+        DATABASE_URL as string,
+        "sourcefp_fresh"
+      );
+      const freshConnection = await connectToDatabase(
+        DATABASE_URL as string,
+        freshDbName
+      );
 
       try {
         await applyMigrationFiles(freshConnection, getMigrationFiles());
 
-        const [freshColumns] = await freshConnection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'sourceFingerprint'");
+        const [freshColumns] = await freshConnection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projects` LIKE 'sourceFingerprint'");
         expect(freshColumns).toHaveLength(1);
         expect(String(freshColumns[0]?.Type ?? "")).toBe("varchar(64)");
       } finally {
@@ -280,13 +458,24 @@ maybeDescribe("Drizzle migration smoke", () => {
         await dropDatabase(DATABASE_URL as string, freshDbName);
       }
 
-      const upgradeDbName = await createDatabase(DATABASE_URL as string, "sourcefp_upgrade");
-      const upgradeConnection = await connectToDatabase(DATABASE_URL as string, upgradeDbName);
+      const upgradeDbName = await createDatabase(
+        DATABASE_URL as string,
+        "sourcefp_upgrade"
+      );
+      const upgradeConnection = await connectToDatabase(
+        DATABASE_URL as string,
+        upgradeDbName
+      );
 
       try {
-        await applyMigrationFiles(upgradeConnection, getMigrationFiles().slice(0, 15));
+        await applyMigrationFiles(
+          upgradeConnection,
+          getMigrationFiles().slice(0, 15)
+        );
 
-        await upgradeConnection.query("INSERT INTO `users` (`id`, `openId`, `role`) VALUES (1, 'user-sourcefp', 'user')");
+        await upgradeConnection.query(
+          "INSERT INTO `users` (`id`, `openId`, `role`) VALUES (1, 'user-sourcefp', 'user')"
+        );
         await upgradeConnection.query(
           "INSERT INTO `projects` (`id`, `userId`, `name`, `language`, `sourceType`, `status`, `analysisProgress`, `importProgress`) VALUES (1, 1, 'legacy-project', 'delphi', 'upload', 'completed', 100, 100)"
         );
@@ -294,11 +483,22 @@ maybeDescribe("Drizzle migration smoke", () => {
           "INSERT INTO `files` (`id`, `projectId`, `filePath`, `fileName`, `fileType`, `status`, `content`) VALUES (1, 1, 'src/Main.pas', 'Main.pas', '.pas', 'stored', 'unit Main;'), (2, 1, 'src/Main.dfm', 'Main.dfm', '.dfm', 'stored', 'object MainForm: TMainForm end')"
         );
 
-        await applyMigrationFiles(upgradeConnection, getMigrationFiles().slice(15));
+        await applyMigrationFiles(
+          upgradeConnection,
+          getMigrationFiles().slice(15)
+        );
 
-        const [projectRows] = await upgradeConnection.query<mysql.RowDataPacket[]>("SELECT `id`, `name`, `sourceFingerprint` FROM `projects` WHERE `id` = 1");
-        const [fileRows] = await upgradeConnection.query<mysql.RowDataPacket[]>("SELECT `id`, `filePath` FROM `files` WHERE `projectId` = 1 ORDER BY `id` ASC");
-        const [sourceFingerprintColumns] = await upgradeConnection.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM `projects` LIKE 'sourceFingerprint'");
+        const [projectRows] = await upgradeConnection.query<
+          mysql.RowDataPacket[]
+        >(
+          "SELECT `id`, `name`, `sourceFingerprint` FROM `projects` WHERE `id` = 1"
+        );
+        const [fileRows] = await upgradeConnection.query<mysql.RowDataPacket[]>(
+          "SELECT `id`, `filePath` FROM `files` WHERE `projectId` = 1 ORDER BY `id` ASC"
+        );
+        const [sourceFingerprintColumns] = await upgradeConnection.query<
+          mysql.RowDataPacket[]
+        >("SHOW COLUMNS FROM `projects` LIKE 'sourceFingerprint'");
 
         expect(projectRows).toEqual([
           expect.objectContaining({
@@ -312,7 +512,9 @@ maybeDescribe("Drizzle migration smoke", () => {
           expect.objectContaining({ id: 2, filePath: "src/Main.dfm" }),
         ]);
         expect(sourceFingerprintColumns).toHaveLength(1);
-        expect(String(sourceFingerprintColumns[0]?.Type ?? "")).toBe("varchar(64)");
+        expect(String(sourceFingerprintColumns[0]?.Type ?? "")).toBe(
+          "varchar(64)"
+        );
         expect(String(sourceFingerprintColumns[0]?.Null ?? "")).toBe("YES");
       } finally {
         await upgradeConnection.end();

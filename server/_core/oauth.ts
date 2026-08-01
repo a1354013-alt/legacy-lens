@@ -4,7 +4,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { z } from "zod";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
-import { ENV } from "./env";
+import { ENV, parseCanonicalPublicOrigin } from "./env";
 import { logger } from "./logger";
 import { sdk } from "./sdk";
 
@@ -41,8 +41,26 @@ function getStateSecret() {
   return new TextEncoder().encode(ENV.cookieSecret);
 }
 
+function getRequestOrigin(req: Request) {
+  const host = req.get("host")?.trim();
+  if (!host) {
+    throw new Error("Request host header is required.");
+  }
+
+  return `${req.protocol}://${host}`;
+}
+
+export function resolveOAuthPublicOrigin(req: Request) {
+  const configuredOrigin = parseCanonicalPublicOrigin(process.env);
+  if (configuredOrigin) {
+    return configuredOrigin;
+  }
+
+  return getRequestOrigin(req);
+}
+
 function buildRedirectUri(req: Request) {
-  return `${req.protocol}://${req.get("host")}/api/oauth/callback`;
+  return `${resolveOAuthPublicOrigin(req)}/api/oauth/callback`;
 }
 
 export async function createOAuthStateToken(req: Request, redirectPath = "/") {
@@ -110,7 +128,10 @@ export function registerOAuthRoutes(app: Express) {
 
     try {
       const state = await verifyOAuthStateToken(stateToken);
-      const tokenResponse = await sdk.exchangeCodeForToken(code, state.redirectUri);
+      const tokenResponse = await sdk.exchangeCodeForToken(
+        code,
+        state.redirectUri
+      );
       const userInfo = await sdk.getUserInfo(tokenResponse.accessToken);
 
       if (!userInfo.openId) {
@@ -132,7 +153,10 @@ export function registerOAuthRoutes(app: Express) {
       });
 
       const cookieOptions = getSessionCookieOptions(req);
-      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      res.cookie(COOKIE_NAME, sessionToken, {
+        ...cookieOptions,
+        maxAge: ONE_YEAR_MS,
+      });
       res.redirect(302, state.redirectPath);
     } catch (error) {
       logger.error("OAuth callback failed", {

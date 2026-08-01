@@ -1,5 +1,6 @@
 import { relations } from "drizzle-orm";
 import {
+  analysisBaselines,
   analysisResults,
   dependencies,
   fieldDependencies,
@@ -30,6 +31,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   risks: many(risks),
   rules: many(rules),
   analysisResults: many(analysisResults),
+  analysisBaselines: many(analysisBaselines),
   projectJobs: many(projectJobs),
 }));
 
@@ -84,20 +86,23 @@ export const fieldsRelations = relations(fields, ({ one, many }) => ({
   fieldDependencies: many(fieldDependencies),
 }));
 
-export const fieldDependenciesRelations = relations(fieldDependencies, ({ one }) => ({
-  project: one(projects, {
-    fields: [fieldDependencies.projectId],
-    references: [projects.id],
-  }),
-  field: one(fields, {
-    fields: [fieldDependencies.fieldId],
-    references: [fields.id],
-  }),
-  symbol: one(symbols, {
-    fields: [fieldDependencies.symbolId],
-    references: [symbols.id],
-  }),
-}));
+export const fieldDependenciesRelations = relations(
+  fieldDependencies,
+  ({ one }) => ({
+    project: one(projects, {
+      fields: [fieldDependencies.projectId],
+      references: [projects.id],
+    }),
+    field: one(fields, {
+      fields: [fieldDependencies.fieldId],
+      references: [fields.id],
+    }),
+    symbol: one(symbols, {
+      fields: [fieldDependencies.symbolId],
+      references: [symbols.id],
+    }),
+  })
+);
 
 export const risksRelations = relations(risks, ({ one }) => ({
   project: one(projects, {
@@ -113,12 +118,29 @@ export const rulesRelations = relations(rules, ({ one }) => ({
   }),
 }));
 
-export const analysisResultsRelations = relations(analysisResults, ({ one }) => ({
-  project: one(projects, {
-    fields: [analysisResults.projectId],
-    references: [projects.id],
-  }),
-}));
+export const analysisResultsRelations = relations(
+  analysisResults,
+  ({ one }) => ({
+    project: one(projects, {
+      fields: [analysisResults.projectId],
+      references: [projects.id],
+    }),
+  })
+);
+
+export const analysisBaselinesRelations = relations(
+  analysisBaselines,
+  ({ one }) => ({
+    project: one(projects, {
+      fields: [analysisBaselines.projectId],
+      references: [projects.id],
+    }),
+    analysisResult: one(analysisResults, {
+      fields: [analysisBaselines.analysisResultId],
+      references: [analysisResults.id],
+    }),
+  })
+);
 
 export const projectJobsRelations = relations(projectJobs, ({ one }) => ({
   project: one(projects, {

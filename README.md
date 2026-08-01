@@ -5,6 +5,7 @@ Legacy Lens is a **legacy static analyzer and project import workspace**. It imp
 Legacy Lens should be positioned as a **legacy impact review assistant**. Its reports support human code review and modernization planning; they do not replace manual review, compiler-grade semantic analysis, or runtime validation.
 
 Positioning:
+
 - portfolio-grade
 - demo-ready
 - legacy modernization analysis workspace
@@ -12,12 +13,14 @@ Positioning:
 ## Product Positioning
 
 Legacy Lens is intentionally focused on:
+
 - legacy code analyzer
 - project import workspace (ZIP / Git)
 - static analysis and impact analysis assistant
 - report export tool for modernization review
 
 It is intentionally **not** positioned as:
+
 - chat bot
 - RAG knowledge base
 - runtime tracing platform
@@ -37,6 +40,7 @@ It is intentionally **not** positioned as:
 - Export a ZIP report generated **only from persisted analysis**
 
 Highlights (why this repo is portfolio-worthy):
+
 - Delphi support (including limited-analysis import for `.dfm` / `.fmx` / `.dpk` / `.inc`)
 - SQL field read/write extraction (heuristic)
 - legacy encoding detection + persisted stable import warnings
@@ -45,12 +49,12 @@ Highlights (why this repo is portfolio-worthy):
 
 ## Supported Languages (Import + Analysis)
 
-| Language | Extensions | Notes |
-|---|---|---|
-| Go | `.go` | heuristic symbol/dependency extraction |
-| SQL | `.sql` | heuristic query/table/field extraction |
-| Delphi | `.pas`, `.dpr`, `.delphi`, `.dfm`, `.fmx`, `.inc`, `.dpk` | heuristic unit, form, event, binding, and field-access analysis |
-| Delphi build metadata | `.dproj`, `.groupproj`, `.bdsproj`, `.cfg`, `.dof`, `.rc` | imported as untrusted text for Build Doctor only |
+| Language              | Extensions                                                | Notes                                                           |
+| --------------------- | --------------------------------------------------------- | --------------------------------------------------------------- |
+| Go                    | `.go`                                                     | heuristic symbol/dependency extraction                          |
+| SQL                   | `.sql`                                                    | heuristic query/table/field extraction                          |
+| Delphi                | `.pas`, `.dpr`, `.delphi`, `.dfm`, `.fmx`, `.inc`, `.dpk` | heuristic unit, form, event, binding, and field-access analysis |
+| Delphi build metadata | `.dproj`, `.groupproj`, `.bdsproj`, `.cfg`, `.dof`, `.rc` | imported as untrusted text for Build Doctor only                |
 
 Unsupported languages are skipped with explicit import warnings.
 
@@ -113,6 +117,7 @@ The analysis content in an exported ZIP is generated **only** from the selected 
 See [docs/report-format.md](docs/report-format.md) for the purpose, intended readers, and data sources for every report file.
 
 Files at the ZIP root:
+
 - `FLOW.md`
 - `DATA_DEPENDENCY.md`
 - `RISKS.md`
@@ -138,6 +143,7 @@ Files at the ZIP root:
 `EXECUTIVE_SUMMARY.md` is a stakeholder-oriented overview of the persisted analysis. It summarizes project scope, analysis confidence, top findings, Delphi-specific audit signals, recommended next actions, and manual-review limitations without treating heuristic static analysis as compiler-grade proof.
 
 `IMPACT_ANALYSIS.md` and `impact-analysis.json` are generated from the persisted project snapshot and summarize:
+
 - total files / symbols / dependencies / risks / rules
 - top impacted files (dependency/risk/rule-driven impact signals)
 - top dependencies
@@ -192,6 +198,7 @@ IMPORT_FILE_TOO_LARGE: big.sql - The file was skipped because it exceeds the max
 ## Target Environment
 
 Legacy Lens currently targets CI and local acceptance with:
+
 - Node.js `22.18.0` in CI and Docker
 - pnpm `10.4.1`
 
@@ -200,6 +207,7 @@ Legacy Lens currently targets CI and local acceptance with:
 ## Quick Start (Local)
 
 ### Prerequisites
+
 - Node.js 22.x (`>=20 <23`, verified with `22.18.0`)
 - pnpm 10.4.1 (via `packageManager`)
 - MySQL 8+ (or compatible provider)
@@ -207,11 +215,13 @@ Legacy Lens currently targets CI and local acceptance with:
 ### 1) Configure env
 
 Copy:
+
 ```bash
 cp .env.example .env
 ```
 
 Minimum required variables (all modes):
+
 - `DATABASE_URL`
 - `JWT_SECRET`
 - `VITE_APP_ID`
@@ -224,6 +234,7 @@ Legacy Lens supports a **dev-only auth bypass** that keeps the same cookie/sessi
 This is useful for demos and local development, but must never be enabled in production.
 
 In `.env` set:
+
 ```bash
 DEV_AUTH_BYPASS=1
 VITE_DEV_AUTH_BYPASS=1
@@ -231,32 +242,38 @@ DEV_AUTH_OPEN_ID=local-dev-user
 ```
 
 Important notes:
+
 - Bypass does **not** remove the need for OAuth env variables. The server still validates `VITE_OAUTH_PORTAL_URL` / `OAUTH_SERVER_URL` as required placeholders.
 - While bypass is enabled, the UI "Sign in" button uses `/api/dev/login` instead of starting an OAuth redirect.
 - In Docker demo mode, clicking Sign in uses a local development auth bypass. The demo does not require a real external identity provider.
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW` exists only for local/demo containers that still run with `NODE_ENV=production` for static asset serving. It must never be enabled in a real production deployment.
 
 Dev login flow:
+
 - UI "Sign in" navigates to `/api/dev/login?next=/...` (controlled by `VITE_DEV_AUTH_BYPASS`)
 - Server sets the session cookie (`app_session_id`)
 - Default identity is `DEV_AUTH_OPEN_ID` (fallback: `local-dev-user`)
 
 Logout flow:
+
 - UI "Sign out" calls `POST /api/trpc/auth.logout` to clear the session cookie
 - In bypass mode, sign-out clears the local demo session and redirects through `/api/dev/logout?next=/`
 - The redirect returns to the signed-out landing page; it does not automatically call `/api/dev/login` again. The frontend also clears auth and project-list query cache before showing the logged-out state.
 
 ### 2) Install deps
+
 ```bash
 pnpm install
 ```
 
 ### 3) Run migrations
+
 ```bash
 pnpm db:migrate
 ```
 
 ### 4) Start dev server
+
 ```bash
 pnpm dev
 ```
@@ -270,6 +287,7 @@ This repo ships a Dockerfile plus separate compose files for demo and production
 ### Demo mode (local only)
 
 `docker-compose.demo.yml` is for local demos and smoke tests only:
+
 - `DEV_AUTH_BYPASS=1` (server enables `/api/dev/login`)
 - `DEV_AUTH_BYPASS_UNSAFE_ALLOW=1` (explicitly allows bypass even when the container runs with `NODE_ENV=production` for static serving)
 - `VITE_DEV_AUTH_BYPASS=1` (client builds the "Sign in" button to hit `/api/dev/login`)
@@ -282,6 +300,7 @@ This repo ships a Dockerfile plus separate compose files for demo and production
 Open the repository root in VS Code and press `F5`.
 
 Normal startup flow:
+
 - validate Docker and Docker Compose
 - start `docker compose -f docker-compose.demo.yml up -d --build`
 - wait for `GET /ready`
@@ -308,6 +327,7 @@ start-demo.cmd
 ```
 
 This reuses the same one-click startup flow and starts the local demo stack with Docker Compose:
+
 - MySQL
 - migrations
 - Legacy Lens app
@@ -364,11 +384,13 @@ Terminal -> Run Task -> Legacy Lens: Reset Demo DB
 The demo compose file brings up MySQL, waits for the one-shot `migrate` service to finish, and only then starts `app`.
 
 If you want to run migrations manually without starting the app:
+
 ```bash
 docker compose -f docker-compose.demo.yml run --rm migrate
 ```
 
 To run migration smoke locally against a dedicated MySQL database:
+
 ```bash
 DATABASE_URL=mysql://root:password@127.0.0.1:3306/legacy_lens_dev pnpm test:migration
 ```
@@ -378,7 +400,8 @@ DATABASE_URL=mysql://root:password@127.0.0.1:3306/legacy_lens_dev pnpm test:migr
 `docker-compose.yml` extends `docker-compose.prod.yml` and does not enable demo auth, weak demo secrets, or fake users. It expects production-like environment values:
 
 ```bash
-APP_VERSION=1.1.0-rc2 \
+APP_VERSION=1.1.0 \
+PUBLIC_ORIGIN=https://legacy.example.com \
 DATABASE_URL=mysql://user:password@host:3306/legacy_lens \
 JWT_SECRET=replace-with-at-least-32-characters \
 VITE_APP_ID=your-app-id \
@@ -388,14 +411,17 @@ docker compose up --build
 ```
 
 Do not set `DEV_AUTH_BYPASS`, `VITE_DEV_AUTH_BYPASS`, or `DEV_AUTH_BYPASS_UNSAFE_ALLOW` for production-like runs.
+Set `PUBLIC_ORIGIN` to the canonical externally reachable app origin. In production it must be an HTTPS origin without path, query, fragment, or credentials.
 Do not set `CSP_ALLOW_UNSAFE_EVAL` for real production unless you have explicitly reviewed and accepted the CSP weakening.
 
 If you want to verify the full demo container flow end-to-end (build -> migrate -> app health -> dev login redirect):
+
 ```bash
 pnpm docker:smoke
 ```
 
 Port notes:
+
 - Demo compose defaults to `3000` for the app and `3306` for MySQL.
 - Production-like compose binds only the app port and expects `DATABASE_URL` to point at an existing MySQL-compatible database.
 - You can override host ports with `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT`, which is what the smoke test does in CI to avoid collisions.
@@ -410,6 +436,7 @@ $env:LEGACY_LENS_DB_PORT=3310
 - The launcher uses the configured `LEGACY_LENS_PORT` value for Docker port binding, `/ready` polling, progress messages, and the browser URL.
 
 Common problems:
+
 - Docker Desktop is not running. Start Docker Desktop fully before pressing `F5`.
 - Port `3000` or `3306` is already occupied. Stop the conflicting process or set `LEGACY_LENS_PORT` / `LEGACY_LENS_DB_PORT` first.
 - First startup can take longer because Docker may need to build images.
@@ -437,6 +464,7 @@ The CI smoke flow randomizes `COMPOSE_PROJECT_NAME`, `LEGACY_LENS_PORT`, and `LE
 Open `http://localhost:3000`.
 
 Operational notes:
+
 - `app` does not run migrations.
 - `migrate` is the only container that runs `pnpm db:migrate`.
 - The production app image keeps production dependencies only; it is not expected to contain `drizzle-kit`.
@@ -458,6 +486,7 @@ The current frontend import page creates the project and queues the ZIP/Git impo
 Use `POST /api/projects/:projectId/upload` only when you already have a project id and need to re-import source into that existing project. It accepts the same single-source multipart contract as the new-project route.
 
 Legacy/compatibility routes:
+
 - `projects.uploadFiles` is a small base64 ZIP compatibility mutation. It is capped at 2MB raw ZIP content and should not be used for normal imports.
 - `projects.cloneGit` remains available for compatibility with older tRPC callers that re-import Git into an existing project. The UI import page does not use it.
 
@@ -494,6 +523,7 @@ curl -X POST "http://localhost:3000/api/projects/42/upload" \
 ```
 
 Upload/report error contract:
+
 - `401`: unauthenticated or invalid session
 - `404`: project not found (per the current ownership-hiding strategy)
 - `409`: conflicting project/job state such as an already-active import/analysis job or a report that is not ready yet
@@ -502,6 +532,7 @@ Upload/report error contract:
 - `500`: database or unexpected internal failure
 
 ZIP safety contract:
+
 - Unsupported or malformed archives return `ZIP_INVALID`.
 - Non-`.zip` file uploads are rejected with `ZIP_INVALID`; the backend does not rely on the browser `accept=".zip"` hint.
 - Any unsafe archive path such as `../evil.go`, `/absolute/main.go`, `C:/windows/evil.go`, or nested traversal segments rejects the entire archive with `ZIP_UNSAFE_PATH`.
@@ -537,6 +568,7 @@ Legacy Lens provides heuristic impact analysis intended to guide code review. It
 - Treat the report as the start of code review and change planning, not as the only source of truth.
 
 Dependency target kind contract:
+
 - `internal`: a project-local symbol, file, function, component, table, or query that Legacy Lens resolved.
 - `external`: a dependency outside the project with a known source, such as a Go standard-library or third-party package import, Delphi system unit, or external `uses` unit.
 - `unresolved`: a dynamic, ambiguous, or unknown reference whose target could not be identified.
@@ -562,12 +594,14 @@ samples/
 ```
 
 Example:
+
 1. Zip `samples/go/` into `samples-go.zip`
 2. Import the ZIP in the UI
 3. Run analysis
 4. Download the report
 
 Demo walkthrough:
+
 1. Start the app with `pnpm dev`, press `F5`, or run `start-demo.cmd`
 2. Sign in with dev auth bypass
 3. Create a project and import `samples/go/`, `samples/sql/`, or `samples/delphi/`
@@ -582,6 +616,7 @@ Demo walkthrough:
 - tRPC system health: `GET /api/trpc/system.health`
 
 Endpoint semantics:
+
 - `/health` only confirms that the HTTP server process is alive enough to answer requests.
 - `/ready` is the deploy-time readiness gate and returns success only when required runtime checks are available.
 - `/api/health` remains the detailed diagnostics endpoint and may return `206` for degraded-but-still-running states.
@@ -596,22 +631,22 @@ Version is sourced from `APP_VERSION` first, then `npm_package_version`, then `p
 
 ## Scripts
 
-| Command | Description |
-|---|---|
-| `pnpm dev` | Dev server (Vite + API) |
-| `pnpm build` | Build client + bundle server to `dist/` |
-| `pnpm start` | Run production server from `dist/` |
-| `pnpm lint` | ESLint |
-| `pnpm check` | Typecheck (app + tests) |
-| `pnpm test` | Vitest |
-| `pnpm test:migration` | Run migration smoke against a real MySQL database (`DATABASE_URL` required) |
-| `pnpm demo` | Start the local Docker demo stack with MySQL and dev auth bypass |
-| `pnpm demo:down` | Stop the local Docker demo stack |
-| `pnpm demo:reset` | Stop the local Docker demo stack and remove its demo database volume |
+| Command                | Description                                                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------------- |
+| `pnpm dev`             | Dev server (Vite + API)                                                                         |
+| `pnpm build`           | Build client + bundle server to `dist/`                                                         |
+| `pnpm start`           | Run production server from `dist/`                                                              |
+| `pnpm lint`            | ESLint                                                                                          |
+| `pnpm check`           | Typecheck (app + tests)                                                                         |
+| `pnpm test`            | Vitest                                                                                          |
+| `pnpm test:migration`  | Run migration smoke against a real MySQL database (`DATABASE_URL` required)                     |
+| `pnpm demo`            | Start the local Docker demo stack with MySQL and dev auth bypass                                |
+| `pnpm demo:down`       | Stop the local Docker demo stack                                                                |
+| `pnpm demo:reset`      | Stop the local Docker demo stack and remove its demo database volume                            |
 | `scripts/f5-start.ps1` | VS Code F5 launcher: detached Docker startup, readiness wait, browser open, concise diagnostics |
-| `scripts/f5-stop.ps1` | VS Code stop helper for the Docker demo stack |
-| `start-demo.cmd` | Windows one-click launcher for the local Docker demo stack |
-| `pnpm db:migrate` | Apply Drizzle migrations |
+| `scripts/f5-stop.ps1`  | VS Code stop helper for the Docker demo stack                                                   |
+| `start-demo.cmd`       | Windows one-click launcher for the local Docker demo stack                                      |
+| `pnpm db:migrate`      | Apply Drizzle migrations                                                                        |
 
 Raw production start requires an already-built app and an already-migrated database:
 
@@ -624,6 +659,7 @@ pnpm start
 `pnpm start` only runs the production server from `dist/`; it does not apply migrations. The production-like Docker Compose flow is different: `docker-compose.prod.yml` includes a dedicated `migrate` service, so migrations run as a separate container before the app becomes ready.
 
 Docker equivalents:
+
 - `pnpm demo` or `docker compose -f docker-compose.demo.yml up --build` -> local demo stack with MySQL and dev auth bypass
 - `pnpm demo:down` or `docker compose -f docker-compose.demo.yml down` -> stop the local demo stack
 - `pnpm demo:reset` or `docker compose -f docker-compose.demo.yml down -v` -> reset the local demo database
@@ -644,6 +680,7 @@ Docker equivalents:
 ## Import Safety Boundaries
 
 Import pipeline is intentionally bounded:
+
 - Shared raw ZIP upload limit: 30MB per `.zip` before base64 encoding (`MAX_UPLOAD_BYTES` / `MAX_ZIP_RAW_BYTES`)
 - HTTP JSON body limit is derived from the same raw ZIP limit with base64 overhead headroom (`JSON_UPLOAD_BODY_LIMIT_BYTES`)
 - Legacy tRPC base64 ZIP upload is compatibility-only and capped at 2MB raw ZIP content; normal imports should use the multipart upload route instead of embedding archive data in JSON
@@ -743,12 +780,14 @@ pnpm docker:smoke
 Impact Analysis helps developers understand what may break before changing legacy code. It connects symbols, SQL fields, tables, business rules, and risks into a traceable dependency view, reducing modernization risk.
 
 ### Features
+
 - **Auto-detection**: Automatically resolve target type (symbol, file, table, etc.).
 - **Impact Tree**: Visual representation of affected components.
 - **Dependency Chains**: Trace the path from change to impact.
 - **Exportable**: Impact summaries are included in the generated report ZIP.
 
 ### API Example
+
 ```bash
 GET /api/trpc/analysis.getImpact?batch=1&input={"0":{"projectId":1,"target":"EB_SPECI","type":"auto"}}
 ```
@@ -756,6 +795,7 @@ GET /api/trpc/analysis.getImpact?batch=1&input={"0":{"projectId":1,"target":"EB_
 ## Roadmap
 
 These remain intentionally unfinished:
+
 - interactive dependency graph
 - custom rule packs
 - ingestion preflight report

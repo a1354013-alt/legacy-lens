@@ -12,6 +12,7 @@ vi.mock("./env", () => ({
     devAuthBypass: "",
     devAuthOpenId: "",
   },
+  parseCanonicalPublicOrigin: vi.fn(() => "https://legacy.example.com"),
 }));
 
 vi.mock("../db", () => ({
@@ -31,18 +32,21 @@ describe("OAuth state validation", () => {
   let closeServer: (() => Promise<void>) | null = null;
 
   beforeAll(async () => {
+    process.env.PUBLIC_ORIGIN = "https://legacy.example.com";
     const { registerOAuthRoutes } = await import("./oauth");
     const app = express();
     registerOAuthRoutes(app);
 
-    await new Promise<void>((resolve) => {
+    await new Promise<void>(resolve => {
       const server = app.listen(0, "127.0.0.1", () => {
         const address = server.address();
         if (address && typeof address === "object") {
           baseUrl = `http://127.0.0.1:${address.port}`;
         }
         closeServer = async () => {
-          await new Promise<void>((done, reject) => server.close((error) => (error ? reject(error) : done())));
+          await new Promise<void>((done, reject) =>
+            server.close(error => (error ? reject(error) : done()))
+          );
         };
         resolve();
       });
@@ -50,25 +54,35 @@ describe("OAuth state validation", () => {
   });
 
   afterAll(async () => {
+    delete process.env.PUBLIC_ORIGIN;
     await closeServer?.();
   });
 
   it("creates a signed login state and rejects tampered callback state", async () => {
-    const startResponse = await fetch(`${baseUrl}/api/oauth/start?next=%2Fprojects%2F1%2Fanalysis`, {
-      redirect: "manual",
-    });
+    const startResponse = await fetch(
+      `${baseUrl}/api/oauth/start?next=%2Fprojects%2F1%2Fanalysis`,
+      {
+        redirect: "manual",
+      }
+    );
     const location = startResponse.headers.get("location");
 
     expect(startResponse.status).toBe(302);
     expect(location).toContain("https://portal.example.com/app-auth");
+    expect(location).toContain(
+      encodeURIComponent("https://legacy.example.com/api/oauth/callback")
+    );
 
     const state = new URL(location!).searchParams.get("state");
     expect(state).toBeTruthy();
 
     const tamperedState = `${state}tampered`;
-    const callbackResponse = await fetch(`${baseUrl}/api/oauth/callback?code=abc&state=${encodeURIComponent(tamperedState)}`, {
-      redirect: "manual",
-    });
+    const callbackResponse = await fetch(
+      `${baseUrl}/api/oauth/callback?code=abc&state=${encodeURIComponent(tamperedState)}`,
+      {
+        redirect: "manual",
+      }
+    );
 
     expect(callbackResponse.status).toBe(400);
     await expect(callbackResponse.json()).resolves.toEqual({

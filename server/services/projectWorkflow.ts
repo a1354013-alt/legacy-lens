@@ -24,7 +24,10 @@ import type {
   SymbolsPageInput,
 } from "../../shared/contracts";
 import type { ImpactTargetType, ProjectStatus } from "../../shared/contracts";
-import { calculateAnalysisConfidence, type AnalysisConfidence } from "../../shared/analysisConfidence";
+import {
+  calculateAnalysisConfidence,
+  type AnalysisConfidence,
+} from "../../shared/analysisConfidence";
 import { projectStatusLabels } from "../../shared/contracts";
 import {
   analysisResults,
@@ -66,7 +69,10 @@ import {
 } from "./project/projectPagedQueries";
 import { getAnalysisSnapshotImpl } from "./project/projectSnapshotQueries";
 import { extractAffectedRows, isInMemoryDb } from "./project/projectQueryUtils";
-import { analyzeProjectImpl, type ProjectAnalysisRunnerDeps } from "./project/projectAnalysisRunner";
+import {
+  analyzeProjectImpl,
+  type ProjectAnalysisRunnerDeps,
+} from "./project/projectAnalysisRunner";
 import { importProjectGitImpl } from "./project/projectImportGit";
 import {
   importProjectZipFromTempFileImpl,
@@ -99,7 +105,10 @@ import {
   type ProjectJobExecutionState,
   type ProjectJobOwnership,
 } from "./project/projectJobLease";
-import { heartbeatProjectJobLease, startProjectJobLeaseGuardian } from "./project/projectJobHeartbeat";
+import {
+  heartbeatProjectJobLease,
+  startProjectJobLeaseGuardian,
+} from "./project/projectJobHeartbeat";
 import {
   getImportZipPayloadTempPath,
   projectJobPayloadSchema,
@@ -123,7 +132,9 @@ import {
 type DbHandle = Pick<DatabaseClient, "select" | "insert" | "update" | "delete">;
 
 const queuedJobPromises = new Map<number, Promise<void>>();
-const PROJECT_JOB_LOCK_OWNER = process.env.PROJECT_WORKER_ID?.trim() || `worker-${process.pid}-${randomUUID()}`;
+const PROJECT_JOB_LOCK_OWNER =
+  process.env.PROJECT_WORKER_ID?.trim() ||
+  `worker-${process.pid}-${randomUUID()}`;
 const ANALYSIS_INSERT_CHUNK_SIZE = 250;
 const MYSQL_MEDIUMTEXT_MAX_BYTES = 16_777_215;
 let projectJobWorkerLoop: Promise<void> | null = null;
@@ -189,7 +200,11 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
-async function insertInChunks<T extends Record<string, unknown>>(db: DbHandle, table: object, rows: T[]) {
+async function insertInChunks<T extends Record<string, unknown>>(
+  db: DbHandle,
+  table: object,
+  rows: T[]
+) {
   for (const chunk of chunkArray(rows, ANALYSIS_INSERT_CHUNK_SIZE)) {
     await db.insert(table as typeof dependencies).values(chunk as never);
   }
@@ -224,12 +239,17 @@ function getStackPreview(error: unknown, maxLines = 4) {
 
   return error.stack
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map(line => line.trim())
     .filter(Boolean)
     .slice(0, maxLines);
 }
 
-function buildAnalysisErrorMessage(context: Pick<AnalysisFailureContext, "stage" | "rawMessage" | "filePath" | "operation" | "table">) {
+function buildAnalysisErrorMessage(
+  context: Pick<
+    AnalysisFailureContext,
+    "stage" | "rawMessage" | "filePath" | "operation" | "table"
+  >
+) {
   const parts = [context.stage, context.rawMessage];
 
   if (context.filePath) {
@@ -237,7 +257,9 @@ function buildAnalysisErrorMessage(context: Pick<AnalysisFailureContext, "stage"
   }
 
   if (context.table || context.operation) {
-    const operationSummary = [context.operation, context.table].filter(Boolean).join(" @ ");
+    const operationSummary = [context.operation, context.table]
+      .filter(Boolean)
+      .join(" @ ");
     parts.push(`db=${operationSummary}`);
   }
 
@@ -292,44 +314,67 @@ function toPublicProjectJobRecord(job: ProjectJobRow): ProjectJobRecord {
   };
 }
 
-function parseProjectJobPayload(job: Pick<ProjectJobRow, "id" | "type" | "payloadJson">): ProjectJobPayload {
+function parseProjectJobPayload(
+  job: Pick<ProjectJobRow, "id" | "type" | "payloadJson">
+): ProjectJobPayload {
   if (!job.payloadJson) {
-    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is missing.`);
+    throw new AppError(
+      "PROJECT_JOB_STALE",
+      `Project job ${job.id} cannot be recovered because its payload is missing.`
+    );
   }
 
   let rawPayload: unknown;
   try {
     rawPayload = JSON.parse(job.payloadJson);
   } catch {
-    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
+    throw new AppError(
+      "PROJECT_JOB_STALE",
+      `Project job ${job.id} cannot be recovered because its payload is invalid.`
+    );
   }
 
   const parsedPayload = projectJobPayloadSchema.safeParse(rawPayload);
   if (!parsedPayload.success) {
-    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
+    throw new AppError(
+      "PROJECT_JOB_STALE",
+      `Project job ${job.id} cannot be recovered because its payload is invalid.`
+    );
   }
 
   const parsed = parsedPayload.data;
   if (!parsed || parsed.type !== job.type) {
-    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be recovered because its payload is invalid.`);
+    throw new AppError(
+      "PROJECT_JOB_STALE",
+      `Project job ${job.id} cannot be recovered because its payload is invalid.`
+    );
   }
 
   return parsed;
 }
 
 function isUniqueConstraintError(error: unknown) {
-  return error instanceof Error && /duplicate entry|unique/i.test(error.message);
+  return (
+    error instanceof Error && /duplicate entry|unique/i.test(error.message)
+  );
 }
 
 export async function requireDb() {
   const db = await getDb();
   if (!db) {
-    throw new AppError("DATABASE_UNAVAILABLE", "Database connection is not configured.");
+    throw new AppError(
+      "DATABASE_UNAVAILABLE",
+      "Database connection is not configured."
+    );
   }
   return db;
 }
 
-async function getOwnedProjectWithHandle(db: DbHandle, projectId: number, userId: number) {
+async function getOwnedProjectWithHandle(
+  db: DbHandle,
+  projectId: number,
+  userId: number
+) {
   const project = await db
     .select()
     .from(projects)
@@ -348,22 +393,39 @@ export async function getOwnedProject(projectId: number, userId: number) {
   return getOwnedProjectWithHandle(db, projectId, userId);
 }
 
-async function replaceAnalysisResult(db: DbHandle, projectId: number, values: Omit<typeof analysisResults.$inferInsert, "projectId">) {
-  await db.delete(analysisResults).where(eq(analysisResults.projectId, projectId));
+async function replaceAnalysisResult(
+  db: DbHandle,
+  projectId: number,
+  values: Omit<typeof analysisResults.$inferInsert, "projectId">
+) {
+  await db
+    .delete(analysisResults)
+    .where(eq(analysisResults.projectId, projectId));
   await db.insert(analysisResults).values({
     projectId,
     ...values,
   });
 }
 
-async function getExistingUsableAnalysisResult(db: DbHandle, projectId: number) {
+async function getExistingUsableAnalysisResult(
+  db: DbHandle,
+  projectId: number
+) {
   return getLatestUsableCurrentSourceRun(db, projectId);
 }
 
-async function writeProcessingAnalysisResultIfNoUsableSnapshot(db: DbHandle, projectId: number) {
+async function writeProcessingAnalysisResultIfNoUsableSnapshot(
+  db: DbHandle,
+  projectId: number
+) {
   await db
     .delete(analysisResults)
-    .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["pending", "processing"])));
+    .where(
+      and(
+        eq(analysisResults.projectId, projectId),
+        inArray(analysisResults.status, ["pending", "processing"])
+      )
+    );
 }
 
 async function transitionProjectState(
@@ -374,7 +436,13 @@ async function transitionProjectState(
 ) {
   const current = userId
     ? await getOwnedProjectWithHandle(db, projectId, userId)
-    : (await db.select().from(projects).where(eq(projects.id, projectId)).limit(1))[0];
+    : (
+        await db
+          .select()
+          .from(projects)
+          .where(eq(projects.id, projectId))
+          .limit(1)
+      )[0];
 
   if (!current) {
     throw new AppError("PROJECT_NOT_FOUND", "Project not found.");
@@ -382,11 +450,19 @@ async function transitionProjectState(
 
   assertProjectTransition(current.status, updates.status);
 
-  const condition = userId ? and(eq(projects.id, projectId), eq(projects.userId, userId)) : eq(projects.id, projectId);
-  await db.update(projects).set({ ...updates, updatedAt: new Date() }).where(condition);
+  const condition = userId
+    ? and(eq(projects.id, projectId), eq(projects.userId, userId))
+    : eq(projects.id, projectId);
+  await db
+    .update(projects)
+    .set({ ...updates, updatedAt: new Date() })
+    .where(condition);
 }
 
-async function hasProjectJobOwnership(ownership: ProjectJobOwnership, now = new Date()) {
+async function hasProjectJobOwnership(
+  ownership: ProjectJobOwnership,
+  now = new Date()
+) {
   const job = await getProjectJobById(ownership.jobId);
   return isProjectJobOwnershipActive(job, ownership, now);
 }
@@ -436,7 +512,11 @@ async function assertProjectJobExecutionActive(
     if (!stillOwned) {
       throw markProjectJobExecutionAborted(
         state,
-        createProjectJobExecutionAbortedError("ownership_lost", state.ownership, action),
+        createProjectJobExecutionAbortedError(
+          "ownership_lost",
+          state.ownership,
+          action
+        ),
         "project.job.execution.aborted",
         { checkpoint: action }
       );
@@ -448,7 +528,12 @@ async function assertProjectJobExecutionActive(
 
     throw markProjectJobExecutionAborted(
       state,
-      createProjectJobExecutionAbortedError("heartbeat_failed", state.ownership, action, error),
+      createProjectJobExecutionAbortedError(
+        "heartbeat_failed",
+        state.ownership,
+        action,
+        error
+      ),
       "project.job.execution.aborted",
       {
         checkpoint: action,
@@ -460,17 +545,29 @@ async function assertProjectJobExecutionActive(
 
 async function getProjectJobById(jobId: number) {
   const db = await requireDb();
-  const [job] = await db.select().from(projectJobs).where(eq(projectJobs.id, jobId)).limit(1);
+  const [job] = await db
+    .select()
+    .from(projectJobs)
+    .where(eq(projectJobs.id, jobId))
+    .limit(1);
   return job ?? null;
 }
 
 async function getProjectById(projectId: number) {
   const db = await requireDb();
-  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
   return project ?? null;
 }
 
-async function createQueuedProjectJob(projectId: number, userId: number, payload: ProjectJobPayload): Promise<number> {
+async function createQueuedProjectJob(
+  projectId: number,
+  userId: number,
+  payload: ProjectJobPayload
+): Promise<number> {
   const db = await requireDb();
   const nextStatus = payload.type === "analyze" ? "analyzing" : "importing";
   const allowedStatuses =
@@ -479,20 +576,41 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
       : new Set<ProjectStatus>(["draft", "ready", "completed", "failed"]);
 
   try {
-    return await db.transaction(async (tx) => {
+    return await db.transaction(async tx => {
       const project = await getOwnedProjectWithHandle(tx, projectId, userId);
-      const existingJobs = await tx.select().from(projectJobs).where(and(eq(projectJobs.projectId, projectId), eq(projectJobs.userId, userId)));
+      const existingJobs = await tx
+        .select()
+        .from(projectJobs)
+        .where(
+          and(
+            eq(projectJobs.projectId, projectId),
+            eq(projectJobs.userId, userId)
+          )
+        );
       const now = new Date();
-      if (existingJobs.some((job) => isBlockingActiveProjectJob(job, now))) {
-        throw new AppError("PROJECT_JOB_ACTIVE", "Project already has an active job.");
+      if (existingJobs.some(job => isBlockingActiveProjectJob(job, now))) {
+        throw new AppError(
+          "PROJECT_JOB_ACTIVE",
+          "Project already has an active job."
+        );
       }
-      const staleActiveJobs = existingJobs.filter((job) => isActiveProjectJobStatus(job.status) && !isBlockingActiveProjectJob(job, now));
+      const staleActiveJobs = existingJobs.filter(
+        job =>
+          isActiveProjectJobStatus(job.status) &&
+          !isBlockingActiveProjectJob(job, now)
+      );
       for (const staleJob of staleActiveJobs) {
-        await tx.update(projectJobs).set({ activeKey: null }).where(eq(projectJobs.id, staleJob.id));
+        await tx
+          .update(projectJobs)
+          .set({ activeKey: null })
+          .where(eq(projectJobs.id, staleJob.id));
       }
 
       if (!allowedStatuses.has(project.status)) {
-        throw new AppError("INVALID_PROJECT_STATE", `Project is currently "${projectStatusLabels[project.status]}".`);
+        throw new AppError(
+          "INVALID_PROJECT_STATE",
+          `Project is currently "${projectStatusLabels[project.status]}".`
+        );
       }
 
       const insertResult = await tx.insert(projectJobs).values({
@@ -516,7 +634,10 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
 
       const jobId = extractInsertId(insertResult);
       if (jobId <= 0) {
-        throw new AppError("DATABASE_UNAVAILABLE", "Job was created but its identifier could not be resolved.");
+        throw new AppError(
+          "DATABASE_UNAVAILABLE",
+          "Job was created but its identifier could not be resolved."
+        );
       }
 
       await transitionProjectState(
@@ -524,9 +645,12 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
         projectId,
         {
           status: nextStatus,
-          importProgress: payload.type === "analyze" ? project.importProgress : 0,
-          analysisProgress: payload.type === "analyze" ? 0 : project.analysisProgress,
-          sourceUrl: payload.type === "import_git" ? payload.gitUrl : project.sourceUrl,
+          importProgress:
+            payload.type === "analyze" ? project.importProgress : 0,
+          analysisProgress:
+            payload.type === "analyze" ? 0 : project.analysisProgress,
+          sourceUrl:
+            payload.type === "import_git" ? payload.gitUrl : project.sourceUrl,
           errorMessage: null,
           lastErrorCode: null,
         },
@@ -544,7 +668,10 @@ async function createQueuedProjectJob(projectId: number, userId: number, payload
       throw error;
     }
     if (isUniqueConstraintError(error)) {
-      throw new AppError("PROJECT_JOB_ACTIVE", "Project already has an active job.");
+      throw new AppError(
+        "PROJECT_JOB_ACTIVE",
+        "Project already has an active job."
+      );
     }
     throw error;
   }
@@ -571,7 +698,12 @@ function kickProjectJobWorker() {
     } catch (error) {
       const appError = toAppError(
         error,
-        new AppError("PROJECT_JOB_STALE", error instanceof Error ? error.message : "Project job scheduler failed.")
+        new AppError(
+          "PROJECT_JOB_STALE",
+          error instanceof Error
+            ? error.message
+            : "Project job scheduler failed."
+        )
       );
       projectJobWorkerSchedulerFailureCount += 1;
       logger.error("Project job scheduler failed", {
@@ -595,7 +727,10 @@ function scheduleProjectJobWorkerRetry() {
     return;
   }
 
-  const delayMs = Math.min(30_000, 500 * 2 ** Math.min(projectJobWorkerSchedulerFailureCount - 1, 6));
+  const delayMs = Math.min(
+    30_000,
+    500 * 2 ** Math.min(projectJobWorkerSchedulerFailureCount - 1, 6)
+  );
   projectJobWorkerRetryTimer = setTimeout(() => {
     projectJobWorkerRetryTimer = null;
     void kickProjectJobWorker();
@@ -603,7 +738,9 @@ function scheduleProjectJobWorkerRetry() {
   projectJobWorkerRetryTimer.unref?.();
 }
 
-export function startProjectJobWorkerPolling(intervalMs = PROJECT_WORKER_POLL_INTERVAL_MS) {
+export function startProjectJobWorkerPolling(
+  intervalMs = PROJECT_WORKER_POLL_INTERVAL_MS
+) {
   if (!isProjectWorkerEnabled()) {
     return null;
   }
@@ -636,7 +773,10 @@ export function stopProjectJobWorkerPolling() {
   projectJobWorkerPollTimer = null;
 }
 
-function compareProjectJobClaimOrder(left: Pick<ProjectJobRow, "createdAt" | "id">, right: Pick<ProjectJobRow, "createdAt" | "id">) {
+function compareProjectJobClaimOrder(
+  left: Pick<ProjectJobRow, "createdAt" | "id">,
+  right: Pick<ProjectJobRow, "createdAt" | "id">
+) {
   const leftCreatedAt = toDate(left.createdAt)?.getTime() ?? 0;
   const rightCreatedAt = toDate(right.createdAt)?.getTime() ?? 0;
   if (leftCreatedAt !== rightCreatedAt) {
@@ -654,8 +794,17 @@ function buildClaimableProjectJobWhere(now: Date, legacyStaleBefore: Date) {
       and(
         eq(projectJobs.status, "running"),
         or(
-          and(sql`${projectJobs.leaseUntil} is not null`, sql`${projectJobs.leaseUntil} <= ${now}`),
-          and(isNull(projectJobs.leaseUntil), or(isNull(projectJobs.startedAt), sql`${projectJobs.startedAt} <= ${legacyStaleBefore}`))
+          and(
+            sql`${projectJobs.leaseUntil} is not null`,
+            sql`${projectJobs.leaseUntil} <= ${now}`
+          ),
+          and(
+            isNull(projectJobs.leaseUntil),
+            or(
+              isNull(projectJobs.startedAt),
+              sql`${projectJobs.startedAt} <= ${legacyStaleBefore}`
+            )
+          )
         )
       )
     )
@@ -670,7 +819,7 @@ async function selectClaimableProjectJobCandidate(
   if (isInMemoryDb(db)) {
     const jobs = await db.select().from(projectJobs);
     const candidate = jobs
-      .filter((job) => {
+      .filter(job => {
         if (!canRetryProjectJob(job)) {
           return false;
         }
@@ -710,12 +859,18 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
   const now = new Date();
   const legacyStaleBefore = new Date(now.getTime() - STALE_PROJECT_JOB_MS);
   while (true) {
-    const nextJob = await selectClaimableProjectJobCandidate(db, now, legacyStaleBefore);
+    const nextJob = await selectClaimableProjectJobCandidate(
+      db,
+      now,
+      legacyStaleBefore
+    );
     if (!nextJob) {
       return null;
     }
 
-    const startedAt = nextJob.startedAt ? toDate(nextJob.startedAt) ?? now : now;
+    const startedAt = nextJob.startedAt
+      ? (toDate(nextJob.startedAt) ?? now)
+      : now;
     const lease = buildProjectJobLease(now);
     const expectedAttemptCount = getProjectJobAttemptCount(nextJob) + 1;
     const updateConditions = [eq(projectJobs.id, nextJob.id)];
@@ -724,15 +879,26 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
       updateConditions.push(eq(projectJobs.status, "queued"));
     } else {
       updateConditions.push(eq(projectJobs.status, "running"));
-      updateConditions.push(nextJob.lockedBy ? eq(projectJobs.lockedBy, nextJob.lockedBy) : isNull(projectJobs.lockedBy));
-      updateConditions.push(nextJob.leaseUntil ? eq(projectJobs.leaseUntil, nextJob.leaseUntil) : isNull(projectJobs.leaseUntil));
+      updateConditions.push(
+        nextJob.lockedBy
+          ? eq(projectJobs.lockedBy, nextJob.lockedBy)
+          : isNull(projectJobs.lockedBy)
+      );
+      updateConditions.push(
+        nextJob.leaseUntil
+          ? eq(projectJobs.leaseUntil, nextJob.leaseUntil)
+          : isNull(projectJobs.leaseUntil)
+      );
     }
 
     const updateResult = await db
       .update(projectJobs)
       .set({
         status: "running",
-        progress: nextJob.status === "queued" ? 10 : Math.max(10, Number(nextJob.progress ?? 0)),
+        progress:
+          nextJob.status === "queued"
+            ? 10
+            : Math.max(10, Number(nextJob.progress ?? 0)),
         startedAt,
         finishedAt: null,
         errorCode: null,
@@ -749,20 +915,28 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
       continue;
     }
 
-    const [claimedJob] = await db.select().from(projectJobs).where(eq(projectJobs.id, nextJob.id)).limit(1);
+    const [claimedJob] = await db
+      .select()
+      .from(projectJobs)
+      .where(eq(projectJobs.id, nextJob.id))
+      .limit(1);
     if (
       !claimedJob ||
       claimedJob.status !== "running" ||
       claimedJob.lockedBy !== PROJECT_JOB_LOCK_OWNER ||
       getProjectJobAttemptCount(claimedJob) !== expectedAttemptCount ||
       !toDate(claimedJob.heartbeatAt) ||
-      !isProjectJobOwnershipActive(claimedJob, {
-        jobId: claimedJob.id,
-        projectId: claimedJob.projectId,
-        type: claimedJob.type,
-        lockedBy: PROJECT_JOB_LOCK_OWNER,
-        attemptCount: expectedAttemptCount,
-      }, now)
+      !isProjectJobOwnershipActive(
+        claimedJob,
+        {
+          jobId: claimedJob.id,
+          projectId: claimedJob.projectId,
+          type: claimedJob.type,
+          lockedBy: PROJECT_JOB_LOCK_OWNER,
+          attemptCount: expectedAttemptCount,
+        },
+        now
+      )
     ) {
       continue;
     }
@@ -773,11 +947,13 @@ async function claimNextQueuedProjectJob(): Promise<ProjectJobRow | null> {
       ...getProjectJobLogContext(claimedJob, {
         status: "running",
         progress: Number(claimedJob.progress ?? 0),
-      queueWaitMs: queuedAt ? Math.max(0, now.getTime() - queuedAt.getTime()) : null,
-      attemptCount: claimedJob.attemptCount,
-      maxAttempts: claimedJob.maxAttempts,
-      leaseUntil: claimedJob.leaseUntil,
-      lockedBy: claimedJob.lockedBy,
+        queueWaitMs: queuedAt
+          ? Math.max(0, now.getTime() - queuedAt.getTime())
+          : null,
+        attemptCount: claimedJob.attemptCount,
+        maxAttempts: claimedJob.maxAttempts,
+        leaseUntil: claimedJob.leaseUntil,
+        lockedBy: claimedJob.lockedBy,
       }),
     });
 
@@ -797,7 +973,7 @@ async function createProjectAndQueuedImportJob(
 ): Promise<ProjectJobCreateResult> {
   const db = await requireDb();
 
-  const result = await db.transaction(async (tx) => {
+  const result = await db.transaction(async tx => {
     const projectInsert = await tx.insert(projects).values({
       userId,
       name: input.name,
@@ -816,7 +992,10 @@ async function createProjectAndQueuedImportJob(
 
     const projectId = extractInsertId(projectInsert);
     if (projectId <= 0) {
-      throw new AppError("DATABASE_UNAVAILABLE", "Project was created but its identifier could not be resolved from the insert result.");
+      throw new AppError(
+        "DATABASE_UNAVAILABLE",
+        "Project was created but its identifier could not be resolved from the insert result."
+      );
     }
 
     const jobInsert = await tx.insert(projectJobs).values({
@@ -840,7 +1019,10 @@ async function createProjectAndQueuedImportJob(
 
     const jobId = extractInsertId(jobInsert);
     if (jobId <= 0) {
-      throw new AppError("DATABASE_UNAVAILABLE", "Job was created but its identifier could not be resolved.");
+      throw new AppError(
+        "DATABASE_UNAVAILABLE",
+        "Job was created but its identifier could not be resolved."
+      );
     }
 
     return { projectId, jobId };
@@ -870,6 +1052,38 @@ export function getProjectJobWorkerSchedulerStateForTests() {
   };
 }
 
+export function getProjectJobWorkerHealthState() {
+  const enabled = isProjectWorkerEnabled();
+  if (!enabled) {
+    return {
+      enabled,
+      status: "unknown" as const,
+      reason: "worker_disabled",
+    };
+  }
+
+  if (
+    projectJobWorkerSchedulerShutdown ||
+    projectJobWorkerSchedulerFailureCount > 0 ||
+    projectJobWorkerPollTimer === null
+  ) {
+    return {
+      enabled,
+      status: "down" as const,
+      reason:
+        projectJobWorkerSchedulerFailureCount > 0
+          ? "worker_scheduler_failed"
+          : "worker_polling_inactive",
+    };
+  }
+
+  return {
+    enabled,
+    status: "up" as const,
+    reason: null,
+  };
+}
+
 export function resetProjectJobWorkerSchedulerStateForTests() {
   stopProjectJobWorkerPolling();
   projectJobWorkerSchedulerShutdown = false;
@@ -878,9 +1092,17 @@ export function resetProjectJobWorkerSchedulerStateForTests() {
   projectJobWorkerLoopStartCount = 0;
 }
 
-async function failImportProjectIfStillImporting(job: ProjectJobRow, now: Date, error?: AppError) {
+async function failImportProjectIfStillImporting(
+  job: ProjectJobRow,
+  now: Date,
+  error?: AppError
+) {
   const db = await requireDb();
-  const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, job.projectId))
+    .limit(1);
   if (project?.status !== "importing") {
     return;
   }
@@ -888,7 +1110,10 @@ async function failImportProjectIfStillImporting(job: ProjectJobRow, now: Date, 
     .update(projects)
     .set({
       status: "failed",
-      importProgress: Math.max(Number(project.importProgress ?? 0), Number(job.progress ?? 0)),
+      importProgress: Math.max(
+        Number(project.importProgress ?? 0),
+        Number(job.progress ?? 0)
+      ),
       errorMessage: error?.message ?? "Import failed.",
       lastErrorCode: error?.code ?? null,
       updatedAt: now,
@@ -896,9 +1121,17 @@ async function failImportProjectIfStillImporting(job: ProjectJobRow, now: Date, 
     .where(eq(projects.id, job.projectId));
 }
 
-async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date, error?: AppError) {
+async function failAnalysisProjectIfStillAnalyzing(
+  job: ProjectJobRow,
+  now: Date,
+  error?: AppError
+) {
   const db = await requireDb();
-  const [project] = await db.select().from(projects).where(eq(projects.id, job.projectId)).limit(1);
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, job.projectId))
+    .limit(1);
   if (project?.status !== "analyzing") {
     return;
   }
@@ -907,7 +1140,7 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
     stage: "ANALYSIS_UNKNOWN_FAILED",
     rawMessage: "Analysis job ended without a captured error.",
   });
-  await db.transaction(async (tx) => {
+  await db.transaction(async tx => {
     await tx
       .update(projects)
       .set({
@@ -921,14 +1154,26 @@ async function failAnalysisProjectIfStillAnalyzing(job: ProjectJobRow, now: Date
 
     await tx
       .delete(analysisResults)
-      .where(and(eq(analysisResults.projectId, job.projectId), inArray(analysisResults.status, ["pending", "processing"])));
+      .where(
+        and(
+          eq(analysisResults.projectId, job.projectId),
+          inArray(analysisResults.status, ["pending", "processing"])
+        )
+      );
   });
 }
 
-async function updateImportExecutionProgress(projectId: number, progress: number, executionState?: ProjectJobExecutionState) {
+async function updateImportExecutionProgress(
+  projectId: number,
+  progress: number,
+  executionState?: ProjectJobExecutionState
+) {
   const safeProgress = Math.min(100, Math.max(0, Math.floor(progress)));
   const db = await requireDb();
-  await db.update(projects).set({ importProgress: safeProgress, updatedAt: new Date() }).where(eq(projects.id, projectId));
+  await db
+    .update(projects)
+    .set({ importProgress: safeProgress, updatedAt: new Date() })
+    .where(eq(projects.id, projectId));
 
   const ownership = executionState?.ownership;
   if (!ownership) {
@@ -948,21 +1193,39 @@ async function updateImportExecutionProgress(projectId: number, progress: number
     );
 }
 
-async function executeProjectJob(job: ProjectJobRow, executionState: ProjectJobExecutionState) {
+async function executeProjectJob(
+  job: ProjectJobRow,
+  executionState: ProjectJobExecutionState
+) {
   const payload = parseProjectJobPayload(job);
 
   if (payload.type === "import_zip") {
     if ("tempFilePath" in payload) {
-      await importProjectZipFromTempFile(job.projectId, job.userId, payload.tempFilePath, executionState);
+      await importProjectZipFromTempFile(
+        job.projectId,
+        job.userId,
+        payload.tempFilePath,
+        executionState
+      );
       return;
     }
 
-    await importProjectZip(job.projectId, job.userId, payload.zipContent, executionState);
+    await importProjectZip(
+      job.projectId,
+      job.userId,
+      payload.zipContent,
+      executionState
+    );
     return;
   }
 
   if (payload.type === "import_git") {
-    await importProjectGit(job.projectId, job.userId, payload.gitUrl, executionState);
+    await importProjectGit(
+      job.projectId,
+      job.userId,
+      payload.gitUrl,
+      executionState
+    );
     return;
   }
 
@@ -999,15 +1262,27 @@ async function finalizeProjectJob(
   const now = new Date();
   const queuedAt = toDate(job.createdAt);
   const startedAt = toDate(job.startedAt);
-  const queueDurationMs = queuedAt && startedAt ? Math.max(0, startedAt.getTime() - queuedAt.getTime()) : null;
-  const runDurationMs = startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+  const queueDurationMs =
+    queuedAt && startedAt
+      ? Math.max(0, startedAt.getTime() - queuedAt.getTime())
+      : null;
+  const runDurationMs = startedAt
+    ? Math.max(0, now.getTime() - startedAt.getTime())
+    : null;
   const ownership = executionState.ownership;
 
   if (!ownership) {
-    throw new AppError("PROJECT_JOB_STALE", `Project job ${job.id} cannot be finalized because its ownership metadata is missing.`);
+    throw new AppError(
+      "PROJECT_JOB_STALE",
+      `Project job ${job.id} cannot be finalized because its ownership metadata is missing.`
+    );
   }
 
-  await assertProjectJobExecutionActive(executionState, `job.finalize.${status}`, { refreshLease: true });
+  await assertProjectJobExecutionActive(
+    executionState,
+    `job.finalize.${status}`,
+    { refreshLease: true }
+  );
   const db = await requireDb();
   const updateResult = await db
     .update(projectJobs)
@@ -1036,7 +1311,11 @@ async function finalizeProjectJob(
   if (typeof affectedRows === "number" && affectedRows === 0) {
     throw markProjectJobExecutionAborted(
       executionState,
-      createProjectJobExecutionAbortedError("ownership_lost", ownership, `job.finalize.${status}`),
+      createProjectJobExecutionAbortedError(
+        "ownership_lost",
+        ownership,
+        `job.finalize.${status}`
+      ),
       "project.job.execution.aborted",
       { checkpoint: `job.finalize.${status}` }
     );
@@ -1052,7 +1331,10 @@ async function finalizeProjectJob(
     }
   }
 
-  if (status === "completed" && (job.type === "import_zip" || job.type === "import_git")) {
+  if (
+    status === "completed" &&
+    (job.type === "import_zip" || job.type === "import_git")
+  ) {
     await queueAnalyzeProjectAfterImport(job.projectId, job.userId);
   }
 
@@ -1069,7 +1351,10 @@ async function finalizeProjectJob(
   });
 }
 
-async function queueAnalyzeProjectAfterImport(projectId: number, userId: number) {
+async function queueAnalyzeProjectAfterImport(
+  projectId: number,
+  userId: number
+) {
   try {
     await enqueueProjectJob(projectId, userId, { type: "analyze" });
   } catch (error) {
@@ -1096,10 +1381,18 @@ function buildImportWarningSummaryWarnings(
     return [];
   }
 
-  const pasFileCount = projectFiles.filter((file) => (file.fileType ?? "").toLowerCase() === ".pas").length;
-  const limitedAnalysisWarnings = importWarnings.filter((warning) => warning.code === "IMPORT_LIMITED_ANALYSIS");
-  const dfmLimitedAnalysisCount = limitedAnalysisWarnings.filter((warning) => (warning.filePath ?? "").toLowerCase().endsWith(".dfm")).length;
-  const encodingWarningCount = importWarnings.filter((warning) => warning.code === "IMPORT_ENCODING_DETECTED").length;
+  const pasFileCount = projectFiles.filter(
+    file => (file.fileType ?? "").toLowerCase() === ".pas"
+  ).length;
+  const limitedAnalysisWarnings = importWarnings.filter(
+    warning => warning.code === "IMPORT_LIMITED_ANALYSIS"
+  );
+  const dfmLimitedAnalysisCount = limitedAnalysisWarnings.filter(warning =>
+    (warning.filePath ?? "").toLowerCase().endsWith(".dfm")
+  ).length;
+  const encodingWarningCount = importWarnings.filter(
+    warning => warning.code === "IMPORT_ENCODING_DETECTED"
+  ).length;
 
   return [
     {
@@ -1108,7 +1401,7 @@ function buildImportWarningSummaryWarnings(
       level: "note",
       heuristic: true,
     },
-    ...importWarnings.map((warning) => ({
+    ...importWarnings.map(warning => ({
       code: warning.code,
       message: warning.message,
       level: "warning" as const,
@@ -1118,7 +1411,10 @@ function buildImportWarningSummaryWarnings(
   ];
 }
 
-function mergeAnalysisWarnings(base: AnalysisWarning[], additions: AnalysisWarning[]) {
+function mergeAnalysisWarnings(
+  base: AnalysisWarning[],
+  additions: AnalysisWarning[]
+) {
   const merged: AnalysisWarning[] = [];
   const seen = new Set<string>();
 
@@ -1137,16 +1433,16 @@ function mergeAnalysisWarnings(base: AnalysisWarning[], additions: AnalysisWarni
 
 function inferAnalysisResultFileTypes(result: ProjectAnalysisResult) {
   const paths = [
-    ...result.symbols.map((symbol) => symbol.file),
-    ...result.fieldReferences.map((reference) => reference.file),
-    ...result.risks.map((risk) => risk.sourceFile),
-    ...result.rules.map((rule) => rule.sourceFile),
-    ...result.warnings.map((warning) => warning.filePath),
+    ...result.symbols.map(symbol => symbol.file),
+    ...result.fieldReferences.map(reference => reference.file),
+    ...result.risks.map(risk => risk.sourceFile),
+    ...result.rules.map(rule => rule.sourceFile),
+    ...result.warnings.map(warning => warning.filePath),
   ];
 
   return paths
     .filter((path): path is string => Boolean(path))
-    .map((path) => path.match(/\.[^.\\/]+$/)?.[0] ?? path);
+    .map(path => path.match(/\.[^.\\/]+$/)?.[0] ?? path);
 }
 
 function recalculateAnalysisResultConfidence(
@@ -1191,19 +1487,25 @@ function applyAdditionalAnalysisWarnings(
         ? "completed_with_warnings"
         : result.status;
 
-  return recalculateAnalysisResultConfidence({
-    ...result,
-    status: nextStatus,
-    warnings,
-    metrics: {
-      ...result.metrics,
-      warningCount,
+  return recalculateAnalysisResultConfidence(
+    {
+      ...result,
+      status: nextStatus,
+      warnings,
+      metrics: {
+        ...result.metrics,
+        warningCount,
+      },
     },
-  }, context);
+    context
+  );
 }
 
-function getAnalysisResultErrorMessage(result: Pick<ProjectAnalysisResult, "status">) {
-  return result.status === "partial" || result.status === "completed_with_warnings"
+function getAnalysisResultErrorMessage(
+  result: Pick<ProjectAnalysisResult, "status">
+) {
+  return result.status === "partial" ||
+    result.status === "completed_with_warnings"
     ? "Analysis completed with warnings."
     : null;
 }
@@ -1250,8 +1552,16 @@ function makeAnalysisPartialResultPersistable(
   context: { importWarnings?: ImportWarning[]; fileTypes?: string[] } = {}
 ): ProjectAnalysisResult {
   const truncationWarnings: AnalysisWarning[] = [];
-  const truncateDocument = (value: string, documentName: string, kind: "markdown" | "yaml") => {
-    const truncated = truncateUtf8(value, MYSQL_MEDIUMTEXT_MAX_BYTES, buildDocumentTruncationFooter(kind));
+  const truncateDocument = (
+    value: string,
+    documentName: string,
+    kind: "markdown" | "yaml"
+  ) => {
+    const truncated = truncateUtf8(
+      value,
+      MYSQL_MEDIUMTEXT_MAX_BYTES,
+      buildDocumentTruncationFooter(kind)
+    );
     if (truncated.truncated) {
       truncationWarnings.push({
         code: "ANALYSIS_DOCUMENT_TRUNCATED",
@@ -1264,9 +1574,21 @@ function makeAnalysisPartialResultPersistable(
     return truncated.text;
   };
 
-  const flowDocument = truncateDocument(result.flowDocument, "flowMarkdown", "markdown");
-  const dataDependencyDocument = truncateDocument(result.dataDependencyDocument, "dataDependencyMarkdown", "markdown");
-  const risksDocument = truncateDocument(result.risksDocument, "risksMarkdown", "markdown");
+  const flowDocument = truncateDocument(
+    result.flowDocument,
+    "flowMarkdown",
+    "markdown"
+  );
+  const dataDependencyDocument = truncateDocument(
+    result.dataDependencyDocument,
+    "dataDependencyMarkdown",
+    "markdown"
+  );
+  const risksDocument = truncateDocument(
+    result.risksDocument,
+    "risksMarkdown",
+    "markdown"
+  );
   const rulesYaml = truncateDocument(result.rulesYaml, "rulesYaml", "yaml");
 
   if (truncationWarnings.length === 0) {
@@ -1274,19 +1596,27 @@ function makeAnalysisPartialResultPersistable(
   }
 
   const warnings = mergeAnalysisWarnings(result.warnings, truncationWarnings);
-  return recalculateAnalysisResultConfidence({
-    ...result,
-    status: result.status === "failed" ? "failed" : result.status === "partial" ? "partial" : "completed_with_warnings",
-    warnings,
-    flowDocument,
-    dataDependencyDocument,
-    risksDocument,
-    rulesYaml,
-    metrics: {
-      ...result.metrics,
-      warningCount: warnings.length,
+  return recalculateAnalysisResultConfidence(
+    {
+      ...result,
+      status:
+        result.status === "failed"
+          ? "failed"
+          : result.status === "partial"
+            ? "partial"
+            : "completed_with_warnings",
+      warnings,
+      flowDocument,
+      dataDependencyDocument,
+      risksDocument,
+      rulesYaml,
+      metrics: {
+        ...result.metrics,
+        warningCount: warnings.length,
+      },
     },
-  }, context);
+    context
+  );
 }
 
 function throwAnalysisPersistError(
@@ -1310,7 +1640,10 @@ function throwAnalysisPersistError(
   });
 }
 
-export async function failClaimedProjectJobBestEffort(ownership: ProjectJobOwnership, error: AppError) {
+export async function failClaimedProjectJobBestEffort(
+  ownership: ProjectJobOwnership,
+  error: AppError
+) {
   const job = await getProjectJobById(ownership.jobId);
   if (!job || job.status !== "running") {
     return false;
@@ -1370,13 +1703,16 @@ export async function failClaimedProjectJobBestEffort(ownership: ProjectJobOwner
   }
 
   if (tempFilePath) {
-    await rm(tempFilePath, { force: true }).catch((cleanupError) => {
+    await rm(tempFilePath, { force: true }).catch(cleanupError => {
       logger.warn("Project job temp file cleanup failed", {
         action: "project.job.cleanup_failed",
         ...getProjectJobLogContext(job, {
           status: "failed",
           tempFilePath,
-          errorMessage: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          errorMessage:
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
         }),
       });
     });
@@ -1400,16 +1736,23 @@ export async function failClaimedProjectJobBestEffort(ownership: ProjectJobOwner
 export async function runClaimedProjectJob(jobId: number) {
   const claimedJob = await getProjectJobById(jobId);
   if (!claimedJob) {
-    throw new AppError("PROJECT_JOB_NOT_FOUND", `Project job ${jobId} was not found.`);
+    throw new AppError(
+      "PROJECT_JOB_NOT_FOUND",
+      `Project job ${jobId} was not found.`
+    );
   }
-  const executionState = createProjectJobExecutionState(buildProjectJobOwnership(claimedJob));
+  const executionState = createProjectJobExecutionState(
+    buildProjectJobOwnership(claimedJob)
+  );
   let tempFilePath: string | null = null;
 
   try {
     const payload = parseProjectJobPayload(claimedJob);
     tempFilePath = getImportZipPayloadTempPath(payload);
     await assertProjectJobProjectExists(claimedJob.projectId);
-    await assertProjectJobExecutionActive(executionState, "job.start", { refreshLease: true });
+    await assertProjectJobExecutionActive(executionState, "job.start", {
+      refreshLease: true,
+    });
     logger.info("Project job started", {
       action: "project.job.started",
       ...getProjectJobLogContext(claimedJob, {
@@ -1428,7 +1771,10 @@ export async function runClaimedProjectJob(jobId: number) {
       return;
     }
 
-    const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
+    const appError = toAppError(
+      error,
+      buildProjectJobFailureFallback(claimedJob)
+    );
     try {
       await finalizeProjectJob(claimedJob, executionState, "failed", appError);
     } catch (finalizeError) {
@@ -1466,31 +1812,41 @@ async function processNextQueuedProjectJob() {
 
   const guardian = startProjectJobLeaseGuardian(claimedJob, ownership, {
     onOwnershipLost: () => {
-      logger.warn("Project job worker lease guardian stopped after ownership loss", {
-        action: "project.job.heartbeat.stopped",
-        ...getProjectJobLogContext(claimedJob, {
-          status: "stale",
-          lockedBy: ownership.lockedBy,
-          attemptCount: ownership.attemptCount,
-        }),
-      });
+      logger.warn(
+        "Project job worker lease guardian stopped after ownership loss",
+        {
+          action: "project.job.heartbeat.stopped",
+          ...getProjectJobLogContext(claimedJob, {
+            status: "stale",
+            lockedBy: ownership.lockedBy,
+            attemptCount: ownership.attemptCount,
+          }),
+        }
+      );
     },
-    onHeartbeatFailed: (error) => {
-      logger.warn("Project job worker lease guardian stopped after heartbeat failure", {
-        action: "project.job.heartbeat.failed",
-        ...getProjectJobLogContext(claimedJob, {
-          status: "error",
-          lockedBy: ownership.lockedBy,
-          attemptCount: ownership.attemptCount,
-          errorMessage: error instanceof Error ? error.message : String(error),
-        }),
-      });
+    onHeartbeatFailed: error => {
+      logger.warn(
+        "Project job worker lease guardian stopped after heartbeat failure",
+        {
+          action: "project.job.heartbeat.failed",
+          ...getProjectJobLogContext(claimedJob, {
+            status: "error",
+            lockedBy: ownership.lockedBy,
+            attemptCount: ownership.attemptCount,
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+          }),
+        }
+      );
     },
   });
 
   const promise = runProjectJob(claimedJob.id, ownership)
-    .catch((error) => {
-      const appError = toAppError(error, buildProjectJobFailureFallback(claimedJob));
+    .catch(error => {
+      const appError = toAppError(
+        error,
+        buildProjectJobFailureFallback(claimedJob)
+      );
       logger.error("Project job dispatch failed", {
         action: "project.job.worker.error",
         ...getProjectJobLogContext(claimedJob, {
@@ -1510,7 +1866,11 @@ async function processNextQueuedProjectJob() {
   return true;
 }
 
-async function enqueueProjectJob(projectId: number, userId: number, payload: ProjectJobPayload): Promise<ProjectJobCreateResult> {
+async function enqueueProjectJob(
+  projectId: number,
+  userId: number,
+  payload: ProjectJobPayload
+): Promise<ProjectJobCreateResult> {
   const jobId = await createQueuedProjectJob(projectId, userId, payload);
   void kickProjectJobWorker();
 
@@ -1546,7 +1906,7 @@ export async function waitForAllProjectJobsForTests() {
   while (true) {
     const db = await requireDb();
     const rows = await db.select().from(projectJobs);
-    if (!rows.some((row) => isActiveProjectJobStatus(row.status))) {
+    if (!rows.some(row => isActiveProjectJobStatus(row.status))) {
       return;
     }
 
@@ -1559,9 +1919,18 @@ export async function waitForAllProjectJobsForTests() {
   }
 }
 
-async function markProjectAsRecoveryFailed(projectId: number, status: ProjectStatus, message: string, now: Date) {
+async function markProjectAsRecoveryFailed(
+  projectId: number,
+  status: ProjectStatus,
+  message: string,
+  now: Date
+) {
   const db = await requireDb();
-  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
   const updates: Partial<InsertProjectRecord> & { status: ProjectStatus } = {
     status: "failed",
     errorMessage: message,
@@ -1580,11 +1949,19 @@ async function markProjectAsRecoveryFailed(projectId: number, status: ProjectSta
   if (status === "analyzing") {
     await db
       .delete(analysisResults)
-      .where(and(eq(analysisResults.projectId, projectId), inArray(analysisResults.status, ["pending", "processing"])));
+      .where(
+        and(
+          eq(analysisResults.projectId, projectId),
+          inArray(analysisResults.status, ["pending", "processing"])
+        )
+      );
   }
 }
 
-export async function recoverStaleProjectJobsOnStartup(now = new Date(), staleAfterMs = STALE_PROJECT_JOB_MS) {
+export async function recoverStaleProjectJobsOnStartup(
+  now = new Date(),
+  staleAfterMs = STALE_PROJECT_JOB_MS
+) {
   return recoverStaleProjectJobsOnStartupImpl(
     {
       isProjectWorkerEnabled,
@@ -1628,7 +2005,10 @@ export async function createProjectForUser(
 
   const insertId = extractInsertId(insertResult);
   if (insertId <= 0) {
-    throw new AppError("DATABASE_UNAVAILABLE", "Project was created but its identifier could not be resolved from the insert result.");
+    throw new AppError(
+      "DATABASE_UNAVAILABLE",
+      "Project was created but its identifier could not be resolved from the insert result."
+    );
   }
 
   return insertId;
@@ -1647,8 +2027,19 @@ function getProjectImportDeps(): ProjectImportDeps {
   };
 }
 
-export async function importProjectZip(projectId: number, userId: number, zipContent: string, executionState?: ProjectJobExecutionState) {
-  return importProjectZipImpl(getProjectImportDeps(), projectId, userId, zipContent, executionState);
+export async function importProjectZip(
+  projectId: number,
+  userId: number,
+  zipContent: string,
+  executionState?: ProjectJobExecutionState
+) {
+  return importProjectZipImpl(
+    getProjectImportDeps(),
+    projectId,
+    userId,
+    zipContent,
+    executionState
+  );
 }
 
 export async function importProjectZipFromTempFile(
@@ -1657,10 +2048,20 @@ export async function importProjectZipFromTempFile(
   tempFilePath: string,
   executionState?: ProjectJobExecutionState
 ) {
-  return importProjectZipFromTempFileImpl(getProjectImportDeps(), projectId, userId, tempFilePath, executionState);
+  return importProjectZipFromTempFileImpl(
+    getProjectImportDeps(),
+    projectId,
+    userId,
+    tempFilePath,
+    executionState
+  );
 }
 
-export async function queueImportProjectZip(projectId: number, userId: number, zipContent: string) {
+export async function queueImportProjectZip(
+  projectId: number,
+  userId: number,
+  zipContent: string
+) {
   return enqueueProjectJob(projectId, userId, {
     type: "import_zip",
     zipContent,
@@ -1698,11 +2099,26 @@ export async function createProjectWithQueuedZipImport(
   });
 }
 
-export async function importProjectGit(projectId: number, userId: number, gitUrl: string, executionState?: ProjectJobExecutionState) {
-  return importProjectGitImpl(getProjectImportDeps(), projectId, userId, gitUrl, executionState);
+export async function importProjectGit(
+  projectId: number,
+  userId: number,
+  gitUrl: string,
+  executionState?: ProjectJobExecutionState
+) {
+  return importProjectGitImpl(
+    getProjectImportDeps(),
+    projectId,
+    userId,
+    gitUrl,
+    executionState
+  );
 }
 
-export async function queueImportProjectGit(projectId: number, userId: number, gitUrl: string) {
+export async function queueImportProjectGit(
+  projectId: number,
+  userId: number,
+  gitUrl: string
+) {
   return enqueueProjectJob(projectId, userId, {
     type: "import_git",
     gitUrl,
@@ -1726,7 +2142,11 @@ export async function createProjectWithQueuedGitImport(
   });
 }
 
-function resolveOwningSymbol(symbolsForProject: AnalyzedSymbol[], file: string, line: number) {
+function resolveOwningSymbol(
+  symbolsForProject: AnalyzedSymbol[],
+  file: string,
+  line: number
+) {
   return resolveMostSpecificSymbol(symbolsForProject, line, file);
 }
 
@@ -1742,19 +2162,27 @@ function resolveInsertedTargetSymbolId(
     }
   }
 
-  const sourceSymbol = symbolsForProject.find((symbol) => symbol.stableKey === dependency.from);
+  const sourceSymbol = symbolsForProject.find(
+    symbol => symbol.stableKey === dependency.from
+  );
   const sourceFile = sourceSymbol?.file.replace(/\\/g, "/");
-  const candidates = symbolsForProject.filter((symbol) => {
+  const candidates = symbolsForProject.filter(symbol => {
     const symbolFile = symbol.file.replace(/\\/g, "/");
     return (
       symbol.qualifiedName === dependency.toName ||
-      `${symbolFile}::${symbol.qualifiedName ?? symbol.name}` === dependency.toName ||
-      (sourceFile === symbolFile && (symbol.name === dependency.toName || (symbol.qualifiedName?.split(".").at(-1) ?? symbol.name) === dependency.toName))
+      `${symbolFile}::${symbol.qualifiedName ?? symbol.name}` ===
+        dependency.toName ||
+      (sourceFile === symbolFile &&
+        (symbol.name === dependency.toName ||
+          (symbol.qualifiedName?.split(".").at(-1) ?? symbol.name) ===
+            dependency.toName))
     );
   });
   const uniqueCandidate = candidates.length === 1 ? candidates[0] : null;
 
-  return uniqueCandidate ? insertedSymbolIds.get(buildSymbolInsertKey(uniqueCandidate)) : undefined;
+  return uniqueCandidate
+    ? insertedSymbolIds.get(buildSymbolInsertKey(uniqueCandidate))
+    : undefined;
 }
 
 function getProjectAnalysisRunnerDeps(): ProjectAnalysisRunnerDeps {
@@ -1765,8 +2193,10 @@ function getProjectAnalysisRunnerDeps(): ProjectAnalysisRunnerDeps {
     transitionProjectState,
     writeProcessingAnalysisResultIfNoUsableSnapshot,
     toAnalysisStageError,
-    createAnalysisStageError: (code, message, context) => new AnalysisStageError(code, message, context),
-    getAnalysisFailureContext: (error) => (error instanceof AnalysisStageError ? error.context : null),
+    createAnalysisStageError: (code, message, context) =>
+      new AnalysisStageError(code, message, context),
+    getAnalysisFailureContext: error =>
+      error instanceof AnalysisStageError ? error.context : null,
     buildAnalysisErrorMessage,
     applyAdditionalAnalysisWarnings,
     buildImportWarningSummaryWarnings,
@@ -1783,8 +2213,17 @@ function getProjectAnalysisRunnerDeps(): ProjectAnalysisRunnerDeps {
   };
 }
 
-export async function analyzeProject(projectId: number, userId: number, executionState?: ProjectJobExecutionState) {
-  return analyzeProjectImpl(getProjectAnalysisRunnerDeps(), projectId, userId, executionState);
+export async function analyzeProject(
+  projectId: number,
+  userId: number,
+  executionState?: ProjectJobExecutionState
+) {
+  return analyzeProjectImpl(
+    getProjectAnalysisRunnerDeps(),
+    projectId,
+    userId,
+    executionState
+  );
 }
 
 export async function queueAnalyzeProject(projectId: number, userId: number) {
@@ -1793,7 +2232,11 @@ export async function queueAnalyzeProject(projectId: number, userId: number) {
   });
 }
 
-async function getProjectAnalysisRecord(db: DbHandle, projectId: number, runId?: number) {
+async function getProjectAnalysisRecord(
+  db: DbHandle,
+  projectId: number,
+  runId?: number
+) {
   if (typeof runId === "number") {
     const [run] = await db
       .select()
@@ -1802,7 +2245,11 @@ async function getProjectAnalysisRecord(db: DbHandle, projectId: number, runId?:
         and(
           eq(analysisResults.projectId, projectId),
           eq(analysisResults.id, runId),
-          inArray(analysisResults.status, ["completed", "completed_with_warnings", "partial"])
+          inArray(analysisResults.status, [
+            "completed",
+            "completed_with_warnings",
+            "partial",
+          ])
         )
       )
       .limit(1);
@@ -1813,7 +2260,9 @@ async function getProjectAnalysisRecord(db: DbHandle, projectId: number, runId?:
 
 function isReportReadyForExport(
   report: Awaited<ReturnType<typeof getProjectAnalysisRecord>>
-): report is NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>> & {
+): report is NonNullable<
+  Awaited<ReturnType<typeof getProjectAnalysisRecord>>
+> & {
   flowMarkdown: string;
   dataDependencyMarkdown: string;
   risksMarkdown: string;
@@ -1821,7 +2270,9 @@ function isReportReadyForExport(
 } {
   return Boolean(
     report &&
-      (report.status === "completed" || report.status === "completed_with_warnings" || report.status === "partial") &&
+      (report.status === "completed" ||
+        report.status === "completed_with_warnings" ||
+        report.status === "partial") &&
       report.flowMarkdown &&
       report.dataDependencyMarkdown &&
       report.risksMarkdown &&
@@ -1837,7 +2288,8 @@ function classifyReportLanguage(fileType: string | null | undefined) {
   const normalized = normalizeReportFileType(fileType).replace(/^\./, "");
   if (normalized === "go") return "go";
   if (normalized === "sql") return "sql";
-  if (["pas", "dpr", "dfm", "inc", "dpk", "fmx", "delphi"].includes(normalized)) return "delphi-like";
+  if (["pas", "dpr", "dfm", "inc", "dpk", "fmx", "delphi"].includes(normalized))
+    return "delphi-like";
   return "unknown";
 }
 
@@ -1852,11 +2304,13 @@ function renderMarkdownTable(headers: string[], rows: unknown[][]) {
   return [
     `| ${headers.map(escapeMarkdownTableCell).join(" | ")} |`,
     `| ${headers.map(() => "---").join(" | ")} |`,
-    ...rows.map((row) => `| ${row.map(escapeMarkdownTableCell).join(" | ")} |`),
+    ...rows.map(row => `| ${row.map(escapeMarkdownTableCell).join(" | ")} |`),
   ].join("\n");
 }
 
-function renderDelphiEventMapMarkdown(eventMap: Array<Record<string, unknown>>) {
+function renderDelphiEventMapMarkdown(
+  eventMap: Array<Record<string, unknown>>
+) {
   return [
     "# DELPHI_EVENT_MAP",
     "",
@@ -1866,8 +2320,18 @@ function renderDelphiEventMapMarkdown(eventMap: Array<Record<string, unknown>>) 
     eventMap.length === 0
       ? "No DFM/FMX event bindings were detected."
       : renderMarkdownTable(
-          ["Form", "Component", "Class", "Event", "Handler", "Resolved method", "Resolved file", "Status", "Warnings"],
-          eventMap.map((entry) => [
+          [
+            "Form",
+            "Component",
+            "Class",
+            "Event",
+            "Handler",
+            "Resolved method",
+            "Resolved file",
+            "Status",
+            "Warnings",
+          ],
+          eventMap.map(entry => [
             entry.formName,
             entry.componentName,
             entry.componentClass,
@@ -1883,7 +2347,9 @@ function renderDelphiEventMapMarkdown(eventMap: Array<Record<string, unknown>>) 
   ].join("\n");
 }
 
-function renderDelphiDataBindingsMarkdown(bindings: Array<Record<string, unknown>>) {
+function renderDelphiDataBindingsMarkdown(
+  bindings: Array<Record<string, unknown>>
+) {
   return [
     "# DELPHI_DATA_BINDINGS",
     "",
@@ -1893,8 +2359,19 @@ function renderDelphiDataBindingsMarkdown(bindings: Array<Record<string, unknown
     bindings.length === 0
       ? "No Delphi DB-aware component bindings were detected."
       : renderMarkdownTable(
-          ["Form", "Component", "Class", "DataSource", "DataSet", "DataField", "ReadOnly", "Enabled", "Confidence", "Warning"],
-          bindings.map((binding) => [
+          [
+            "Form",
+            "Component",
+            "Class",
+            "DataSource",
+            "DataSet",
+            "DataField",
+            "ReadOnly",
+            "Enabled",
+            "Confidence",
+            "Warning",
+          ],
+          bindings.map(binding => [
             binding.formName,
             binding.componentName,
             binding.componentClass,
@@ -1924,12 +2401,24 @@ function countBy<T>(items: T[], predicate: (item: T) => boolean) {
   return items.filter(predicate).length;
 }
 
-function countRiskMatches(items: Array<typeof risks.$inferSelect>, pattern: RegExp) {
-  return countBy(items, (risk) => pattern.test(`${risk.riskType ?? ""} ${risk.title ?? ""} ${risk.description ?? ""}`));
+function countRiskMatches(
+  items: Array<typeof risks.$inferSelect>,
+  pattern: RegExp
+) {
+  return countBy(items, risk =>
+    pattern.test(
+      `${risk.riskType ?? ""} ${risk.title ?? ""} ${risk.description ?? ""}`
+    )
+  );
 }
 
-function countWarningMatches(items: Array<AnalysisWarning | ImportWarning>, pattern: RegExp) {
-  return countBy(items, (warning) => pattern.test(`${warning.code ?? ""} ${warning.message ?? ""}`));
+function countWarningMatches(
+  items: Array<AnalysisWarning | ImportWarning>,
+  pattern: RegExp
+) {
+  return countBy(items, warning =>
+    pattern.test(`${warning.code ?? ""} ${warning.message ?? ""}`)
+  );
 }
 
 function renderExecutiveSummaryMarkdown(input: {
@@ -1939,9 +2428,16 @@ function renderExecutiveSummaryMarkdown(input: {
     focusLanguage: string | null;
   };
   project: typeof projects.$inferSelect | null;
-  metrics: NonNullable<Awaited<ReturnType<typeof getProjectAnalysisRecord>>>["summaryJson"];
+  metrics: NonNullable<
+    Awaited<ReturnType<typeof getProjectAnalysisRecord>>
+  >["summaryJson"];
   confidence?: AnalysisConfidence | null;
-  languageCounts: { delphiLike: number; go: number; sql: number; unknown: number };
+  languageCounts: {
+    delphiLike: number;
+    go: number;
+    sql: number;
+    unknown: number;
+  };
   limitedFileCount: number;
   fileInventoryItems: Array<{ analysisSucceeded: boolean }>;
   risks: Array<typeof risks.$inferSelect>;
@@ -1958,62 +2454,135 @@ function renderExecutiveSummaryMarkdown(input: {
         "",
         "Top confidence drivers:",
         ...input.confidence.breakdown
-          .filter((item) => item.impact < 0)
+          .filter(item => item.impact < 0)
           .slice(0, 5)
-          .map((item) => `- ${item.label}: ${item.impact} (${item.reason})`),
+          .map(item => `- ${item.label}: ${item.impact} (${item.reason})`),
       ]
-    : ["- Score: unavailable", "- Level: unavailable", "", "Top confidence drivers:", "- Confidence breakdown unavailable."];
+    : [
+        "- Score: unavailable",
+        "- Level: unavailable",
+        "",
+        "Top confidence drivers:",
+        "- Confidence breakdown unavailable.",
+      ];
   if (input.confidence && confidenceLines[4] === undefined) {
     confidenceLines.push("- No major confidence penalties were detected.");
   }
 
   const allWarnings = [...input.importWarnings, ...input.warnings];
-  const unresolvedEventCount = countBy(input.delphiEventMap, (entry) => entry.status === "unresolved");
-  const resolvedEventCount = countBy(input.delphiEventMap, (entry) => entry.status === "resolved");
+  const unresolvedEventCount = countBy(
+    input.delphiEventMap,
+    entry => entry.status === "unresolved"
+  );
+  const resolvedEventCount = countBy(
+    input.delphiEventMap,
+    entry => entry.status === "resolved"
+  );
   const unresolvedBindingCount = countBy(
     input.delphiDataBindings,
-    (binding) => binding.confidence !== "high" || binding.accessHint === "unresolved"
+    binding =>
+      binding.confidence !== "high" || binding.accessHint === "unresolved"
   );
-  const resolvedBindingCount = Math.max(0, input.delphiDataBindings.length - unresolvedBindingCount);
-  const writeAccessCount = countBy(input.fieldAccessItems, (item) => item.operation === "write" || item.operation === "read-write");
-  const readAccessCount = Math.max(0, input.fieldAccessItems.length - writeAccessCount);
-  const dynamicSqlCount = countWarningMatches(allWarnings, /SQL_DYNAMIC_STRING|dynamic sql/i) + countRiskMatches(input.risks, /dynamic sql|sql\.text|sql\.add/i);
-  const hardcodedConfigCount = countRiskMatches(input.risks, /hardcoded|connection string|filesystem path/i);
-  const emptyExceptionCount = countRiskMatches(input.risks, /empty exception|empty except|swallowed exception/i);
+  const resolvedBindingCount = Math.max(
+    0,
+    input.delphiDataBindings.length - unresolvedBindingCount
+  );
+  const writeAccessCount = countBy(
+    input.fieldAccessItems,
+    item => item.operation === "write" || item.operation === "read-write"
+  );
+  const readAccessCount = Math.max(
+    0,
+    input.fieldAccessItems.length - writeAccessCount
+  );
+  const dynamicSqlCount =
+    countWarningMatches(allWarnings, /SQL_DYNAMIC_STRING|dynamic sql/i) +
+    countRiskMatches(input.risks, /dynamic sql|sql\.text|sql\.add/i);
+  const hardcodedConfigCount = countRiskMatches(
+    input.risks,
+    /hardcoded|connection string|filesystem path/i
+  );
+  const emptyExceptionCount = countRiskMatches(
+    input.risks,
+    /empty exception|empty except|swallowed exception/i
+  );
   const unknownFileCount = input.languageCounts.unknown;
-  const skippedOrDegradedCount = (input.metrics?.skippedFileCount ?? 0) + (input.metrics?.degradedFileCount ?? 0);
+  const skippedOrDegradedCount =
+    (input.metrics?.skippedFileCount ?? 0) +
+    (input.metrics?.degradedFileCount ?? 0);
 
   const keyFindingCandidates = [
-    dynamicSqlCount > 0 ? `Dynamic SQL requires review in ${dynamicSqlCount} detected signal(s).` : null,
-    hardcodedConfigCount > 0 ? `Hardcoded path or connection string findings appear in ${hardcodedConfigCount} risk item(s).` : null,
-    emptyExceptionCount > 0 ? `Empty or swallowed exception handler findings appear in ${emptyExceptionCount} risk item(s).` : null,
-    unresolvedEventCount > 0 ? `${unresolvedEventCount} DFM/FMX event handler binding(s) are unresolved.` : null,
-    unresolvedBindingCount > 0 ? `${unresolvedBindingCount} Delphi DataSource/DataSet binding(s) are unresolved or lower confidence.` : null,
-    writeAccessCount > 0 ? `${writeAccessCount} FieldByName/ParamByName write access signal(s) were detected.` : null,
-    input.limitedFileCount > 0 ? `${input.limitedFileCount} file(s) have limited or heuristic analysis signals.` : null,
-    unknownFileCount > 0 ? `${unknownFileCount} scanned file(s) have unknown language or extension.` : null,
-    input.risks.length > 0 ? `${input.risks.length} persisted risk finding(s) are available for engineering review.` : null,
+    dynamicSqlCount > 0
+      ? `Dynamic SQL requires review in ${dynamicSqlCount} detected signal(s).`
+      : null,
+    hardcodedConfigCount > 0
+      ? `Hardcoded path or connection string findings appear in ${hardcodedConfigCount} risk item(s).`
+      : null,
+    emptyExceptionCount > 0
+      ? `Empty or swallowed exception handler findings appear in ${emptyExceptionCount} risk item(s).`
+      : null,
+    unresolvedEventCount > 0
+      ? `${unresolvedEventCount} DFM/FMX event handler binding(s) are unresolved.`
+      : null,
+    unresolvedBindingCount > 0
+      ? `${unresolvedBindingCount} Delphi DataSource/DataSet binding(s) are unresolved or lower confidence.`
+      : null,
+    writeAccessCount > 0
+      ? `${writeAccessCount} FieldByName/ParamByName write access signal(s) were detected.`
+      : null,
+    input.limitedFileCount > 0
+      ? `${input.limitedFileCount} file(s) have limited or heuristic analysis signals.`
+      : null,
+    unknownFileCount > 0
+      ? `${unknownFileCount} scanned file(s) have unknown language or extension.`
+      : null,
+    input.risks.length > 0
+      ? `${input.risks.length} persisted risk finding(s) are available for engineering review.`
+      : null,
   ].filter((item): item is string => Boolean(item));
   const keyFindings = keyFindingCandidates.slice(0, 5);
 
   const p0 = [
-    unresolvedEventCount > 0 ? "Manually confirm unresolved event handlers before changing related forms or workflows." : null,
-    dynamicSqlCount > 0 || writeAccessCount > 0 ? "Manually review dynamic SQL and high-risk write access paths." : null,
-    hardcodedConfigCount > 0 ? "Confirm whether hardcoded connection strings or paths should move to configuration." : null,
+    unresolvedEventCount > 0
+      ? "Manually confirm unresolved event handlers before changing related forms or workflows."
+      : null,
+    dynamicSqlCount > 0 || writeAccessCount > 0
+      ? "Manually review dynamic SQL and high-risk write access paths."
+      : null,
+    hardcodedConfigCount > 0
+      ? "Confirm whether hardcoded connection strings or paths should move to configuration."
+      : null,
   ].filter((item): item is string => Boolean(item));
   const p1 = [
-    input.risks.length > 0 || input.fieldAccessItems.length > 0 ? "Fill in data-flow documentation for the highest-risk flows." : null,
-    input.risks.length > 0 || writeAccessCount > 0 ? "Add or refresh tests around high-risk flows before refactoring." : null,
-    unresolvedBindingCount > 0 || input.delphiDataBindings.length > 0 ? "Clarify DataSource/DataSet ownership for DB-aware Delphi components." : null,
+    input.risks.length > 0 || input.fieldAccessItems.length > 0
+      ? "Fill in data-flow documentation for the highest-risk flows."
+      : null,
+    input.risks.length > 0 || writeAccessCount > 0
+      ? "Add or refresh tests around high-risk flows before refactoring."
+      : null,
+    unresolvedBindingCount > 0 || input.delphiDataBindings.length > 0
+      ? "Clarify DataSource/DataSet ownership for DB-aware Delphi components."
+      : null,
   ].filter((item): item is string => Boolean(item));
   const p2 = [
-    input.risks.length > 0 ? "Refactor low-risk duplicate or hard-to-follow logic after P0/P1 review is complete." : null,
-    input.languageCounts.delphiLike > 0 || input.languageCounts.unknown > 0 ? "Improve naming and local documentation around legacy modules." : null,
+    input.risks.length > 0
+      ? "Refactor low-risk duplicate or hard-to-follow logic after P0/P1 review is complete."
+      : null,
+    input.languageCounts.delphiLike > 0 || input.languageCounts.unknown > 0
+      ? "Improve naming and local documentation around legacy modules."
+      : null,
     "Add examples and onboarding notes for future maintainers.",
   ].filter((item): item is string => Boolean(item));
 
-  const renderActions = (items: string[]) => (items.length > 0 ? items.map((item) => `- ${item}`) : ["- No urgent action was inferred from the persisted findings."]);
-  const hasDelphiFindings = input.languageCounts.delphiLike > 0 || input.delphiEventMap.length > 0 || input.delphiDataBindings.length > 0 || input.fieldAccessItems.length > 0;
+  const renderActions = (items: string[]) =>
+    items.length > 0
+      ? items.map(item => `- ${item}`)
+      : ["- No urgent action was inferred from the persisted findings."];
+  const hasDelphiFindings =
+    input.languageCounts.delphiLike > 0 ||
+    input.delphiEventMap.length > 0 ||
+    input.delphiDataBindings.length > 0 ||
+    input.fieldAccessItems.length > 0;
 
   return [
     "# EXECUTIVE_SUMMARY",
@@ -2026,7 +2595,7 @@ function renderExecutiveSummaryMarkdown(input: {
     `- Focus language: ${input.metadata.focusLanguage ?? "unknown"}`,
     `- Analyzed at: ${input.metadata.createdAt}`,
     `- Scanned files: ${input.metrics?.fileCount ?? input.fileInventoryItems.length}`,
-    `- Successfully analyzed files: ${input.metrics?.analyzedFileCount ?? countBy(input.fileInventoryItems, (item) => item.analysisSucceeded)}`,
+    `- Successfully analyzed files: ${input.metrics?.analyzedFileCount ?? countBy(input.fileInventoryItems, item => item.analysisSucceeded)}`,
     `- Skipped / degraded files: ${skippedOrDegradedCount}`,
     `- Language distribution: Delphi-like ${input.languageCounts.delphiLike}, Go ${input.languageCounts.go}, SQL ${input.languageCounts.sql}, Unknown ${input.languageCounts.unknown}`,
     `- Delphi-like files: ${input.languageCounts.delphiLike}`,
@@ -2035,7 +2604,11 @@ function renderExecutiveSummaryMarkdown(input: {
     ...confidenceLines,
     "",
     "## Key Findings Top 5",
-    ...(keyFindings.length > 0 ? keyFindings.map((item, index) => `${index + 1}. ${item}`) : ["1. No high-priority finding signals were detected in the persisted report."]),
+    ...(keyFindings.length > 0
+      ? keyFindings.map((item, index) => `${index + 1}. ${item}`)
+      : [
+          "1. No high-priority finding signals were detected in the persisted report.",
+        ]),
     "",
     "## Delphi Audit Summary",
     ...(hasDelphiFindings
@@ -2075,16 +2648,28 @@ function renderExecutiveSummaryMarkdown(input: {
   ].join("\n");
 }
 
-
-export async function getAnalysisSnapshot(projectId: number, userId: number): Promise<AnalysisSnapshot> {
-  return getAnalysisSnapshotImpl({ requireDb, getOwnedProject, getProjectAnalysisRecord }, projectId, userId);
+export async function getAnalysisSnapshot(
+  projectId: number,
+  userId: number
+): Promise<AnalysisSnapshot> {
+  return getAnalysisSnapshotImpl(
+    { requireDb, getOwnedProject, getProjectAnalysisRecord },
+    projectId,
+    userId
+  );
 }
 
-export async function getSymbolsPage(input: SymbolsPageInput, userId: number): Promise<PagedResult<SymbolListItem>> {
+export async function getSymbolsPage(
+  input: SymbolsPageInput,
+  userId: number
+): Promise<PagedResult<SymbolListItem>> {
   return getSymbolsPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
-export async function getFieldsPage(input: FieldsPageInput, userId: number): Promise<PagedResult<FieldListItem>> {
+export async function getFieldsPage(
+  input: FieldsPageInput,
+  userId: number
+): Promise<PagedResult<FieldListItem>> {
   return getFieldsPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
@@ -2096,7 +2681,10 @@ export async function getRulesPage(input: RulesPageInput, userId: number) {
   return getRulesPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
-export async function getDependenciesPage(input: DependenciesPageInput, userId: number) {
+export async function getDependenciesPage(
+  input: DependenciesPageInput,
+  userId: number
+) {
   return getDependenciesPageImpl({ requireDb, getOwnedProject }, input, userId);
 }
 
@@ -2104,10 +2692,16 @@ export async function getFieldDependenciesPage(
   input: FieldDependenciesPageInput,
   userId: number
 ): Promise<PagedResult<FieldDependencyListItem>> {
-  return getFieldDependenciesPageImpl({ requireDb, getOwnedProject }, input, userId);
+  return getFieldDependenciesPageImpl(
+    { requireDb, getOwnedProject },
+    input,
+    userId
+  );
 }
 
-function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalysisSnapshot>["snapshot"]) {
+function renderDelphiBuildDoctorMarkdown(
+  snapshot: ReturnType<typeof parseAnalysisSnapshot>["snapshot"]
+) {
   const doctor = snapshot?.buildDoctor;
   if (!doctor) {
     return "# DELPHI_BUILD_DOCTOR\n\nNo Build Doctor snapshot is available for this run.\n";
@@ -2120,7 +2714,16 @@ function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalys
     `- Compiler family: ${doctor.compilerFamily.value ?? "unknown"} (${doctor.compilerFamily.confidence})`,
     "",
     "## Project Entries",
-    doctor.projectEntries.length === 0 ? "- No Delphi project entry metadata was found." : renderMarkdownTable(["Path", "Kind", "Evidence"], doctor.projectEntries.map((entry) => [entry.path, entry.kind, entry.evidence])),
+    doctor.projectEntries.length === 0
+      ? "- No Delphi project entry metadata was found."
+      : renderMarkdownTable(
+          ["Path", "Kind", "Evidence"],
+          doctor.projectEntries.map(entry => [
+            entry.path,
+            entry.kind,
+            entry.evidence,
+          ])
+        ),
     "",
     "## Configuration",
     `- Configurations: ${doctor.configurations.join(", ") || "none detected"}`,
@@ -2143,7 +2746,7 @@ function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalys
       ? "- No Delphi package requirements were recorded."
       : renderMarkdownTable(
           ["Package", "Resolution", "Resolved path", "Evidence"],
-          doctor.packageResolutions.map((entry) => [
+          doctor.packageResolutions.map(entry => [
             entry.packageName,
             entry.resolution,
             entry.resolvedPath ?? "",
@@ -2155,35 +2758,56 @@ function renderDelphiBuildDoctorMarkdown(snapshot: ReturnType<typeof parseAnalys
     doctor.findings.length === 0
       ? "- No Build Doctor findings were recorded."
       : renderMarkdownTable(
-          ["Severity", "Code", "Title", "Confidence", "Evidence", "Recommendation"],
-          doctor.findings.slice(0, 200).map((finding) => [
-            finding.severity,
-            finding.code,
-            finding.title,
-            finding.confidence,
-            finding.evidence ?? `${finding.sourceFile ?? ""}${finding.lineNumber ? `:${finding.lineNumber}` : ""}`,
-            finding.recommendation,
-          ])
+          [
+            "Severity",
+            "Code",
+            "Title",
+            "Confidence",
+            "Evidence",
+            "Recommendation",
+          ],
+          doctor.findings
+            .slice(0, 200)
+            .map(finding => [
+              finding.severity,
+              finding.code,
+              finding.title,
+              finding.confidence,
+              finding.evidence ??
+                `${finding.sourceFile ?? ""}${finding.lineNumber ? `:${finding.lineNumber}` : ""}`,
+              finding.recommendation,
+            ])
         ),
-    doctor.findings.length > 200 ? `\n\n${doctor.findings.length - 200} additional findings omitted from Markdown; see delphi-build-doctor.json.` : "",
+    doctor.findings.length > 200
+      ? `\n\n${doctor.findings.length - 200} additional findings omitted from Markdown; see delphi-build-doctor.json.`
+      : "",
     "",
     "## Limitations",
-    ...doctor.limitations.map((limitation) => `- ${limitation}`),
+    ...doctor.limitations.map(limitation => `- ${limitation}`),
     "",
   ];
   return lines.join("\n");
 }
 
-function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisSnapshot>["snapshot"]) {
+function renderUiDatabaseFlowMarkdown(
+  snapshot: ReturnType<typeof parseAnalysisSnapshot>["snapshot"]
+) {
   const traces = snapshot?.flowTraces ?? [];
-  const traceSummary = snapshot?.flowTraceSummary ?? { candidateTraceCount: traces.length, persistedTraceCount: traces.length, globalTruncated: false };
-  const complete = traces.filter((trace) => trace.status === "complete").length;
-  const partial = traces.filter((trace) => trace.status === "partial").length;
-  const unresolved = traces.filter((trace) => trace.status === "unresolved").length;
+  const traceSummary = snapshot?.flowTraceSummary ?? {
+    candidateTraceCount: traces.length,
+    persistedTraceCount: traces.length,
+    globalTruncated: false,
+  };
+  const complete = traces.filter(trace => trace.status === "complete").length;
+  const partial = traces.filter(trace => trace.status === "partial").length;
+  const unresolved = traces.filter(
+    trace => trace.status === "unresolved"
+  ).length;
   const affectedTables = new Map<string, number>();
   const affectedFields = new Map<string, number>();
   for (const trace of traces) {
-    for (const table of trace.affectedTables) affectedTables.set(table, (affectedTables.get(table) ?? 0) + 1);
+    for (const table of trace.affectedTables)
+      affectedTables.set(table, (affectedTables.get(table) ?? 0) + 1);
     for (const field of trace.affectedFields) {
       const key = `${field.table}.${field.field} [${field.operation}]`;
       affectedFields.set(key, (affectedFields.get(key) ?? 0) + 1);
@@ -2191,22 +2815,35 @@ function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisS
   }
   const top = (values: Map<string, number>) =>
     Array.from(values.entries())
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .sort(
+        (left, right) => right[1] - left[1] || left[0].localeCompare(right[0])
+      )
       .slice(0, 20)
       .map(([label, count]) => [label, count]);
-  const representative = traces.slice(0, 50).flatMap((trace, index) => [
-    `### Trace ${index + 1}: ${trace.componentClass}.${trace.componentName}${trace.eventName ? ` ${trace.eventName}` : ""}`,
-    "",
-    `- Status: ${trace.status}`,
-    `- Confidence: ${trace.confidence}`,
-    `- Handler: ${trace.resolvedHandler ?? trace.handlerName ?? "none"}`,
-    `- Affected tables: ${trace.affectedTables.join(", ") || "none detected"}`,
-    trace.warnings.length > 0 ? `- Warnings: ${trace.warnings.join(" ")}` : "- Warnings: none",
-    "",
-    ...trace.steps.slice(0, 40).map((step) => `- ${step.type}: ${step.label}${step.operation ? ` [${step.operation}]` : ""}${step.filePath ? ` (${step.filePath}${step.lineNumber ? `:${step.lineNumber}` : ""})` : ""}`),
-    trace.steps.length > 40 ? `- ${trace.steps.length - 40} additional steps omitted from Markdown.` : "",
-    "",
-  ]);
+  const representative = traces
+    .slice(0, 50)
+    .flatMap((trace, index) => [
+      `### Trace ${index + 1}: ${trace.componentClass}.${trace.componentName}${trace.eventName ? ` ${trace.eventName}` : ""}`,
+      "",
+      `- Status: ${trace.status}`,
+      `- Confidence: ${trace.confidence}`,
+      `- Handler: ${trace.resolvedHandler ?? trace.handlerName ?? "none"}`,
+      `- Affected tables: ${trace.affectedTables.join(", ") || "none detected"}`,
+      trace.warnings.length > 0
+        ? `- Warnings: ${trace.warnings.join(" ")}`
+        : "- Warnings: none",
+      "",
+      ...trace.steps
+        .slice(0, 40)
+        .map(
+          step =>
+            `- ${step.type}: ${step.label}${step.operation ? ` [${step.operation}]` : ""}${step.filePath ? ` (${step.filePath}${step.lineNumber ? `:${step.lineNumber}` : ""})` : ""}`
+        ),
+      trace.steps.length > 40
+        ? `- ${trace.steps.length - 40} additional steps omitted from Markdown.`
+        : "",
+      "",
+    ]);
 
   return [
     "# UI_DATABASE_FLOW",
@@ -2218,19 +2855,27 @@ function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisS
     `- Complete: ${complete}`,
     `- Partial: ${partial}`,
     `- Unresolved: ${unresolved}`,
-    `- Read paths: ${traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "read")).length}`,
-    `- Write paths: ${traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "write")).length}`,
+    `- Read paths: ${traces.filter(trace => trace.affectedFields.some(field => field.operation === "read")).length}`,
+    `- Write paths: ${traces.filter(trace => trace.affectedFields.some(field => field.operation === "write")).length}`,
     `- Affected tables: ${affectedTables.size}`,
     "",
     "## Top Affected Tables",
-    affectedTables.size === 0 ? "- No affected tables were detected." : renderMarkdownTable(["Table", "Trace count"], top(affectedTables)),
+    affectedTables.size === 0
+      ? "- No affected tables were detected."
+      : renderMarkdownTable(["Table", "Trace count"], top(affectedTables)),
     "",
     "## Top Affected Fields",
-    affectedFields.size === 0 ? "- No affected fields were detected." : renderMarkdownTable(["Field", "Trace count"], top(affectedFields)),
+    affectedFields.size === 0
+      ? "- No affected fields were detected."
+      : renderMarkdownTable(["Field", "Trace count"], top(affectedFields)),
     "",
     "## Representative Traces",
-    traces.length === 0 ? "- No UI-to-database flow traces were recorded." : representative.join("\n"),
-    traces.length > 50 ? `\n${traces.length - 50} additional traces omitted from Markdown; see ui-database-flow.json.` : "",
+    traces.length === 0
+      ? "- No UI-to-database flow traces were recorded."
+      : representative.join("\n"),
+    traces.length > 50
+      ? `\n${traces.length - 50} additional traces omitted from Markdown; see ui-database-flow.json.`
+      : "",
     "",
     "## Limitations",
     "- Flow tracing uses persisted static-analysis evidence only. Runtime-created handlers, dynamic SQL, and runtime data bindings may be incomplete.",
@@ -2241,44 +2886,57 @@ function renderUiDatabaseFlowMarkdown(snapshot: ReturnType<typeof parseAnalysisS
   ].join("\n");
 }
 
-function getSnapshotProjectContext(snapshot: AnalysisRunSnapshotV1): AnalysisRunProjectContext {
-  return snapshot.projectContext ?? {
-    projectName: "unknown",
-    sourceType: "unknown",
-    focusLanguage: null,
-    importWarnings: [],
-  };
+function getSnapshotProjectContext(
+  snapshot: AnalysisRunSnapshotV1
+): AnalysisRunProjectContext {
+  return (
+    snapshot.projectContext ?? {
+      projectName: "unknown",
+      sourceType: "unknown",
+      focusLanguage: null,
+      importWarnings: [],
+    }
+  );
 }
 
 function buildSnapshotImpactSummary(snapshot: AnalysisRunSnapshotV1) {
-  const symbolByStableKey = new Map(snapshot.symbols.map((symbol) => [symbol.stableKey, symbol]));
+  const symbolByStableKey = new Map(
+    snapshot.symbols.map(symbol => [symbol.stableKey, symbol])
+  );
   const fileImpactCounts = new Map<string, number>();
   const incrementFileImpact = (filePath: string | null | undefined) => {
     if (!filePath) return;
     fileImpactCounts.set(filePath, (fileImpactCounts.get(filePath) ?? 0) + 1);
   };
 
-  snapshot.risks.forEach((risk) => incrementFileImpact(risk.sourceFile));
-  snapshot.rules.forEach((rule) => incrementFileImpact(rule.sourceFile));
-  snapshot.dependencies.forEach((dependency) => {
+  snapshot.risks.forEach(risk => incrementFileImpact(risk.sourceFile));
+  snapshot.rules.forEach(rule => incrementFileImpact(rule.sourceFile));
+  snapshot.dependencies.forEach(dependency => {
     incrementFileImpact(symbolByStableKey.get(dependency.from)?.file);
-    incrementFileImpact(dependency.to ? symbolByStableKey.get(dependency.to)?.file : undefined);
+    incrementFileImpact(
+      dependency.to ? symbolByStableKey.get(dependency.to)?.file : undefined
+    );
   });
 
   const dependencySummaries = snapshot.dependencies
-    .map((dependency) => `${dependency.fromName} -> ${dependency.toName} (${dependency.type})`)
+    .map(
+      dependency =>
+        `${dependency.fromName} -> ${dependency.toName} (${dependency.type})`
+    )
     .sort((left, right) => left.localeCompare(right))
     .slice(0, 10);
 
   const topImpactedFiles = Array.from(fileImpactCounts.entries())
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .sort(
+      (left, right) => right[1] - left[1] || left[0].localeCompare(right[0])
+    )
     .slice(0, 10)
     .map(([filePath, impactCount]) => ({ filePath, impactCount }));
 
   const highRiskItems = snapshot.risks
-    .filter((risk) => severityRank(risk.severity) >= severityRank("high"))
+    .filter(risk => severityRank(risk.severity) >= severityRank("high"))
     .slice(0, 10)
-    .map((risk) => ({
+    .map(risk => ({
       title: risk.title,
       severity: risk.severity,
       sourceFile: risk.sourceFile,
@@ -2287,7 +2945,10 @@ function buildSnapshotImpactSummary(snapshot: AnalysisRunSnapshotV1) {
 
   const ruleTypeCounts = new Map<string, number>();
   for (const rule of snapshot.rules) {
-    ruleTypeCounts.set(rule.ruleType, (ruleTypeCounts.get(rule.ruleType) ?? 0) + 1);
+    ruleTypeCounts.set(
+      rule.ruleType,
+      (ruleTypeCounts.get(rule.ruleType) ?? 0) + 1
+    );
   }
 
   return {
@@ -2302,8 +2963,12 @@ function buildSnapshotImpactSummary(snapshot: AnalysisRunSnapshotV1) {
     topDependencies: dependencySummaries,
     highRiskItems,
     businessRules: {
-      countsByType: Object.fromEntries(Array.from(ruleTypeCounts.entries()).sort((left, right) => left[0].localeCompare(right[0]))),
-      items: snapshot.rules.slice(0, 10).map((rule) => ({
+      countsByType: Object.fromEntries(
+        Array.from(ruleTypeCounts.entries()).sort((left, right) =>
+          left[0].localeCompare(right[0])
+        )
+      ),
+      items: snapshot.rules.slice(0, 10).map(rule => ({
         name: rule.name,
         ruleType: rule.ruleType,
         sourceFile: rule.sourceFile ?? null,
@@ -2342,7 +3007,9 @@ function buildSnapshotReportCompletenessArtifacts(input: {
   const risksByFile = new Map<string, number>();
   const warningsByFile = new Map<string, number>();
   const limitedFilePaths = new Set<string>();
-  const symbolByStableKey = new Map(snapshot.symbols.map((symbol) => [symbol.stableKey, symbol]));
+  const symbolByStableKey = new Map(
+    snapshot.symbols.map(symbol => [symbol.stableKey, symbol])
+  );
 
   for (const symbol of snapshot.symbols) {
     symbolsByFile.set(symbol.file, (symbolsByFile.get(symbol.file) ?? 0) + 1);
@@ -2350,16 +3017,28 @@ function buildSnapshotReportCompletenessArtifacts(input: {
   for (const dependency of snapshot.dependencies) {
     const sourceFile = symbolByStableKey.get(dependency.from)?.file;
     if (sourceFile) {
-      dependenciesByFile.set(sourceFile, (dependenciesByFile.get(sourceFile) ?? 0) + 1);
+      dependenciesByFile.set(
+        sourceFile,
+        (dependenciesByFile.get(sourceFile) ?? 0) + 1
+      );
     }
   }
   for (const risk of snapshot.risks) {
-    risksByFile.set(risk.sourceFile, (risksByFile.get(risk.sourceFile) ?? 0) + 1);
+    risksByFile.set(
+      risk.sourceFile,
+      (risksByFile.get(risk.sourceFile) ?? 0) + 1
+    );
   }
   for (const warning of [...importWarnings, ...analyzerWarnings]) {
     if (!warning.filePath) continue;
-    warningsByFile.set(warning.filePath, (warningsByFile.get(warning.filePath) ?? 0) + 1);
-    if (warning.code === "IMPORT_LIMITED_ANALYSIS" || ("heuristic" in warning && warning.heuristic)) {
+    warningsByFile.set(
+      warning.filePath,
+      (warningsByFile.get(warning.filePath) ?? 0) + 1
+    );
+    if (
+      warning.code === "IMPORT_LIMITED_ANALYSIS" ||
+      ("heuristic" in warning && warning.heuristic)
+    ) {
       limitedFilePaths.add(warning.filePath);
     }
   }
@@ -2376,13 +3055,17 @@ function buildSnapshotReportCompletenessArtifacts(input: {
     { delphiLike: 0, go: 0, sql: 0, unknown: 0 }
   );
 
-  const fileInventoryItems = snapshot.sourceManifest.map((file) => {
-    const importWarningCodes = importWarnings.filter((warning) => warning.filePath === file.path).map((warning) => warning.code);
+  const fileInventoryItems = snapshot.sourceManifest.map(file => {
+    const importWarningCodes = importWarnings
+      .filter(warning => warning.filePath === file.path)
+      .map(warning => warning.code);
     return {
       filePath: file.path,
       fileType: normalizeReportFileType(file.fileType),
       language: classifyReportLanguage(file.fileType),
-      analysisSucceeded: !importWarningCodes.includes("IMPORT_SKIPPED_UNSUPPORTED"),
+      analysisSucceeded: !importWarningCodes.includes(
+        "IMPORT_SKIPPED_UNSUPPORTED"
+      ),
       symbolCount: symbolsByFile.get(file.path) ?? 0,
       dependencyCount: dependenciesByFile.get(file.path) ?? 0,
       riskCount: risksByFile.get(file.path) ?? 0,
@@ -2391,10 +3074,12 @@ function buildSnapshotReportCompletenessArtifacts(input: {
   });
 
   const fieldAccessItems = snapshot.fieldDependencies
-    .map((dependency) => {
+    .map(dependency => {
       const context = dependency.context ?? "";
       const accessKind = /ParamByName\s*\(/i.test(context) ? "param" : "field";
-      const ownerMatch = context.match(/([A-Za-z_][\w.]*)\s*\.\s*(?:FieldByName|ParamByName)\s*\(/i);
+      const ownerMatch = context.match(
+        /([A-Za-z_][\w.]*)\s*\.\s*(?:FieldByName|ParamByName)\s*\(/i
+      );
       return {
         filePath: dependency.file,
         lineNumber: dependency.line,
@@ -2406,7 +3091,12 @@ function buildSnapshotReportCompletenessArtifacts(input: {
         symbolName: dependency.symbolName ?? null,
       };
     })
-    .filter((item) => item.filePath.toLowerCase().endsWith(".pas") || item.accessKind === "param" || item.context?.match(/FieldByName|ParamByName/i));
+    .filter(
+      item =>
+        item.filePath.toLowerCase().endsWith(".pas") ||
+        item.accessKind === "param" ||
+        item.context?.match(/FieldByName|ParamByName/i)
+    );
 
   const projectOverviewMarkdown = [
     "# PROJECT_OVERVIEW",
@@ -2426,7 +3116,14 @@ function buildSnapshotReportCompletenessArtifacts(input: {
     confidence ? `- Level: ${confidence.level}` : "- Level: unknown",
     "",
     confidence
-      ? renderMarkdownTable(["Label", "Impact", "Reason"], confidence.breakdown.map((item) => [item.label, item.impact > 0 ? `+${item.impact}` : item.impact, item.reason]))
+      ? renderMarkdownTable(
+          ["Label", "Impact", "Reason"],
+          confidence.breakdown.map(item => [
+            item.label,
+            item.impact > 0 ? `+${item.impact}` : item.impact,
+            item.reason,
+          ])
+        )
       : "Confidence details are unavailable for this snapshot.",
     "",
     "## Findings Summary",
@@ -2439,7 +3136,9 @@ function buildSnapshotReportCompletenessArtifacts(input: {
     "",
     "## Report Limits",
     ...reportLimitationLines(),
-    snapshot.projectContext ? "" : "- Legacy snapshot context was not persisted for this run; project name, source type, focus language, and import warnings may be unknown.",
+    snapshot.projectContext
+      ? ""
+      : "- Legacy snapshot context was not persisted for this run; project name, source type, focus language, and import warnings may be unknown.",
     "",
   ].join("\n");
 
@@ -2447,8 +3146,17 @@ function buildSnapshotReportCompletenessArtifacts(input: {
     "# FILE_INVENTORY",
     "",
     renderMarkdownTable(
-      ["File path", "File type", "Language", "Analyzed", "Symbol count", "Dependency count", "Risk count", "Warning count"],
-      fileInventoryItems.map((item) => [
+      [
+        "File path",
+        "File type",
+        "Language",
+        "Analyzed",
+        "Symbol count",
+        "Dependency count",
+        "Risk count",
+        "Warning count",
+      ],
+      fileInventoryItems.map(item => [
         item.filePath,
         item.fileType,
         item.language,
@@ -2468,8 +3176,22 @@ function buildSnapshotReportCompletenessArtifacts(input: {
     fieldAccessItems.length === 0
       ? "No Pascal FieldByName or ParamByName accesses were detected in persisted analysis artifacts."
       : renderMarkdownTable(
-          ["File path", "Line", "Owner", "Field/param", "Read/write", "Context"],
-          fieldAccessItems.map((item) => [item.filePath, item.lineNumber ?? "unknown", item.owner, `${item.accessKind}:${item.name}`, item.operation, item.context ?? ""])
+          [
+            "File path",
+            "Line",
+            "Owner",
+            "Field/param",
+            "Read/write",
+            "Context",
+          ],
+          fieldAccessItems.map(item => [
+            item.filePath,
+            item.lineNumber ?? "unknown",
+            item.owner,
+            `${item.accessKind}:${item.name}`,
+            item.operation,
+            item.context ?? "",
+          ])
         ),
     "",
     "Owner note: when dataset or parameter ownership cannot be inferred from the static context, owner is reported as `unknown`.",
@@ -2482,13 +3204,15 @@ function buildSnapshotReportCompletenessArtifacts(input: {
       createdAt: input.metadata.createdAt,
       focusLanguage: projectContext.focusLanguage,
     },
-    project: { sourceType: projectContext.sourceType } as typeof projects.$inferSelect,
+    project: {
+      sourceType: projectContext.sourceType,
+    } as typeof projects.$inferSelect,
     metrics: input.report.summaryJson,
     confidence,
     languageCounts,
     limitedFileCount: limitedFilePaths.size,
     fileInventoryItems,
-    risks: snapshot.risks.map((risk) => ({
+    risks: snapshot.risks.map(risk => ({
       riskType: risk.category,
       title: risk.title,
       description: risk.description,
@@ -2508,8 +3232,17 @@ function buildSnapshotReportCompletenessArtifacts(input: {
     fileInventoryMarkdown,
     delphiFieldAccessMarkdown,
     delphiEventMapMarkdown: renderDelphiEventMapMarkdown(delphiEventMap),
-    delphiDataBindingsMarkdown: renderDelphiDataBindingsMarkdown(delphiDataBindings),
-    limitationsMarkdown: ["# LIMITATIONS", "", ...reportLimitationLines(), snapshot.projectContext ? "" : "- Legacy snapshot context was not persisted for this run.", ""].join("\n"),
+    delphiDataBindingsMarkdown:
+      renderDelphiDataBindingsMarkdown(delphiDataBindings),
+    limitationsMarkdown: [
+      "# LIMITATIONS",
+      "",
+      ...reportLimitationLines(),
+      snapshot.projectContext
+        ? ""
+        : "- Legacy snapshot context was not persisted for this run.",
+      "",
+    ].join("\n"),
     confidence,
     fullFindingsJson: JSON.stringify(
       {
@@ -2541,9 +3274,18 @@ function buildSnapshotReportCompletenessArtifacts(input: {
   };
 }
 
-export async function buildReportArchiveBuffer(projectId: number, userId: number, runId?: number): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
+export async function buildReportArchiveBuffer(
+  projectId: number,
+  userId: number,
+  runId?: number
+): Promise<{ fileName: string; mimeType: string; buffer: Buffer }> {
   await getOwnedProject(projectId, userId);
-  logger.info("Export started", { projectId, runId: runId ?? null, action: "export.zip.start", status: "ok" });
+  logger.info("Export started", {
+    projectId,
+    runId: runId ?? null,
+    action: "export.zip.start",
+    status: "ok",
+  });
   const db = await requireDb();
 
   let strictSnapshot: AnalysisRunSnapshotV1 | null = null;
@@ -2555,37 +3297,76 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
   } else {
     await materializeLegacySnapshotIfMissing(db, projectId);
   }
-  const report = typeof runId === "number" ? await getProjectAnalysisRecord(db, projectId, runId) : await getProjectAnalysisRecord(db, projectId);
+  const report =
+    typeof runId === "number"
+      ? await getProjectAnalysisRecord(db, projectId, runId)
+      : await getProjectAnalysisRecord(db, projectId);
 
   if (!isReportReadyForExport(report)) {
-    logger.warn("Export not ready", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
-    throw new AppError("REPORT_NOT_READY", "Analysis report is not ready for download.");
+    logger.warn("Export not ready", {
+      projectId,
+      runId: runId ?? null,
+      action: "export.zip.complete",
+      status: "error",
+      code: "REPORT_NOT_READY",
+    });
+    throw new AppError(
+      "REPORT_NOT_READY",
+      "Analysis report is not ready for download."
+    );
   }
   let readyReport = report;
-  let selectedSnapshot = strictSnapshot ?? parseAnalysisSnapshot(readyReport.snapshotJson).snapshot;
+  let selectedSnapshot =
+    strictSnapshot ?? parseAnalysisSnapshot(readyReport.snapshotJson).snapshot;
   if (!selectedSnapshot && typeof runId !== "number") {
     await materializeLegacySnapshotIfMissing(db, projectId);
     const refreshedReport = await getProjectAnalysisRecord(db, projectId);
     if (isReportReadyForExport(refreshedReport)) {
       readyReport = refreshedReport;
-      selectedSnapshot = parseAnalysisSnapshot(readyReport.snapshotJson).snapshot;
+      selectedSnapshot = parseAnalysisSnapshot(
+        readyReport.snapshotJson
+      ).snapshot;
     }
   }
   if (!selectedSnapshot) {
-    logger.warn("Export not ready", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "error", code: "REPORT_NOT_READY" });
-    throw new AppError("REPORT_NOT_READY", "Analysis report snapshot is not ready for download.");
+    logger.warn("Export not ready", {
+      projectId,
+      runId: runId ?? null,
+      action: "export.zip.complete",
+      status: "error",
+      code: "REPORT_NOT_READY",
+    });
+    throw new AppError(
+      "REPORT_NOT_READY",
+      "Analysis report snapshot is not ready for download."
+    );
   }
-  const projectContext = snapshotProjectContext ?? getSnapshotProjectContext(selectedSnapshot);
+  const projectContext =
+    snapshotProjectContext ?? getSnapshotProjectContext(selectedSnapshot);
 
   const exporterVersion = getAppVersion();
   const analyzerVersion = readyReport.analyzerVersion ?? "legacy";
   const metrics = readyReport.summaryJson ?? null;
-  const createdAtSource = readyReport.createdAt ?? readyReport.updatedAt ?? new Date(0);
-  const createdAtIso = createdAtSource instanceof Date ? createdAtSource.toISOString() : new Date(createdAtSource).toISOString();
-  const completedAtSource = readyReport.completedAt ?? readyReport.updatedAt ?? readyReport.createdAt ?? new Date(0);
-  const completedAtIso = completedAtSource instanceof Date ? completedAtSource.toISOString() : new Date(completedAtSource).toISOString();
+  const createdAtSource =
+    readyReport.createdAt ?? readyReport.updatedAt ?? new Date(0);
+  const createdAtIso =
+    createdAtSource instanceof Date
+      ? createdAtSource.toISOString()
+      : new Date(createdAtSource).toISOString();
+  const completedAtSource =
+    readyReport.completedAt ??
+    readyReport.updatedAt ??
+    readyReport.createdAt ??
+    new Date(0);
+  const completedAtIso =
+    completedAtSource instanceof Date
+      ? completedAtSource.toISOString()
+      : new Date(completedAtSource).toISOString();
   const impactSummary = buildSnapshotImpactSummary(selectedSnapshot);
-  const impactMarkdown = renderProjectImpactSummaryMarkdown(impactSummary, createdAtIso);
+  const impactMarkdown = renderProjectImpactSummaryMarkdown(
+    impactSummary,
+    createdAtIso
+  );
 
   const metadata = {
     projectName: projectContext.projectName,
@@ -2612,20 +3393,62 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     { path: "RISKS.md", content: readyReport.risksMarkdown },
     { path: "RULES.yaml", content: readyReport.rulesYaml },
     { path: "IMPACT_ANALYSIS.md", content: impactMarkdown },
-    { path: "EXECUTIVE_SUMMARY.md", content: reportCompletenessArtifacts.executiveSummaryMarkdown },
-    { path: "PROJECT_OVERVIEW.md", content: reportCompletenessArtifacts.projectOverviewMarkdown },
-    { path: "FILE_INVENTORY.md", content: reportCompletenessArtifacts.fileInventoryMarkdown },
-    { path: "DELPHI_FIELD_ACCESS.md", content: reportCompletenessArtifacts.delphiFieldAccessMarkdown },
-    { path: "DELPHI_EVENT_MAP.md", content: reportCompletenessArtifacts.delphiEventMapMarkdown },
-    { path: "DELPHI_DATA_BINDINGS.md", content: reportCompletenessArtifacts.delphiDataBindingsMarkdown },
-    { path: "DELPHI_BUILD_DOCTOR.md", content: renderDelphiBuildDoctorMarkdown(selectedSnapshot) },
-    { path: "delphi-build-doctor.json", content: JSON.stringify(selectedSnapshot.buildDoctor ?? null, null, 2) },
-    { path: "UI_DATABASE_FLOW.md", content: renderUiDatabaseFlowMarkdown(selectedSnapshot) },
-    { path: "ui-database-flow.json", content: JSON.stringify(selectedSnapshot.flowTraces ?? [], null, 2) },
-    { path: "LIMITATIONS.md", content: reportCompletenessArtifacts.limitationsMarkdown },
-    { path: "FULL_FINDINGS.json", content: reportCompletenessArtifacts.fullFindingsJson },
-    { path: "impact-analysis.json", content: JSON.stringify(impactSummary, null, 2) },
-    { path: "import-warnings.json", content: JSON.stringify(projectContext.importWarnings, null, 2) },
+    {
+      path: "EXECUTIVE_SUMMARY.md",
+      content: reportCompletenessArtifacts.executiveSummaryMarkdown,
+    },
+    {
+      path: "PROJECT_OVERVIEW.md",
+      content: reportCompletenessArtifacts.projectOverviewMarkdown,
+    },
+    {
+      path: "FILE_INVENTORY.md",
+      content: reportCompletenessArtifacts.fileInventoryMarkdown,
+    },
+    {
+      path: "DELPHI_FIELD_ACCESS.md",
+      content: reportCompletenessArtifacts.delphiFieldAccessMarkdown,
+    },
+    {
+      path: "DELPHI_EVENT_MAP.md",
+      content: reportCompletenessArtifacts.delphiEventMapMarkdown,
+    },
+    {
+      path: "DELPHI_DATA_BINDINGS.md",
+      content: reportCompletenessArtifacts.delphiDataBindingsMarkdown,
+    },
+    {
+      path: "DELPHI_BUILD_DOCTOR.md",
+      content: renderDelphiBuildDoctorMarkdown(selectedSnapshot),
+    },
+    {
+      path: "delphi-build-doctor.json",
+      content: JSON.stringify(selectedSnapshot.buildDoctor ?? null, null, 2),
+    },
+    {
+      path: "UI_DATABASE_FLOW.md",
+      content: renderUiDatabaseFlowMarkdown(selectedSnapshot),
+    },
+    {
+      path: "ui-database-flow.json",
+      content: JSON.stringify(selectedSnapshot.flowTraces ?? [], null, 2),
+    },
+    {
+      path: "LIMITATIONS.md",
+      content: reportCompletenessArtifacts.limitationsMarkdown,
+    },
+    {
+      path: "FULL_FINDINGS.json",
+      content: reportCompletenessArtifacts.fullFindingsJson,
+    },
+    {
+      path: "impact-analysis.json",
+      content: JSON.stringify(impactSummary, null, 2),
+    },
+    {
+      path: "import-warnings.json",
+      content: JSON.stringify(projectContext.importWarnings, null, 2),
+    },
     {
       path: "metadata.json",
       content: JSON.stringify(
@@ -2633,10 +3456,13 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
           projectId,
           analysisResultId: readyReport.id,
           runNumber: readyReport.runNumber ?? 1,
-          sourceFingerprint: readyReport.sourceFingerprint ?? selectedSnapshot.sourceManifest.map((file) => file.sha256).join(":"),
+          sourceFingerprint:
+            readyReport.sourceFingerprint ??
+            selectedSnapshot.sourceManifest.map(file => file.sha256).join(":"),
           analyzerVersion,
           exporterVersion,
-          snapshotSchemaVersion: readyReport.snapshotSchemaVersion ?? selectedSnapshot.schemaVersion,
+          snapshotSchemaVersion:
+            readyReport.snapshotSchemaVersion ?? selectedSnapshot.schemaVersion,
           createdAt: createdAtIso,
           completedAt: completedAtIso,
           isHistoricalExport: typeof runId === "number",
@@ -2666,8 +3492,18 @@ export async function buildReportArchiveBuffer(projectId: number, userId: number
     },
   ] as const;
 
-  logger.info("Export completed", { projectId, runId: runId ?? null, action: "export.zip.complete", status: "ok", analysisResultId: readyReport.id });
-  return buildProjectReportArchiveBuffer(projectId, [...archiveEntries], readyReport.runNumber ?? 1);
+  logger.info("Export completed", {
+    projectId,
+    runId: runId ?? null,
+    action: "export.zip.complete",
+    status: "ok",
+    analysisResultId: readyReport.id,
+  });
+  return buildProjectReportArchiveBuffer(
+    projectId,
+    [...archiveEntries],
+    readyReport.runNumber ?? 1
+  );
 }
 
 function renderAnalysisDiffMarkdown(diff: AnalysisDiff) {
@@ -2679,7 +3515,9 @@ function renderAnalysisDiffMarkdown(diff: AnalysisDiff) {
     `Truncated: ${diff.truncated ? "yes" : "no"}`,
     "",
     "## Metric Delta",
-    ...Object.entries(diff.metricsDelta).map(([key, value]) => `- ${key}: ${value >= 0 ? "+" : ""}${value}`),
+    ...Object.entries(diff.metricsDelta).map(
+      ([key, value]) => `- ${key}: ${value >= 0 ? "+" : ""}${value}`
+    ),
     "",
     "## Change Summary",
     `- Files: +${diff.files.added.total} / -${diff.files.removed.total} / ~${diff.files.changed.total}`,
@@ -2692,7 +3530,11 @@ function renderAnalysisDiffMarkdown(diff: AnalysisDiff) {
     `- Flow traces: +${diff.flowTraces.introduced.total} / -${diff.flowTraces.removed.total} / ~${diff.flowTraces.changed.total}`,
   ];
 
-  const appendBucketSection = <T,>(title: string, bucket: { items: T[]; total: number; displayed: number }, renderItem: (item: T) => string) => {
+  const appendBucketSection = <T>(
+    title: string,
+    bucket: { items: T[]; total: number; displayed: number },
+    renderItem: (item: T) => string
+  ) => {
     lines.push("", `## ${title}`);
     if (bucket.total === 0) {
       lines.push("- None");
@@ -2704,24 +3546,68 @@ function renderAnalysisDiffMarkdown(diff: AnalysisDiff) {
     lines.push(...bucket.items.map(renderItem));
   };
 
-  appendBucketSection("Added Files", diff.files.added, (item) => `- ${item.path} (${item.sha256.slice(0, 12)})`);
-  appendBucketSection("Removed Files", diff.files.removed, (item) => `- ${item.path} (${item.sha256.slice(0, 12)})`);
-  appendBucketSection("Changed Files", diff.files.changed, (item) => `- ${item.before.path}: ${item.before.sha256.slice(0, 12)} -> ${item.after.sha256.slice(0, 12)}`);
-  appendBucketSection("Introduced Risks", diff.risks.introduced, (item) => `- [${item.severity}] ${item.title} (${item.sourceFile}:${item.lineNumber})`);
-  appendBucketSection("Resolved Risks", diff.risks.resolved, (item) => `- [${item.severity}] ${item.title} (${item.sourceFile}:${item.lineNumber})`);
-  appendBucketSection("Changed Fields", diff.fields.changed, (item) => `- ${item.before.table}.${item.before.field}: ${item.before.fieldType ?? "unknown"} -> ${item.after.fieldType ?? "unknown"}`);
-  appendBucketSection("Field Dependency Changes", diff.fieldDependencies.changed, (item) => {
-    const beforeSymbol = item.before.symbolName ?? item.before.symbolStableKey ?? "unknown";
-    const afterSymbol = item.after.symbolName ?? item.after.symbolStableKey ?? "unknown";
-    return `- ${item.before.table}.${item.before.field}: ${beforeSymbol} (${item.before.type}) -> ${afterSymbol} (${item.after.type})`;
-  });
-  appendBucketSection("Delphi Event Resolution Changes", diff.delphiEvents.resolutionChanged, (item) => {
-    const beforeResolved = item.before.resolvedMethod ?? item.before.handlerName;
-    const afterResolved = item.after.resolvedMethod ?? item.after.handlerName;
-    return `- ${item.before.formName}.${item.before.componentName}.${item.before.eventName}: ${beforeResolved} -> ${afterResolved}`;
-  });
-  appendBucketSection("Build Doctor Changes", diff.buildDoctor.changed, (item) => `- ${item.before.code}: ${item.before.evidence ?? "no evidence"} -> ${item.after.evidence ?? "no evidence"}`);
-  appendBucketSection("Flow Trace Changes", diff.flowTraces.changed, (item) => {
+  appendBucketSection(
+    "Added Files",
+    diff.files.added,
+    item => `- ${item.path} (${item.sha256.slice(0, 12)})`
+  );
+  appendBucketSection(
+    "Removed Files",
+    diff.files.removed,
+    item => `- ${item.path} (${item.sha256.slice(0, 12)})`
+  );
+  appendBucketSection(
+    "Changed Files",
+    diff.files.changed,
+    item =>
+      `- ${item.before.path}: ${item.before.sha256.slice(0, 12)} -> ${item.after.sha256.slice(0, 12)}`
+  );
+  appendBucketSection(
+    "Introduced Risks",
+    diff.risks.introduced,
+    item =>
+      `- [${item.severity}] ${item.title} (${item.sourceFile}:${item.lineNumber})`
+  );
+  appendBucketSection(
+    "Resolved Risks",
+    diff.risks.resolved,
+    item =>
+      `- [${item.severity}] ${item.title} (${item.sourceFile}:${item.lineNumber})`
+  );
+  appendBucketSection(
+    "Changed Fields",
+    diff.fields.changed,
+    item =>
+      `- ${item.before.table}.${item.before.field}: ${item.before.fieldType ?? "unknown"} -> ${item.after.fieldType ?? "unknown"}`
+  );
+  appendBucketSection(
+    "Field Dependency Changes",
+    diff.fieldDependencies.changed,
+    item => {
+      const beforeSymbol =
+        item.before.symbolName ?? item.before.symbolStableKey ?? "unknown";
+      const afterSymbol =
+        item.after.symbolName ?? item.after.symbolStableKey ?? "unknown";
+      return `- ${item.before.table}.${item.before.field}: ${beforeSymbol} (${item.before.type}) -> ${afterSymbol} (${item.after.type})`;
+    }
+  );
+  appendBucketSection(
+    "Delphi Event Resolution Changes",
+    diff.delphiEvents.resolutionChanged,
+    item => {
+      const beforeResolved =
+        item.before.resolvedMethod ?? item.before.handlerName;
+      const afterResolved = item.after.resolvedMethod ?? item.after.handlerName;
+      return `- ${item.before.formName}.${item.before.componentName}.${item.before.eventName}: ${beforeResolved} -> ${afterResolved}`;
+    }
+  );
+  appendBucketSection(
+    "Build Doctor Changes",
+    diff.buildDoctor.changed,
+    item =>
+      `- ${item.before.code}: ${item.before.evidence ?? "no evidence"} -> ${item.after.evidence ?? "no evidence"}`
+  );
+  appendBucketSection("Flow Trace Changes", diff.flowTraces.changed, item => {
     const beforeTables = item.before.affectedTables.join(", ") || "none";
     const afterTables = item.after.affectedTables.join(", ") || "none";
     return `- ${item.before.stableKey}: ${item.before.status}/${beforeTables} -> ${item.after.status}/${afterTables}`;
@@ -2766,7 +3652,11 @@ export async function buildAnalysisDiffArchiveBuffer(
   );
 }
 
-export async function buildReportArchive(projectId: number, userId: number, runId?: number): Promise<ReportArchivePayload> {
+export async function buildReportArchive(
+  projectId: number,
+  userId: number,
+  runId?: number
+): Promise<ReportArchivePayload> {
   const archive = await buildReportArchiveBuffer(projectId, userId, runId);
   return {
     fileName: archive.fileName,
@@ -2781,31 +3671,52 @@ export async function getAnalysisResult(projectId: number, userId: number) {
   return getProjectAnalysisRecord(db, projectId);
 }
 
-export async function listAnalysisRunsForProject(projectId: number, userId: number, page: number, pageSize: number) {
+export async function listAnalysisRunsForProject(
+  projectId: number,
+  userId: number,
+  page: number,
+  pageSize: number
+) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
   return listAnalysisRuns(db, projectId, page, pageSize);
 }
 
-export async function getAnalysisRunForProject(projectId: number, userId: number, runId: number) {
+export async function getAnalysisRunForProject(
+  projectId: number,
+  userId: number,
+  runId: number
+) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
   return getAnalysisRunDetail(db, projectId, runId);
 }
 
-export async function setAnalysisBaselineForProject(projectId: number, userId: number, runId: number) {
+export async function setAnalysisBaselineForProject(
+  projectId: number,
+  userId: number,
+  runId: number
+) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
   return setAnalysisBaseline(db, projectId, runId);
 }
 
-export async function clearAnalysisBaselineForProject(projectId: number, userId: number) {
+export async function clearAnalysisBaselineForProject(
+  projectId: number,
+  userId: number
+) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
   return clearAnalysisBaseline(db, projectId);
 }
 
-export async function getAnalysisDiffForProject(projectId: number, userId: number, baseRunId: number, compareRunId: number) {
+export async function getAnalysisDiffForProject(
+  projectId: number,
+  userId: number,
+  baseRunId: number,
+  compareRunId: number
+) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
   return getAnalysisDiff(db, projectId, baseRunId, compareRunId);
@@ -2830,7 +3741,10 @@ export async function getFlowTracesPageForProject(
 ) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
-  const traces = filterFlowTraces(await getFlowTracesFromRun(db, projectId, input.runId), input);
+  const traces = filterFlowTraces(
+    await getFlowTracesFromRun(db, projectId, input.runId),
+    input
+  );
   const offset = (input.page - 1) * input.pageSize;
   return {
     items: traces.slice(offset, offset + input.pageSize),
@@ -2841,29 +3755,58 @@ export async function getFlowTracesPageForProject(
   };
 }
 
-export async function getFlowTraceForProject(projectId: number, userId: number, stableKey: string, runId?: number) {
+export async function getFlowTraceForProject(
+  projectId: number,
+  userId: number,
+  stableKey: string,
+  runId?: number
+) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
-  return (await getFlowTracesFromRun(db, projectId, runId)).find((trace) => trace.stableKey === stableKey) ?? null;
+  return (
+    (await getFlowTracesFromRun(db, projectId, runId)).find(
+      trace => trace.stableKey === stableKey
+    ) ?? null
+  );
 }
 
-export async function getFlowTraceSummaryForProject(projectId: number, userId: number, runId?: number) {
+export async function getFlowTraceSummaryForProject(
+  projectId: number,
+  userId: number,
+  runId?: number
+) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
-  const run = runId ? await getAnalysisRunDetail(db, projectId, runId) : await getLatestUsableCurrentSourceRun(db, projectId).then(async (latest) => {
-    if (!latest) throw new AppError("REPORT_NOT_READY", "No usable analysis run exists for this project.");
-    return getAnalysisRunDetail(db, projectId, latest.id);
-  });
+  const run = runId
+    ? await getAnalysisRunDetail(db, projectId, runId)
+    : await getLatestUsableCurrentSourceRun(db, projectId).then(
+        async latest => {
+          if (!latest)
+            throw new AppError(
+              "REPORT_NOT_READY",
+              "No usable analysis run exists for this project."
+            );
+          return getAnalysisRunDetail(db, projectId, latest.id);
+        }
+      );
   const traces = run.snapshot?.flowTraces ?? [];
-  const traceSummary = run.snapshot?.flowTraceSummary ?? { candidateTraceCount: traces.length, persistedTraceCount: traces.length, globalTruncated: false };
-  const affectedTables = new Set(traces.flatMap((trace) => trace.affectedTables));
+  const traceSummary = run.snapshot?.flowTraceSummary ?? {
+    candidateTraceCount: traces.length,
+    persistedTraceCount: traces.length,
+    globalTruncated: false,
+  };
+  const affectedTables = new Set(traces.flatMap(trace => trace.affectedTables));
   return {
     total: traces.length,
-    complete: traces.filter((trace) => trace.status === "complete").length,
-    partial: traces.filter((trace) => trace.status === "partial").length,
-    unresolved: traces.filter((trace) => trace.status === "unresolved").length,
-    readPaths: traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "read")).length,
-    writePaths: traces.filter((trace) => trace.affectedFields.some((field) => field.operation === "write")).length,
+    complete: traces.filter(trace => trace.status === "complete").length,
+    partial: traces.filter(trace => trace.status === "partial").length,
+    unresolved: traces.filter(trace => trace.status === "unresolved").length,
+    readPaths: traces.filter(trace =>
+      trace.affectedFields.some(field => field.operation === "read")
+    ).length,
+    writePaths: traces.filter(trace =>
+      trace.affectedFields.some(field => field.operation === "write")
+    ).length,
     affectedTables: affectedTables.size,
     candidateTraceCount: traceSummary.candidateTraceCount,
     persistedTraceCount: traceSummary.persistedTraceCount,
@@ -2871,31 +3814,47 @@ export async function getFlowTraceSummaryForProject(projectId: number, userId: n
   };
 }
 
-export async function getProjectJob(jobId: number, userId: number): Promise<ProjectJobRecord> {
+export async function getProjectJob(
+  jobId: number,
+  userId: number
+): Promise<ProjectJobRecord> {
   const db = await requireDb();
-  const [job] = await db.select().from(projectJobs).where(and(eq(projectJobs.id, jobId), eq(projectJobs.userId, userId))).limit(1);
+  const [job] = await db
+    .select()
+    .from(projectJobs)
+    .where(and(eq(projectJobs.id, jobId), eq(projectJobs.userId, userId)))
+    .limit(1);
   if (!job) {
     throw new AppError("PROJECT_JOB_NOT_FOUND", "Project job not found.");
   }
   return toPublicProjectJobRecord(job);
 }
 
-export async function getLatestJobsByProjectIds(projectIds: number[], userId: number) {
+export async function getLatestJobsByProjectIds(
+  projectIds: number[],
+  userId: number
+) {
   const db = await requireDb();
   if (projectIds.length === 0) {
     return new Map<number, ProjectJobRecord>();
   }
 
   if (isInMemoryDb(db)) {
-    const rows = await db.select().from(projectJobs).where(eq(projectJobs.userId, userId));
+    const rows = await db
+      .select()
+      .from(projectJobs)
+      .where(eq(projectJobs.userId, userId));
     const jobByProjectId = new Map<number, ProjectJobRecord>();
 
     rows
-      .filter((row) => projectIds.includes(row.projectId))
+      .filter(row => projectIds.includes(row.projectId))
       .sort((left, right) => Number(right.id) - Number(left.id))
-      .forEach((row) => {
+      .forEach(row => {
         if (!jobByProjectId.has(row.projectId)) {
-          jobByProjectId.set(row.projectId, toPublicProjectJobRecord(row as ProjectJobRow));
+          jobByProjectId.set(
+            row.projectId,
+            toPublicProjectJobRecord(row as ProjectJobRow)
+          );
         }
       });
 
@@ -2908,16 +3867,28 @@ export async function getLatestJobsByProjectIds(projectIds: number[], userId: nu
       latestId: sql<number>`max(${projectJobs.id})`,
     })
     .from(projectJobs)
-    .where(and(eq(projectJobs.userId, userId), inArray(projectJobs.projectId, projectIds)))
+    .where(
+      and(
+        eq(projectJobs.userId, userId),
+        inArray(projectJobs.projectId, projectIds)
+      )
+    )
     .groupBy(projectJobs.projectId);
 
-  const ids = latestIds.map((row) => Number(row.latestId)).filter((value) => value > 0);
+  const ids = latestIds
+    .map(row => Number(row.latestId))
+    .filter(value => value > 0);
   if (ids.length === 0) {
     return new Map<number, ProjectJobRecord>();
   }
 
-  const rows = await db.select().from(projectJobs).where(inArray(projectJobs.id, ids));
-  return new Map(rows.map((row) => [row.projectId, toPublicProjectJobRecord(row)]));
+  const rows = await db
+    .select()
+    .from(projectJobs)
+    .where(inArray(projectJobs.id, ids));
+  return new Map(
+    rows.map(row => [row.projectId, toPublicProjectJobRecord(row)])
+  );
 }
 
 export async function getActiveImportZipTempFilePaths() {
@@ -2929,7 +3900,12 @@ export async function getActiveImportZipTempFilePaths() {
   const rows = await db
     .select()
     .from(projectJobs)
-    .where(and(eq(projectJobs.type, "import_zip"), inArray(projectJobs.status, ["queued", "running"])));
+    .where(
+      and(
+        eq(projectJobs.type, "import_zip"),
+        inArray(projectJobs.status, ["queued", "running"])
+      )
+    );
   const activeTempPaths = new Set<string>();
 
   for (const row of rows) {
@@ -2955,13 +3931,18 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
   await getOwnedProject(projectId, userId);
   const db = await requireDb();
 
-  await db.transaction(async (tx) => {
+  await db.transaction(async tx => {
     const activeJobs = await tx
       .select()
       .from(projectJobs)
-      .where(and(eq(projectJobs.projectId, projectId), eq(projectJobs.userId, userId)));
+      .where(
+        and(
+          eq(projectJobs.projectId, projectId),
+          eq(projectJobs.userId, userId)
+        )
+      );
 
-    if (activeJobs.some((job) => isActiveProjectJobStatus(job.status))) {
+    if (activeJobs.some(job => isActiveProjectJobStatus(job.status))) {
       throw new AppError(
         "DELETE_FAILED",
         "Project cannot be deleted while an import or analysis job is queued or running. Wait for it to finish or recover first."
@@ -2972,11 +3953,18 @@ export async function deleteProjectCascade(projectId: number, userId: number) {
     await deleteProjectFiles(tx, projectId);
     await deleteProjectHistory(tx, projectId);
     await tx.delete(projectJobs).where(eq(projectJobs.projectId, projectId));
-    await tx.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
+    await tx
+      .delete(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
   });
 }
 
-export async function runImpactAnalysis(projectId: number, userId: number, target: string, type: ImpactTargetType) {
+export async function runImpactAnalysis(
+  projectId: number,
+  userId: number,
+  target: string,
+  type: ImpactTargetType
+) {
   await getOwnedProject(projectId, userId);
   const analyzer = new ImpactAnalyzer();
   return await analyzer.analyze(projectId, target, type);

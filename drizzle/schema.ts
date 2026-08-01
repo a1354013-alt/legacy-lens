@@ -1,4 +1,8 @@
-import type { AnalysisMetrics, AnalysisWarning, ImportWarning } from "../shared/contracts";
+import type {
+  AnalysisMetrics,
+  AnalysisWarning,
+  ImportWarning,
+} from "../shared/contracts";
 import {
   analysisStatuses,
   dependencyKinds,
@@ -15,7 +19,19 @@ import {
   ruleTypes,
   symbolKinds,
 } from "../shared/contracts";
-import { customType, index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import {
+  customType,
+  foreignKey,
+  index,
+  int,
+  json,
+  mysqlEnum,
+  mysqlTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  varchar,
+} from "drizzle-orm/mysql-core";
 
 const mediumtext = customType<{ data: string }>({
   dataType() {
@@ -48,7 +64,9 @@ export const projects = mysqlTable(
   "projects",
   {
     id: int("id").autoincrement().primaryKey(),
-    userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
     language: mysqlEnum("language", focusLanguages).notNull(),
@@ -59,13 +77,16 @@ export const projects = mysqlTable(
     analysisProgress: int("analysisProgress").default(0).notNull(),
     errorMessage: text("errorMessage"),
     lastErrorCode: varchar("lastErrorCode", { length: 64 }),
-    importWarningsJson: json("importWarningsJson").$type<ImportWarning[]>().default([]).notNull(),
+    importWarningsJson: json("importWarningsJson")
+      .$type<ImportWarning[]>()
+      .default([])
+      .notNull(),
     sourceFingerprint: varchar("sourceFingerprint", { length: 64 }),
     lastAnalyzedAt: timestamp("lastAnalyzedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  (table) => ({
+  table => ({
     userIdIdx: index("projects_userId_idx").on(table.userId),
   })
 );
@@ -77,7 +98,12 @@ export const files = mysqlTable(
   "files",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
     filePath: varchar("filePath", { length: 512 }).notNull(),
     fileName: varchar("fileName", { length: 255 }).notNull(),
     fileType: varchar("fileType", { length: 50 }),
@@ -86,9 +112,12 @@ export const files = mysqlTable(
     lineCount: int("lineCount"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("files_projectId_idx").on(table.projectId),
-    projectFilePathIdx: index("files_projectId_filePath_idx").on(table.projectId, table.filePath),
+    projectFilePathIdx: index("files_projectId_filePath_idx").on(
+      table.projectId,
+      table.filePath
+    ),
   })
 );
 
@@ -99,8 +128,15 @@ export const symbols = mysqlTable(
   "symbols",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    fileId: int("fileId").notNull().references(() => files.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    fileId: int("fileId")
+      .notNull()
+      .references(() => files.id, { onDelete: "cascade", onUpdate: "cascade" }),
     name: varchar("name", { length: 255 }).notNull(),
     type: mysqlEnum("type", symbolKinds).notNull(),
     startLine: int("startLine").notNull(),
@@ -110,11 +146,17 @@ export const symbols = mysqlTable(
     metadata: json("metadata"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("symbols_projectId_idx").on(table.projectId),
     fileIdIdx: index("symbols_fileId_idx").on(table.fileId),
-    projectNameIdx: index("symbols_projectId_name_idx").on(table.projectId, table.name),
-    projectFileIdx: index("symbols_projectId_fileId_idx").on(table.projectId, table.fileId),
+    projectNameIdx: index("symbols_projectId_name_idx").on(
+      table.projectId,
+      table.name
+    ),
+    projectFileIdx: index("symbols_projectId_fileId_idx").on(
+      table.projectId,
+      table.fileId
+    ),
   })
 );
 
@@ -125,21 +167,46 @@ export const dependencies = mysqlTable(
   "dependencies",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    sourceSymbolId: int("sourceSymbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    targetSymbolId: int("targetSymbolId").references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    sourceSymbolId: int("sourceSymbolId")
+      .notNull()
+      .references(() => symbols.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    targetSymbolId: int("targetSymbolId").references(() => symbols.id, {
+      onDelete: "cascade",
+      onUpdate: "cascade",
+    }),
     targetExternalName: varchar("targetExternalName", { length: 255 }),
-    targetKind: mysqlEnum("targetKind", dependencyTargetKinds).default("internal").notNull(),
+    targetKind: mysqlEnum("targetKind", dependencyTargetKinds)
+      .default("internal")
+      .notNull(),
     dependencyType: mysqlEnum("dependencyType", dependencyKinds).notNull(),
     lineNumber: int("lineNumber"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("dependencies_projectId_idx").on(table.projectId),
-    sourceIdx: index("dependencies_sourceSymbolId_idx").on(table.sourceSymbolId),
-    targetIdx: index("dependencies_targetSymbolId_idx").on(table.targetSymbolId),
-    projectSourceIdx: index("dependencies_projectId_sourceSymbolId_idx").on(table.projectId, table.sourceSymbolId),
-    projectTargetIdx: index("dependencies_projectId_targetSymbolId_idx").on(table.projectId, table.targetSymbolId),
+    sourceIdx: index("dependencies_sourceSymbolId_idx").on(
+      table.sourceSymbolId
+    ),
+    targetIdx: index("dependencies_targetSymbolId_idx").on(
+      table.targetSymbolId
+    ),
+    projectSourceIdx: index("dependencies_projectId_sourceSymbolId_idx").on(
+      table.projectId,
+      table.sourceSymbolId
+    ),
+    projectTargetIdx: index("dependencies_projectId_targetSymbolId_idx").on(
+      table.projectId,
+      table.targetSymbolId
+    ),
   })
 );
 
@@ -150,16 +217,25 @@ export const fields = mysqlTable(
   "fields",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
     tableName: varchar("tableName", { length: 255 }).notNull(),
     fieldName: varchar("fieldName", { length: 255 }).notNull(),
     fieldType: varchar("fieldType", { length: 100 }),
     description: text("description"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("fields_projectId_idx").on(table.projectId),
-    projectTableFieldIdx: index("fields_projectId_tableName_fieldName_idx").on(table.projectId, table.tableName, table.fieldName),
+    projectTableFieldIdx: index("fields_projectId_tableName_fieldName_idx").on(
+      table.projectId,
+      table.tableName,
+      table.fieldName
+    ),
   })
 );
 
@@ -170,19 +246,40 @@ export const fieldDependencies = mysqlTable(
   "fieldDependencies",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    fieldId: int("fieldId").notNull().references(() => fields.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    symbolId: int("symbolId").notNull().references(() => symbols.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    operationType: mysqlEnum("operationType", fieldDependencyOperationTypes).notNull(),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    fieldId: int("fieldId")
+      .notNull()
+      .references(() => fields.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    symbolId: int("symbolId")
+      .notNull()
+      .references(() => symbols.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    operationType: mysqlEnum(
+      "operationType",
+      fieldDependencyOperationTypes
+    ).notNull(),
     lineNumber: int("lineNumber"),
     context: text("context"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("fieldDependencies_projectId_idx").on(table.projectId),
     fieldIdIdx: index("fieldDependencies_fieldId_idx").on(table.fieldId),
     symbolIdIdx: index("fieldDependencies_symbolId_idx").on(table.symbolId),
-    projectFieldIdx: index("fieldDependencies_projectId_fieldId_idx").on(table.projectId, table.fieldId),
+    projectFieldIdx: index("fieldDependencies_projectId_fieldId_idx").on(
+      table.projectId,
+      table.fieldId
+    ),
   })
 );
 
@@ -193,7 +290,12 @@ export const risks = mysqlTable(
   "risks",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
     riskType: mysqlEnum("riskType", riskTypes).notNull(),
     severity: mysqlEnum("severity", riskSeverities).notNull(),
     title: varchar("title", { length: 255 }).notNull(),
@@ -204,9 +306,12 @@ export const risks = mysqlTable(
     recommendation: text("recommendation"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("risks_projectId_idx").on(table.projectId),
-    projectSeverityIdx: index("risks_projectId_severity_idx").on(table.projectId, table.severity),
+    projectSeverityIdx: index("risks_projectId_severity_idx").on(
+      table.projectId,
+      table.severity
+    ),
   })
 );
 
@@ -217,7 +322,12 @@ export const rules = mysqlTable(
   "rules",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
     ruleType: mysqlEnum("ruleType", ruleTypes).notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
@@ -226,9 +336,12 @@ export const rules = mysqlTable(
     lineNumber: int("lineNumber"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("rules_projectId_idx").on(table.projectId),
-    projectRuleTypeIdx: index("rules_projectId_ruleType_idx").on(table.projectId, table.ruleType),
+    projectRuleTypeIdx: index("rules_projectId_ruleType_idx").on(
+      table.projectId,
+      table.ruleType
+    ),
   })
 );
 
@@ -239,8 +352,15 @@ export const projectJobs = mysqlTable(
   "projectJobs",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade", onUpdate: "cascade" }),
     type: mysqlEnum("type", projectJobTypes).notNull(),
     status: mysqlEnum("status", projectJobStatuses).default("queued").notNull(),
     progress: int("progress").default(0).notNull(),
@@ -257,14 +377,28 @@ export const projectJobs = mysqlTable(
     startedAt: timestamp("startedAt"),
     finishedAt: timestamp("finishedAt"),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("projectJobs_projectId_idx").on(table.projectId),
     userIdIdx: index("projectJobs_userId_idx").on(table.userId),
     statusIdx: index("projectJobs_status_idx").on(table.status),
-    projectStatusIdx: index("projectJobs_projectId_status_idx").on(table.projectId, table.status),
-    statusLeaseIdx: index("projectJobs_status_leaseUntil_idx").on(table.status, table.leaseUntil),
-    claimIdx: index("projectJobs_claim_idx").on(table.status, table.leaseUntil, table.createdAt, table.id),
-    activeProjectUniqueIdx: uniqueIndex("projectJobs_active_project_unique").on(table.projectId, table.activeKey),
+    projectStatusIdx: index("projectJobs_projectId_status_idx").on(
+      table.projectId,
+      table.status
+    ),
+    statusLeaseIdx: index("projectJobs_status_leaseUntil_idx").on(
+      table.status,
+      table.leaseUntil
+    ),
+    claimIdx: index("projectJobs_claim_idx").on(
+      table.status,
+      table.leaseUntil,
+      table.createdAt,
+      table.id
+    ),
+    activeProjectUniqueIdx: uniqueIndex("projectJobs_active_project_unique").on(
+      table.projectId,
+      table.activeKey
+    ),
   })
 );
 
@@ -275,10 +409,20 @@ export const analysisResults = mysqlTable(
   "analysisResults",
   {
     id: int("id").autoincrement().primaryKey(),
-    projectId: int("projectId").notNull().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .notNull()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
     runNumber: int("runNumber").default(1).notNull(),
-    jobId: int("jobId").references(() => projectJobs.id, { onDelete: "set null", onUpdate: "cascade" }),
-    analyzerVersion: varchar("analyzerVersion", { length: 64 }).default("legacy").notNull(),
+    jobId: int("jobId").references(() => projectJobs.id, {
+      onDelete: "set null",
+      onUpdate: "cascade",
+    }),
+    analyzerVersion: varchar("analyzerVersion", { length: 64 })
+      .default("legacy")
+      .notNull(),
     sourceFingerprint: varchar("sourceFingerprint", { length: 64 }),
     snapshotSchemaVersion: int("snapshotSchemaVersion").default(1).notNull(),
     snapshotJson: longtext("snapshotJson"),
@@ -289,15 +433,28 @@ export const analysisResults = mysqlTable(
     risksMarkdown: mediumtext("risksMarkdown"),
     rulesYaml: mediumtext("rulesYaml"),
     summaryJson: json("summaryJson").$type<AnalysisMetrics | null>(),
-    warningsJson: json("warningsJson").$type<AnalysisWarning[]>().default([]).notNull(),
+    warningsJson: json("warningsJson")
+      .$type<AnalysisWarning[]>()
+      .default([])
+      .notNull(),
     errorMessage: text("errorMessage"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  (table) => ({
+  table => ({
     projectIdIdx: index("analysisResults_projectId_idx").on(table.projectId),
-    projectRunUniqueIdx: uniqueIndex("analysisResults_projectId_runNumber_unique").on(table.projectId, table.runNumber),
-    projectCreatedIdx: index("analysisResults_projectId_createdAt_id_idx").on(table.projectId, table.createdAt, table.id),
+    projectRunUniqueIdx: uniqueIndex(
+      "analysisResults_projectId_runNumber_unique"
+    ).on(table.projectId, table.runNumber),
+    projectIdIdUniqueIdx: uniqueIndex("analysisResults_projectId_id_unique").on(
+      table.projectId,
+      table.id
+    ),
+    projectCreatedIdx: index("analysisResults_projectId_createdAt_id_idx").on(
+      table.projectId,
+      table.createdAt,
+      table.id
+    ),
   })
 );
 
@@ -307,13 +464,34 @@ export type InsertAnalysisResult = typeof analysisResults.$inferInsert;
 export const analysisBaselines = mysqlTable(
   "analysisBaselines",
   {
-    projectId: int("projectId").primaryKey().references(() => projects.id, { onDelete: "cascade", onUpdate: "cascade" }),
-    analysisResultId: int("analysisResultId").notNull().references(() => analysisResults.id, { onDelete: "cascade", onUpdate: "cascade" }),
+    projectId: int("projectId")
+      .primaryKey()
+      .references(() => projects.id, {
+        onDelete: "cascade",
+        onUpdate: "cascade",
+      }),
+    analysisResultId: int("analysisResultId").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  (table) => ({
-    analysisResultIdx: index("analysisBaselines_analysisResultId_idx").on(table.analysisResultId),
+  table => ({
+    analysisResultIdx: index("analysisBaselines_analysisResultId_idx").on(
+      table.analysisResultId
+    ),
+    analysisResultForeignKey: foreignKey({
+      columns: [table.analysisResultId],
+      foreignColumns: [analysisResults.id],
+      name: "analysisBaselines_analysisResultId_analysisResults_id_fk",
+    })
+      .onDelete("cascade")
+      .onUpdate("cascade"),
+    projectAnalysisResultForeignKey: foreignKey({
+      columns: [table.projectId, table.analysisResultId],
+      foreignColumns: [analysisResults.projectId, analysisResults.id],
+      name: "analysisBaselines_projectId_analysisResultId_fk",
+    })
+      .onDelete("cascade")
+      .onUpdate("cascade"),
   })
 );
 

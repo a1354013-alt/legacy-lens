@@ -113,6 +113,13 @@
       "when": 1784278331196,
       "tag": "0015_current_source_fingerprint",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1785580800000,
+      "tag": "0016_release_baseline_integrity",
+      "breakpoints": true
     }
   ]
 }

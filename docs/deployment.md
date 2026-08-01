@@ -5,6 +5,7 @@ This document summarizes the production-facing boundaries that matter for Legacy
 ## Runtime Configuration
 
 - Runtime numeric env values are strictly parsed before use. Invalid configured values fail fast instead of falling back silently.
+- `PUBLIC_ORIGIN` is required in production and must be a canonical HTTPS origin only; path, query, fragment, and credentials are rejected.
 - Positive-integer settings reject `0`, negative values, decimals, blanks, and mixed strings such as `30abc`.
 - `DB_QUEUE_LIMIT` is intentionally non-negative and may be set to `0`; all job lease, timeout, polling, upload cleanup, throttle, connection-limit, and port settings must be positive integers.
 - Keep `.env.example` aligned with production runtime settings when adding new env reads.
@@ -23,6 +24,7 @@ This document summarizes the production-facing boundaries that matter for Legacy
 - If your environment cannot guarantee shared-database conditional-update semantics, run a single worker replica.
 - Set `PROJECT_WORKER_ENABLED=false` on web-only replicas.
 - Graceful shutdown clears the worker polling timer and any pending scheduler retry timer before closing shared resources.
+- `GRACEFUL_SHUTDOWN_TIMEOUT_MS` bounds shutdown cleanup so production exits fail closed instead of hanging indefinitely.
 
 ## Rate Limiting
 
@@ -82,6 +84,7 @@ curl -X POST "http://localhost:3000/api/projects/import" \
 ## Windows Demo Startup
 
 For the local demo stack in VS Code:
+
 - open the repository root as the workspace
 - press `F5`
 - wait for the launcher to pass the Docker checks and the `/ready` probe
@@ -90,6 +93,7 @@ For the local demo stack in VS Code:
 The launcher uses `scripts/f5-start.ps1`, starts the demo stack in detached mode, waits up to 180 seconds for `http://localhost:$LEGACY_LENS_PORT/ready`, and writes verbose Docker output to `.tmp/f5-start.log`.
 
 Operational notes:
+
 - `Terminal -> Run Task -> Legacy Lens: Stop Demo` stops containers without deleting the demo database volume.
 - `Terminal -> Run Task -> Legacy Lens: Show Demo Logs` streams `app`, `migrate`, and `db` logs only when you ask for them.
 - `Terminal -> Run Task -> Legacy Lens: Reset Demo DB` runs `docker compose -f docker-compose.demo.yml down -v` and deletes the local demo database volume.

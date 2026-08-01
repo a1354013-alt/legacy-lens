@@ -24,7 +24,7 @@ import {
 import { registerProjectUploadRoute } from "../services/projectUploadRoute";
 
 function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const server = net.createServer();
     server.listen(port, () => {
       server.close(() => resolve(true));
@@ -44,14 +44,33 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
 }
 
 async function gracefulShutdown(signal: string) {
-  logger.info("Server shutdown requested", { action: "server.shutdown.start", status: "ok", signal });
+  logger.info("Server shutdown requested", {
+    action: "server.shutdown.start",
+    status: "ok",
+    signal,
+  });
 
   stopProjectJobWorkerPolling();
 
-  // Close database connections
-  await closeDb();
-  
-  logger.info("Server shutdown completed", { action: "server.shutdown.complete", status: "ok", signal });
+  const shutdownTimeoutMs = parsePositiveIntEnv(
+    "GRACEFUL_SHUTDOWN_TIMEOUT_MS",
+    10000
+  );
+  await Promise.race([
+    closeDb(),
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("Graceful shutdown timed out.")),
+        shutdownTimeoutMs
+      )
+    ),
+  ]);
+
+  logger.info("Server shutdown completed", {
+    action: "server.shutdown.complete",
+    status: "ok",
+    signal,
+  });
   process.exit(0);
 }
 
@@ -72,13 +91,15 @@ async function startServer() {
   // Middleware order matters!
   // Health endpoints first (no rate limiting)
   registerHealthEndpoint(app);
-  
+
   // Rate limiting
   registerRateLimiters(app);
-  
+
   // Body parsers with enough headroom for the shared raw ZIP upload limit after base64 encoding.
   app.use(express.json({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES }));
-  app.use(express.urlencoded({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES, extended: true }));
+  app.use(
+    express.urlencoded({ limit: JSON_UPLOAD_BODY_LIMIT_BYTES, extended: true })
+  );
 
   // Logging middleware
   app.use((req, res, next) => {
@@ -111,7 +132,9 @@ async function startServer() {
 
   if (process.env.NODE_ENV === "development") {
     const viteDevModulePath = "./vite-dev";
-    const { setupVite }: typeof import("./vite-dev") = await import(viteDevModulePath);
+    const { setupVite }: typeof import("./vite-dev") = await import(
+      viteDevModulePath
+    );
     await setupVite(app, server);
   } else {
     serveStatic(app);
@@ -126,7 +149,9 @@ async function startServer() {
       logger.info(`Port ${preferredPort} is busy, using port ${port} instead`);
     }
   } else if (!(await isPortAvailable(preferredPort))) {
-    throw new Error(`Port ${preferredPort} is already in use. Set PORT to a different value before starting the server.`);
+    throw new Error(
+      `Port ${preferredPort} is already in use. Set PORT to a different value before starting the server.`
+    );
   }
 
   server.listen(port, () => {
@@ -139,9 +164,13 @@ async function startServer() {
       projectWorkerEnabled,
       projectWorkerPollIntervalMs,
     });
-    
+
     // Log health endpoint availability
-    logger.info("Health endpoints ready", { action: "server.health", status: "ok", port });
+    logger.info("Health endpoints ready", {
+      action: "server.health",
+      status: "ok",
+      port,
+    });
   });
 
   startProjectJobWorkerPolling();
@@ -151,7 +180,9 @@ async function startServer() {
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 }
 
-startServer().catch((error) => {
-  logger.error("Failed to start server", { error: error instanceof Error ? error.message : String(error) });
+startServer().catch(error => {
+  logger.error("Failed to start server", {
+    error: error instanceof Error ? error.message : String(error),
+  });
   process.exit(1);
 });

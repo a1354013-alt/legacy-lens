@@ -12,13 +12,17 @@ const nonNegativeIntegerStringSchema = z
 
 const runtimeEnvSchema = z.object({
   VITE_APP_ID: z.string().trim().min(1, "VITE_APP_ID is required."),
-  VITE_OAUTH_PORTAL_URL: z.string().trim().min(1, "VITE_OAUTH_PORTAL_URL is required."),
+  VITE_OAUTH_PORTAL_URL: z
+    .string()
+    .trim()
+    .min(1, "VITE_OAUTH_PORTAL_URL is required."),
   JWT_SECRET: z
     .string()
     .trim()
     .min(32, "JWT_SECRET must be at least 32 characters."),
   DATABASE_URL: z.string().trim().min(1, "DATABASE_URL is required."),
   OAUTH_SERVER_URL: z.string().trim().min(1, "OAUTH_SERVER_URL is required."),
+  PUBLIC_ORIGIN: z.string().trim().optional(),
 
   DEV_AUTH_BYPASS: z.string().trim().optional(),
   DEV_AUTH_OPEN_ID: z.string().trim().optional(),
@@ -37,6 +41,7 @@ const runtimeEnvSchema = z.object({
   UPLOAD_TEMP_ZIP_TTL_MS: positiveIntegerStringSchema.optional(),
   UPLOAD_TEMP_ZIP_CLEANUP_INTERVAL_MS: positiveIntegerStringSchema.optional(),
   LAST_SIGNED_IN_WRITE_THROTTLE_MS: positiveIntegerStringSchema.optional(),
+  GRACEFUL_SHUTDOWN_TIMEOUT_MS: positiveIntegerStringSchema.optional(),
   DB_CONNECTION_LIMIT: positiveIntegerStringSchema.optional(),
   DB_QUEUE_LIMIT: nonNegativeIntegerStringSchema.optional(),
   DB_WAIT_FOR_CONNECTIONS: z.string().trim().optional(),
@@ -52,8 +57,15 @@ const runtimeEnvSchema = z.object({
 type RuntimeEnv = z.infer<typeof runtimeEnvSchema>;
 
 function isTruthy(value: string | undefined) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
 }
 
 function readRuntimeEnv(source: NodeJS.ProcessEnv): RuntimeEnv {
@@ -63,14 +75,23 @@ function readRuntimeEnv(source: NodeJS.ProcessEnv): RuntimeEnv {
 
 export function validateRuntimeConfig(source: NodeJS.ProcessEnv = process.env) {
   const env = readRuntimeEnv(source);
-  const leaseMs = parseStrictIntegerEnv("PROJECT_JOB_LEASE_MS", 30000, { source });
-  const heartbeatMs = parseStrictIntegerEnv("PROJECT_JOB_HEARTBEAT_MS", 10000, { source });
+  const leaseMs = parseStrictIntegerEnv("PROJECT_JOB_LEASE_MS", 30000, {
+    source,
+  });
+  const heartbeatMs = parseStrictIntegerEnv("PROJECT_JOB_HEARTBEAT_MS", 10000, {
+    source,
+  });
   if (heartbeatMs >= leaseMs) {
-    throw new Error("[Config] PROJECT_JOB_HEARTBEAT_MS must be lower than PROJECT_JOB_LEASE_MS.");
+    throw new Error(
+      "[Config] PROJECT_JOB_HEARTBEAT_MS must be lower than PROJECT_JOB_LEASE_MS."
+    );
   }
   if (heartbeatMs > Math.floor(leaseMs / 3)) {
-    throw new Error("[Config] PROJECT_JOB_HEARTBEAT_MS must be no more than one third of PROJECT_JOB_LEASE_MS.");
+    throw new Error(
+      "[Config] PROJECT_JOB_HEARTBEAT_MS must be no more than one third of PROJECT_JOB_LEASE_MS."
+    );
   }
+  parseCanonicalPublicOrigin(source);
   return env;
 }
 
@@ -85,8 +106,14 @@ export function parseStrictIntegerEnv(
   options: StrictIntegerEnvOptions = {}
 ): number {
   const { allowZero = false, source = process.env } = options;
-  if (!Number.isInteger(fallback) || fallback < 0 || (!allowZero && fallback === 0)) {
-    throw new Error(`[Config] ${name} fallback must be ${allowZero ? "a non-negative" : "a positive"} integer.`);
+  if (
+    !Number.isInteger(fallback) ||
+    fallback < 0 ||
+    (!allowZero && fallback === 0)
+  ) {
+    throw new Error(
+      `[Config] ${name} fallback must be ${allowZero ? "a non-negative" : "a positive"} integer.`
+    );
   }
 
   const raw = source[name];
@@ -95,41 +122,99 @@ export function parseStrictIntegerEnv(
   const trimmed = raw.trim();
   const pattern = allowZero ? /^(0|[1-9]\d*)$/ : /^[1-9]\d*$/;
   if (!pattern.test(trimmed)) {
-    throw new Error(`[Config] ${name} must be ${allowZero ? "a non-negative" : "a positive"} integer.`);
+    throw new Error(
+      `[Config] ${name} must be ${allowZero ? "a non-negative" : "a positive"} integer.`
+    );
   }
 
   return Number(trimmed);
 }
 
-export function parsePositiveIntEnv(name: string, fallback: number, source: NodeJS.ProcessEnv = process.env): number {
+export function parsePositiveIntEnv(
+  name: string,
+  fallback: number,
+  source: NodeJS.ProcessEnv = process.env
+): number {
   return parseStrictIntegerEnv(name, fallback, { source });
 }
 
-export function parseNonNegativeIntEnv(name: string, fallback: number, source: NodeJS.ProcessEnv = process.env): number {
+export function parseNonNegativeIntEnv(
+  name: string,
+  fallback: number,
+  source: NodeJS.ProcessEnv = process.env
+): number {
   return parseStrictIntegerEnv(name, fallback, { allowZero: true, source });
+}
+
+export function parseCanonicalPublicOrigin(
+  source: NodeJS.ProcessEnv = process.env
+): string | null {
+  const rawValue = source.PUBLIC_ORIGIN?.trim();
+  const isProduction = source.NODE_ENV === "production";
+
+  if (!rawValue) {
+    if (isProduction) {
+      throw new Error("[Config] PUBLIC_ORIGIN is required in production.");
+    }
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawValue);
+  } catch {
+    throw new Error("[Config] PUBLIC_ORIGIN must be a valid absolute origin.");
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("[Config] PUBLIC_ORIGIN must use http or https.");
+  }
+  if (isProduction && parsed.protocol !== "https:") {
+    throw new Error("[Config] PUBLIC_ORIGIN must use https in production.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("[Config] PUBLIC_ORIGIN must not include credentials.");
+  }
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error(
+      "[Config] PUBLIC_ORIGIN must contain only the origin without path, query, or fragment."
+    );
+  }
+
+  return parsed.origin;
 }
 
 const parsedEnv = runtimeEnvSchema.safeParse(process.env);
 
 export const ENV = {
-  appId: parsedEnv.success ? parsedEnv.data.VITE_APP_ID : process.env.VITE_APP_ID ?? "",
-  oAuthPortalUrl: parsedEnv.success ? parsedEnv.data.VITE_OAUTH_PORTAL_URL : process.env.VITE_OAUTH_PORTAL_URL ?? "",
-  cookieSecret: parsedEnv.success ? parsedEnv.data.JWT_SECRET : process.env.JWT_SECRET ?? "",
-  databaseUrl: parsedEnv.success ? parsedEnv.data.DATABASE_URL : process.env.DATABASE_URL ?? "",
-  oAuthServerUrl: parsedEnv.success ? parsedEnv.data.OAUTH_SERVER_URL : process.env.OAUTH_SERVER_URL ?? "",
+  appId: parsedEnv.success
+    ? parsedEnv.data.VITE_APP_ID
+    : (process.env.VITE_APP_ID ?? ""),
+  oAuthPortalUrl: parsedEnv.success
+    ? parsedEnv.data.VITE_OAUTH_PORTAL_URL
+    : (process.env.VITE_OAUTH_PORTAL_URL ?? ""),
+  cookieSecret: parsedEnv.success
+    ? parsedEnv.data.JWT_SECRET
+    : (process.env.JWT_SECRET ?? ""),
+  databaseUrl: parsedEnv.success
+    ? parsedEnv.data.DATABASE_URL
+    : (process.env.DATABASE_URL ?? ""),
+  oAuthServerUrl: parsedEnv.success
+    ? parsedEnv.data.OAUTH_SERVER_URL
+    : (process.env.OAUTH_SERVER_URL ?? ""),
+  publicOrigin: parsedEnv.success
+    ? (parsedEnv.data.PUBLIC_ORIGIN?.trim() ?? "")
+    : (process.env.PUBLIC_ORIGIN ?? ""),
   isProduction: process.env.NODE_ENV === "production",
-  devAuthBypass:
-    parsedEnv.success
-      ? parsedEnv.data.DEV_AUTH_BYPASS ?? ""
-      : process.env.DEV_AUTH_BYPASS ?? "",
-  devAuthOpenId:
-    parsedEnv.success
-      ? parsedEnv.data.DEV_AUTH_OPEN_ID ?? ""
-      : process.env.DEV_AUTH_OPEN_ID ?? "",
-  devAuthBypassUnsafeAllow:
-    parsedEnv.success
-      ? parsedEnv.data.DEV_AUTH_BYPASS_UNSAFE_ALLOW ?? ""
-      : process.env.DEV_AUTH_BYPASS_UNSAFE_ALLOW ?? "",
+  devAuthBypass: parsedEnv.success
+    ? (parsedEnv.data.DEV_AUTH_BYPASS ?? "")
+    : (process.env.DEV_AUTH_BYPASS ?? ""),
+  devAuthOpenId: parsedEnv.success
+    ? (parsedEnv.data.DEV_AUTH_OPEN_ID ?? "")
+    : (process.env.DEV_AUTH_OPEN_ID ?? ""),
+  devAuthBypassUnsafeAllow: parsedEnv.success
+    ? (parsedEnv.data.DEV_AUTH_BYPASS_UNSAFE_ALLOW ?? "")
+    : (process.env.DEV_AUTH_BYPASS_UNSAFE_ALLOW ?? ""),
 } as const;
 
 export function isDevAuthBypassEnabled() {
